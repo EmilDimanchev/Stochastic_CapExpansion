@@ -1,0 +1,6 @@
+﻿Resources,Index_ID,Storage,Generation,Existing capacity,Investment cost,Operating cost,Emissions_ton_per_MWh
+Nuclear,1,0,1,0,8126,9.4874,0
+Gas,2,0,1,0,2341,35.7,0.4
+Wind,3,0,1,0,2977,0,0
+Solar,4,0,1,0,1080,0,0
+Batteries,5,1,0,0,200,0,0
