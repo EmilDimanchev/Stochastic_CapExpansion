@@ -12,7 +12,7 @@ using Ipopt
 
 # Policy
 # Carbon constraint
-co2_cap_flag = false
+co2_cap_flag = true
 
 # ~~~
 # Folder paths
@@ -64,10 +64,10 @@ cost_var = resources_input[:, "Operating cost"] # $/MWh
 co2_factors = resources_input[:,"Emissions_ton_per_MWh"] # ton per MWh
 availability = Matrix(resource_avail_input[:, 2:end])
 price_cap = 15000 # $/MWh
-carbon_cap = 300e3 # tCO2, arbitrary
+carbon_cap = 10e3 # tCO2, arbitrary
 # Storage
 # Current parameters assume battery storage
-r = 1/8 # Power to energy ratio
+p_e_ratio = 1/8 # Power to energy ratio
 # Single-trip efficiecy
 eff_down = 0.9
 eff_up = 0.9
@@ -75,7 +75,7 @@ eff_up = 0.9
 demand = Array(demand_input[:,2])
 
 gep = Model(Ipopt.Optimizer)
-set_optimizer_attribute(gep, "print_level", 2)
+set_optimizer_attribute(gep, "print_level", 3)
 
 # Variables
 
@@ -90,10 +90,10 @@ set_optimizer_attribute(gep, "print_level", 2)
 @variable(gep, nse[t in 1:T] >= 0)
 
 # Storage
-@variable(gep, discharge[t in 1:T] >= 0)
-@variable(gep, charge[t in 1:T] >= 0)
+@variable(gep, discharge[s in 1:S, t in 1:T] >= 0)
+@variable(gep, charge[s in 1:S, t in 1:T] >= 0)
 # State of charge
-@variable(gep, e[t in 1:T] >= 0)
+@variable(gep, e[s in 1:S, t in 1:T] >= 0)
 
 # Objective 
 
@@ -104,7 +104,7 @@ set_optimizer_attribute(gep, "print_level", 2)
 # ~~~
 
 # Energy balance
-@constraint(gep, power_balance[t in 1:T], sum(g[r,t] for r in 1:G) + discharge[t] - charge[t] + nse[t] == demand[t])
+@constraint(gep, power_balance[t in 1:T], sum(g[r,t] for r in 1:G) + sum(discharge[s,t] - charge[s,t] for s in 1:S) + nse[t] == demand[t])
 
 # Generation capacity limit
 @constraint(gep, capacity_limit[r=resources_input[(resources_input[!,:Generation].==1),:][!,:Index_ID], t in 1:T], x[r]*availability[t,r] >= g[r,t])
@@ -113,15 +113,15 @@ set_optimizer_attribute(gep, "print_level", 2)
 # Loop through storage technologies
 for r in (resources_input[(resources_input[!,:Storage].==1),:][!,:Index_ID])
     # Wrap first and last periods
-    @constraint(gep, state_of_charge_start[t in 1:1], e[t] == e[T] - (1/eff_down)*discharge[t] + eff_up*charge[t])
+    @constraint(gep, state_of_charge_start[s in 1:S, t in 1:1], e[s,t] == e[s,T] - (1/eff_down)*discharge[s,t] + eff_up*charge[s,t])
     # Energy balance for the remaining periods
-    @constraint(gep, state_of_charge[t in 2:T], e[t] == e[t-1] - (1/eff_down)*discharge[t] + eff_up*charge[t])
-    @constraint(gep, energy_limit[t in 1:T], e[t] <= (1/r)*x[r])
-    @constraint(gep, charge_limit_total[t in 1:T], charge[t] <= (1/eff_up)*x[r])
-    @constraint(gep, charge_limit[t in 1:T], charge[t] <= (1/r)*x[r] - e[t])
-    @constraint(gep, discharge_limit_total[t in 1:T], discharge[t] <= eff_down*x[r])
-    @constraint(gep, discharge_limit[t in 1:T], discharge[t] <= e[t])
-    @constraint(gep, charge_discharge_balance[t in 1:T], (1/eff_down)*discharge[t] + eff_up*charge[t] <= x[r])
+    @constraint(gep, state_of_charge[s in 1:S, t in 2:T], e[s,t] == e[t-1] - (1/eff_down)*discharge[s,t] + eff_up*charge[s,t])
+    @constraint(gep, energy_limit[s in 1:S, t in 1:T], e[s,t] <= (1/p_e_ratio)*x[r])
+    @constraint(gep, charge_limit_total[s in 1:S, t in 1:T], charge[s,t] <= (1/eff_up)*x[r])
+    @constraint(gep, charge_limit[s in 1:S, t in 1:T], charge[s,t] <= (1/p_e_ratio)*x[r] - e[s,t])
+    @constraint(gep, discharge_limit_total[s in 1:S, t in 1:T], discharge[s,t] <= eff_down*x[r])
+    @constraint(gep, discharge_limit[s in 1:S, t in 1:T], discharge[s,t] <= e[s,t])
+    @constraint(gep, charge_discharge_balance[s in 1:S, t in 1:T], (1/eff_down)*discharge[s,t] + eff_up*charge[s,t] <= x[r])
 end
 
 if co2_cap_flag
@@ -130,7 +130,7 @@ end
 
 JuMP.optimize!(gep)
 demand
-# Report Results
+# Report results
 gen = value.(g)
 c = value.(charge)
 d = value.(discharge)
@@ -139,7 +139,6 @@ maximum(d)
 maximum(c)
 maximum(e)
 cap = value.(x)
-dual.(gep[:state_of_charge])
 
 # nse_all = value.(nse)
 # m = dual.(capacity_limit)
