@@ -43,7 +43,7 @@ resource_avail_input = CSV.read(string(inputs_path,sep,"Resources_availability.c
 time_index = demand_input[:,1]
 
 # ~~~
-# Model
+# Model parameters
 # ~~~
 
 # Sets
@@ -72,6 +72,10 @@ eff_down = 0.9
 eff_up = 0.9
 
 demand = Array(demand_input[:,2])
+
+# ~~~
+# Build model
+# ~~~
 
 gep = Model(Gurobi.Optimizer)
 
@@ -127,7 +131,11 @@ if co2_cap_flag
 end
 
 JuMP.optimize!(gep)
-demand
+
+# ~~~
+# Process results
+# ~~~
+
 # Report results
 gen = value.(g)
 c = value.(charge)
