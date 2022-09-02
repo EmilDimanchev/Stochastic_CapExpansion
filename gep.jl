@@ -3,8 +3,7 @@
 using DataFrames
 using JuMP
 using CSV
-using GLPK
-using Ipopt
+using Gurobi
 
 # ~~~
 # Settings
@@ -74,8 +73,7 @@ eff_up = 0.9
 
 demand = Array(demand_input[:,2])
 
-gep = Model(Ipopt.Optimizer)
-set_optimizer_attribute(gep, "print_level", 3)
+gep = Model(Gurobi.Optimizer)
 
 # Variables
 
