@@ -1,0 +1,7 @@
+fuel_indices,Fuel,Cost_per_MMBtu,CO2_content_tons_perMMBtu
+1,uranium,0.690,0
+2,coal,2.130,0.0965
+3,natural_gas,5.130,0.0531
+4,none,0.000,0
+5,coal_ccs,2.100,0.01025
+6,natural_gas_ccs,5.130,0.00531
