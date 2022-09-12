@@ -27,7 +27,7 @@ working_path = pwd()
 
 # Define input and output paths
 inputs_path = string(working_path, sep, "Inputs", sep, "Inputs_2weeks_storage")
-results_path = string(working_path, sep, "Results", sep, "Results_090122")
+results_path = string(working_path, sep, "Results", sep, "Results_091222")
 
 if !(isdir(results_path))
     mkdir(results_path)
@@ -52,6 +52,7 @@ T = size(demand_input)[1] # number of time steps
 # Number of supply technologies
 R = size(resources_input)[1] 
 resources = resources_input[:,1]
+generators = resources[(resources_input[(resources_input[!,:Generation].==1),:][!,:Index_ID])]
 # Number of generators
 G = length(resources_input[(resources_input[!,:Generation].==1),:][!,:Index_ID])
 # Number of storage technologies
@@ -63,7 +64,7 @@ cost_var = resources_input[:, "Operating cost"] # $/MWh
 co2_factors = resources_input[:,"Emissions_ton_per_MWh"] # ton per MWh
 availability = Matrix(resource_avail_input[:, 2:end])
 price_cap = 15000 # $/MWh
-carbon_cap = 10e3 # tCO2, arbitrary
+carbon_cap = 300e3 # tCO2, arbitrary
 # Storage
 # Current parameters assume battery storage
 p_e_ratio = 1/8 # Power to energy ratio
@@ -146,24 +147,28 @@ maximum(c)
 maximum(e)
 cap = value.(x)
 
-# nse_all = value.(nse)
-# m = dual.(capacity_limit)
-# # Collect results
-# df_cap = DataFrame(Resource = resources, Capacity = cap)
-# df_gen = DataFrame(transpose(gen), resources)
-# insertcols!(df_gen, 1, :Time => time_index)
-# df_m = DataFrame(transpose(m), resources)
-# insertcols!(df_m, 1, :Time => time_index)
-# df_price = DataFrame(Time = time_index, Price = dual.(power_balance))
-# df_nse = DataFrame(Time = time_index, Non_served_energy = nse_all)
-# dual.(emissions_cap)
-# # Write output files
-# CSV.write(string(results_path,sep,"capacity.csv"), df_cap)
-# CSV.write(string(results_path,sep,"generation.csv"), df_gen)
-# CSV.write(string(results_path,sep,"price.csv"), df_price)
-# CSV.write(string(results_path,sep,"nse.csv"), df_nse)
-# CSV.write(string(results_path,sep,"capacity_rent.csv"), df_m)
+nse_all = value.(nse)
+m = dual.(capacity_limit)
 
-# co2_tot = sum(gen[i,t]*co2_factors[i] for i in 1:R, t in 1:T)
-# println("Emissions equal ", round(co2_tot), " tons")
+# Collect results
+df_cap = DataFrame(Resource = resources, Capacity = cap)
+df_gen = DataFrame(transpose(gen), generators)
+insertcols!(df_gen, 1, :Time => time_index)
+df_m = DataFrame(transpose(Array(m)), generators)
+insertcols!(df_m, 1, :Time => time_index)
+df_price = DataFrame(Time = time_index, Price = dual.(power_balance))
+df_nse = DataFrame(Time = time_index, Non_served_energy = nse_all)
+if co2_cap_flag
+    co2_price = dual.(emissions_cap)
+    println("CO2 price is ", round(co2_price))
+end
+# Write output files
+CSV.write(string(results_path,sep,"capacity.csv"), df_cap)
+CSV.write(string(results_path,sep,"generation.csv"), df_gen)
+CSV.write(string(results_path,sep,"price.csv"), df_price)
+CSV.write(string(results_path,sep,"nse.csv"), df_nse)
+CSV.write(string(results_path,sep,"capacity_rent.csv"), df_m)
+
+co2_tot = sum(gen[i,t]*co2_factors[i] for i in 1:G, t in 1:T)
+println("Emissions equal ", round(co2_tot), " tons")
 # objective_value(gep)
