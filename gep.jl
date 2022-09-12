@@ -11,7 +11,7 @@ using Gurobi
 
 # Policy
 # Carbon constraint
-co2_cap_flag = true
+co2_cap_flag = false
 
 # ~~~
 # Folder paths
