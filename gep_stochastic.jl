@@ -105,16 +105,16 @@ gep = Model(Gurobi.Optimizer)
 @variable(gep, g[r in 1:R, t in 1:T, s in 1:W] >= 0) # amount of power supply, MW
 
 # Capacity
-@variable(gep, c[r in 1:R] >= 0) # Capacity, MW
+@variable(gep, x[r in 1:R] >= 0) # Capacity, MW
 
 # Non-served energy
 @variable(gep, nse[t in 1:T, s in 1:W] >= 0)
 
 
-@objective(gep, Min, sum(c[r]*inv_cost[r] for r in 1:R) + sum(P[s]*g[r,t,s]*var_cost[r] for r in 1:R, t in 1:T, s in 1:W) + sum(P[s]*price_cap*nse[t,s] for t in 1:T, s in 1:W))
+@objective(gep, Min, sum(x[r]*inv_cost[r] for r in 1:R) + sum(P[s]*g[r,t,s]*var_cost[r] for r in 1:R, t in 1:T, s in 1:W) + sum(P[s]*price_cap*nse[t,s] for t in 1:T, s in 1:W))
 
 @constraint(gep, PowerBalance[t in 1:T, s in 1:W], sum(g[r,t,s] for r in 1:R) + nse[t,s] == demand_sample[t,s])
-@constraint(gep, CapacityLimit[r in 1:R, t in 1:T, s in 1:W], g[r,t,s] <= c[r]*availability[t,r])
+@constraint(gep, CapacityLimit[r in 1:R, t in 1:T, s in 1:W], g[r,t,s] <= x[r]*availability[t,r])
 
 if co2_cap_flag
     @constraint(gep, emissions_cap[s in 1:W], sum(g[r,t,s]*co2_factors[r] for r in 1:R, t in 1:T) <= carbon_cap)
@@ -130,7 +130,7 @@ JuMP.optimize!(gep)
 obj = objective_value(gep)
 gen = value.(g)
 nse_all = value.(nse)
-cap = value.(c)
+cap = value.(x)
 
 # Collect results
 scenario_for_results = 1
