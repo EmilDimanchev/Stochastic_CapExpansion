@@ -8,8 +8,13 @@ using JuMP
 using Complementarity
 using CSV
 using Gurobi
-
+using Random
 using Statistics
+import Plots
+using Plots
+using GR
+using PyPlot
+using Pkg
 
 # ~~~
 # Settings
@@ -77,7 +82,7 @@ inv_cost = resources_input[:,"Investment cost"] # $/MW-336days
 var_cost = resources_input[:, "Operating cost"] # $/MWh
 availability = Matrix(resource_avail_input[:, 2:end])
 co2_factors = resources_input[:,"Emissions_ton_per_MWh"] # ton per MWh
-price_cap = 1000 # $/MWh
+price_cap = 70 # $/MWh
 carbon_cap = 300e3 # tCO2, arbitrary
 
 demand = Array(demand_input[:,2:end])
@@ -151,7 +156,75 @@ dual.(emissions_cap)
 # Write output files
 # ~~~
 
-# CSV.write(string(results_path,sep,"capacity.csv"), df_cap)
-# CSV.write(string(results_path,sep,"generation.csv"), df_gen)
-# CSV.write(string(results_path,sep,"price.csv"), df_price)
-# CSV.write(string(results_path,sep,"nse.csv"), df_nse)
+CSV.write(string(results_path,sep,"capacity.csv"), df_cap)
+CSV.write(string(results_path,sep,"generation.csv"), df_gen)
+CSV.write(string(results_path,sep,"price.csv"), df_price)
+CSV.write(string(results_path,sep,"nse.csv"), df_nse)
+
+
+#ploting the recomended output
+display(Plots.plot(df_cap.Resource, df_cap.Capacity,title ="Production capacity",ylabel="Capacity [MWh]" ,seriestype =[:bar], palette = cgrad(:greens), fill=0, alpha=0.6))
+
+#Estimate revenues per tecnology
+revenues = zeros(3)     #[gas, wind, solar]
+
+for r in 1:R-1
+    revenues[r] = sum((df_price[i,2]-var_cost[r])*df_gen[i,r+1] for i in 1:T)
+end
+
+#Estimation of revenue per technology
+
+df_rev = DataFrame(Resource = resources, Revenue = revenues)
+CSV.write(string(results_path,sep,"revenue.csv"), df_rev)
+display(Plots.plot(df_rev.Resource, df_rev.Revenue, title = "Revenue per resource", ylabel = "Revenue [USD]" ,seriestype =[:bar], palette = cgrad(:blues), fill=0, alpha=0.6))
+
+
+#Estimation of emissions
+
+CO2_price = 70 #[$/tCO2]
+CO2_emission_factor = [0.4,0,0] #[tCO2/MWh] [gas, wind, solar]
+emissions = zeros(T,R)
+
+for j in 1:R-1
+    for i in 1:T
+    emissions[i,j] = df_gen[i,j+1] * CO2_emission_factor[j]
+    end
+end
+
+df_emission = DataFrame(emissions,resources)
+insertcols!(df_emission, 1, :Time => time_index)
+
+CSV.write(string(results_path,sep,"emissions_per_tec.csv"), df_emission)
+display(Plots.plot(collect(1:T), emissions ,title = "Emission per Technology",ylabel = "[Ton CO2]", seriestype =[:bar], palette = cgrad(:reds), fill=0, alpha=0.2, layout = (3,2))) #, label =("Nuclear", "Gas","Wind","Solar","Batteries")
+
+Sum_Emissions = sum(df_emission.Gas + df_emission.Wind +df_emission.Solar)
+print("Total Emissions [ton CO2]: ")
+display(Sum_Emissions)
+
+#None served Energy
+
+display(Plots.plot(df_nse.Time, df_nse.Non_served_energy, xlabel = "Time [h]", ylabel="[MWh]", title ="Non Served Energy", label = "NSE"))
+
+
+SumNSE = sum(df_nse.Non_served_energy) 
+print("Non served energy [MWh]: ")
+display(SumNSE)
+
+
+#Revenue on batteries
+c_trans = transpose(c)
+d_trans =transpose(d)
+
+df_storage = DataFrame(Charge = vec(c_trans), Discharge =vec(d_trans))#,Discharge=transpose(d), StateOfCharge = transpose(e))
+insertcols!(df_storage,1,:Time => time_index)
+#display(df_storage)
+
+revenue_storage = zeros(T)
+for i in 1:T
+    revenue_storage[i] = df_storage.Charge[i]*df_price.Price[i] + df_storage.Discharge[i]*df_price.Price[i]
+end
+#display(cost_inv)
+print("Investment cost storage: ",cost_inv[5])
+tot_revenue_storage = sum(revenue_storage) - cost_inv[5]
+
+print("Storage Revenue: ", tot_revenue_storage)

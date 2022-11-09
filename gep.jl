@@ -4,18 +4,26 @@ using DataFrames
 using JuMP
 using CSV
 using Gurobi
+import Plots
+using Plots
+using GR
+using PyPlot
+#using PlotlyJS
+using Pkg
+
 
 # ~~~
 # Settings
 # ~~~
 
-# Policy
+# Policy]
 # Carbon constraint
 co2_cap_flag = false
 
 # ~~~
 # Folder paths
 # ~~~
+
 
 if Sys.isunix()
     sep = "/"
@@ -63,8 +71,8 @@ cost_inv = resources_input[:,"Investment cost"] # $/MW-336days
 cost_var = resources_input[:, "Operating cost"] # $/MWh
 co2_factors = resources_input[:,"Emissions_ton_per_MWh"] # ton per MWh
 availability = Matrix(resource_avail_input[:, 2:end])
-price_cap = 15000 # $/MWh
-carbon_cap = 300e3 # tCO2, arbitrary
+price_cap = 70 # $/MWh
+carbon_cap = 3e3 # tCO2, arbitrary
 # Storage
 # Current parameters assume battery storage
 p_e_ratio = 1/8 # Power to energy ratio
@@ -172,3 +180,86 @@ CSV.write(string(results_path,sep,"capacity_rent.csv"), df_m)
 co2_tot = sum(gen[i,t]*co2_factors[i] for i in 1:G, t in 1:T)
 println("Emissions equal ", round(co2_tot), " tons")
 # objective_value(gep)
+
+
+#Ploting the ouput capacities
+
+display(Plots.plot(df_cap.Resource, df_cap.Capacity,title ="Production capacity",ylabel="Capacity [MWh]" ,seriestype =[:bar], palette = cgrad(:greens), fill=0, alpha=0.6))
+
+#Estimate revenues per tecnology
+revenues = zeros(5)#[nuclear, gas, wind, solar, batteries]
+
+for r in 1:R-1
+    revenues[r] = sum((df_price[i,2]-cost_var[r])*df_gen[i,r+1] for i in 1:T)
+end
+
+
+#Estimation of revenue
+
+df_rev = DataFrame(Resource = resources, Revenue = revenues)
+
+CSV.write(string(results_path,sep,"revenue.csv"), df_rev)
+display(Plots.plot(df_rev.Resource, df_rev.Revenue, title = "Revenue per resource", ylabel = "Revenue [USD]" ,seriestype =[:bar], palette = cgrad(:blues), fill=0, alpha=0.6))
+
+
+#Estimate and compile the emissions
+CO2_price = 70 #[$/tCO2]
+CO2_emission_factor = [0,0.4,0,0,0] #[tCO2/MWh] [Nuclear, gas, wind, solar, batteries]
+emissions = zeros(T,R)
+
+for j in 1:R-1
+    for i in 1:T
+    emissions[i,j] = df_gen[i,j+1] * CO2_emission_factor[j]
+    end
+end
+
+df_emission = DataFrame(emissions,resources)
+insertcols!(df_emission, 1, :Time => time_index)
+
+CSV.write(string(results_path,sep,"emissions_per_tec.csv"), df_emission)
+display(Plots.plot(collect(1:T), emissions ,title = "Emission per Technology",ylabel = "[Ton CO2]", seriestype =[:bar], palette = cgrad(:reds), fill=0, alpha=0.2, layout = (3,2))) #, label =("Nuclear", "Gas","Wind","Solar","Batteries")
+
+Sum_Emissions = sum(df_emission.Gas + df_emission.Nuclear + df_emission.Wind +df_emission.Solar + df_emission.Batteries)
+print("Total Emissions [ton CO2]: ")
+display(Sum_Emissions)
+
+#Non served energy, just for fun
+
+display(Plots.plot(df_nse.Time, df_nse.Non_served_energy, xlabel = "Time [h]", ylabel="[MWh]", title ="Non Served Energy", label = "NSE"))
+
+
+SumNSE = sum(df_nse.Non_served_energy) 
+print("Non served energy [MWh]: ")
+display(SumNSE)
+
+
+#Revenue on batteries
+#display(transpose(e))
+c_trans = transpose(c)
+d_trans =transpose(d)
+
+df_storage = DataFrame(Charge = vec(c_trans), Discharge =vec(d_trans))#,Discharge=transpose(d), StateOfCharge = transpose(e))
+insertcols!(df_storage,1,:Time => time_index)
+#display(df_price)
+
+revenue_storage = zeros(T)
+for i in 1:T
+    revenue_storage[i] = df_storage.Charge[i]*df_price.Price[i] + df_storage.Discharge[i]*df_price.Price[i]
+end
+print("Investment cost storage: ",cost_inv[5])
+tot_revenue_storage = sum(revenue_storage) - cost_inv[5]
+print("Storage Revenue: ", tot_revenue_storage)
+
+
+
+
+#QUESTIONS
+# Struggel how i can get values out of the dataframes df_price for a for loop etc. How should I do this
+#Is this the right way to define variables
+#Is this the type of plot you was thinking of? 
+#Shoud we implement this at the end of the script as it is now, or should it be located elsewhere?
+#How can I implement the new taxes in the most realistic way(maybe some logic so we can choose to include them or not)? And what are the different values telling us? If NSE grows --> risk increas? economic benificial decreas?
+
+
+
+
