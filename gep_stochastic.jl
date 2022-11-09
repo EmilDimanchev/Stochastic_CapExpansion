@@ -12,8 +12,8 @@ using Gurobi
 # ~~~
 
 # Choose stochastic or deterministic
-stochastic = true
-risk_aversion = true
+stochastic = false
+risk_aversion = false
 # Policy
 # Carbon constraint
 co2_cap_flag = false
@@ -61,6 +61,8 @@ time_index = demand_input[:,1]
 T = size(demand_input)[1] # number of time steps
 if stochastic
     S = size(demand_input[:,2:end])[2] # number of scenarios
+else
+    S = 1
 end
 
 R = size(resources_input)[1] # number of supply technologies
@@ -79,8 +81,7 @@ if risk_aversion
     # Define parameters
     α = 1/3 # parameter for VaR
     γ = 0.5 # parameter for degree of risk aversion, 1 means no risk aversion
-end    
-    
+end
 
 demand = Array(demand_input[:,2:end])
 
