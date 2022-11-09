@@ -13,10 +13,10 @@ using Gurobi
 
 # Choose stochastic or deterministic
 stochastic = true
-
+risk_aversion = true
 # Policy
 # Carbon constraint
-co2_cap_flag = true
+co2_cap_flag = false
 
 
 # ~~~
@@ -74,6 +74,14 @@ co2_factors = resources_input[:,"Emissions_ton_per_MWh"] # ton per MWh
 price_cap = 1000 # $/MWh
 carbon_cap = 300e3 # tCO2, arbitrary
 
+if risk_aversion
+    # CVaR
+    # Define parameters
+    α = 1/3 # parameter for VaR
+    γ = 0.5 # parameter for degree of risk aversion, 1 means no risk aversion
+end    
+    
+
 demand = Array(demand_input[:,2:end])
 
 # Define scenario probabilities
@@ -92,11 +100,26 @@ gep = Model(Gurobi.Optimizer)
 # Non-served energy
 @variable(gep, nse[t in 1:T, s in 1:S] >= 0)
 
+# Risk aversion
+if risk_aversion
+    # Auxiliary varliables for CVaR
+    @variable(gep, u[s in 1:S] >= 0) # loss relative to VaR, $/MW
+    @variable(gep, VaR) # VaR variable, $/MW
+    @constraint(gep, u_expression[s in 1:S], u[s] >= sum(g[r,t,s]*cost_var[r] + price_cap*nse[t,s] for r in 1:R, t in 1:T) - VaR)
+end 
 
-@objective(gep, Min, sum(x[r]*cost_inv[r] for r in 1:R) + sum(P[s]*g[r,t,s]*cost_var[r] for r in 1:R, t in 1:T, s in 1:S) + sum(P[s]*price_cap*nse[t,s] for t in 1:T, s in 1:S))
+# Objective function
+if risk_aversion
+    @objective(gep, Min, sum(x[r]*cost_inv[r] for r in 1:R) + γ*(sum(P[s]*g[r,t,s]*cost_var[r] for r in 1:R, t in 1:T, s in 1:S) + sum(P[s]*price_cap*nse[t,s] for t in 1:T, s in 1:S)) + (1-γ)*(VaR + 1/α*sum(P[s]*u[s] for s in 1:S)))
+else
+    # Risk neutral
+    @objective(gep, Min, sum(x[r]*cost_inv[r] for r in 1:R) + sum(P[s]*g[r,t,s]*cost_var[r] for r in 1:R, t in 1:T, s in 1:S) + sum(P[s]*price_cap*nse[t,s] for t in 1:T, s in 1:S))
+end
 
 @constraint(gep, PowerBalance[t in 1:T, s in 1:S], sum(g[r,t,s] for r in 1:R) + nse[t,s] == demand[t,s])
 @constraint(gep, CapacityLimit[r in 1:R, t in 1:T, s in 1:S], g[r,t,s] <= x[r]*availability[t,r])
+
+# Climate policy
 
 if co2_cap_flag
     @constraint(gep, emissions_cap[s in 1:S], sum(g[r,t,s]*co2_factors[r] for r in 1:R, t in 1:T) <= carbon_cap)
@@ -124,6 +147,7 @@ co2_tot = zeros(3)
 for s in 1:S
     co2_tot[s] = sum(gen[i,t,s]*co2_factors[i] for i in 1:R, t in 1:T)
 end
+co2_expected = sum(P[s]*co2_tot[s] for s in 1:S)
 
 
 # Write output files (the code below might need work)
