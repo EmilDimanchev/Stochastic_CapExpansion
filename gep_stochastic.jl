@@ -12,11 +12,11 @@ using Gurobi
 # ~~~
 
 # Choose stochastic or deterministic
-stochastic = false
-risk_aversion = false
+stochastic = true
+risk_aversion = true
 # Policy
 # Carbon constraint
-co2_cap_flag = false
+co2_cap_flag = true
 
 
 # ~~~
@@ -42,6 +42,10 @@ end
 # ~~~
 # Load data
 # ~~~
+
+if risk_aversion
+    stochastic = true
+end
 
 if stochastic
     demand_input = CSV.read(string(inputs_path,sep,"Demand.csv"), DataFrame, header=true)
