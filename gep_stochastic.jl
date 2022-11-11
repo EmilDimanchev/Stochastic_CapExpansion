@@ -85,6 +85,8 @@ if risk_aversion
     # Define parameters
     α = 1/3 # parameter for VaR
     γ = 0.5 # parameter for degree of risk aversion, 1 means no risk aversion
+else
+    γ = 1
 end
 
 demand = Array(demand_input[:,2:end])
