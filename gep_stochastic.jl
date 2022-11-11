@@ -19,11 +19,11 @@ using Pkg
 # ~~~
 
 # Choose stochastic or deterministic
-stochastic = false
+stochastic = true
 risk_aversion = false
 # Policy
 # Carbon constraint
-co2_cap_flag = false
+co2_cap_flag = true
 
 
 # ~~~
@@ -39,7 +39,7 @@ end
 working_path = pwd()
 
 # Define input and output paths
-inputs_path = string(working_path, sep, "Inputs", sep, "Inputs_course_3techs")
+inputs_path = string(working_path, sep, "Inputs", sep, "Inputs_course_all_techs_annual_2041") #"Inputs_course_3techs", "Inputs_course_all_techs_annual_2041"
 results_path = string(working_path, sep, "Results", sep, "Results_stochastic_031422")
 
 if !(isdir(results_path))
@@ -71,25 +71,36 @@ if stochastic
 else
     S = 1
 end
+R_all = size(resources_input)[1]
+R =  length(resources_input[(resources_input[!,:Generation].==1),:][!,:Index_ID]) #size(resources_input)[1]# number of supply technologies
+resources = resources_input[:,1:5]
 
-R = size(resources_input)[1] # number of supply technologies
-resources = resources_input[:,1]
+#Number of storage technologies
+R_S = length(resources_input[(resources_input[!,:Storage].==1),:][!,:Index_ID])
 
 # Parameters
-cost_inv = resources_input[:,"Investment cost"] # $/MW-336days
-cost_var = resources_input[:, "Operating cost"] # $/MWh
-availability = Matrix(resource_avail_input[:, 2:end])
+cost_inv = resources_input[1:R,"Investment cost"] # $/MW-336days
+cost_var = resources_input[1:R, "Operating cost"] # $/MWh
+availability = Matrix(resource_avail_input[:, 2:7])
 co2_factors = resources_input[:,"Emissions_ton_per_MWh"] # ton per MWh
-price_cap = 70 # $/MWh
+price_cap = 1000 # $/MWh
 carbon_cap = 300e3 # tCO2, arbitrary
+
+# Storage
+# Current parameters assume battery storage
+p_e_ratio = 1/8 # Power to energy ratio
+# Single-trip efficiecy
+eff_down = 0.9
+eff_up = 0.9
 
 if risk_aversion
     # CVaR
     # Define parameters
     α = 1/3 # parameter for VaR
     γ = 0.5 # parameter for degree of risk aversion, 1 means no risk aversion
+else
+    γ = 1
 end
-
 demand = Array(demand_input[:,2:end])
 
 # Define scenario probabilities
@@ -103,10 +114,16 @@ gep = Model(Gurobi.Optimizer)
 @variable(gep, g[r in 1:R, t in 1:T, s in 1:S] >= 0) # amount of power supply, MW
 
 # Capacity
-@variable(gep, x[r in 1:R] >= 0) # Capacity, MW
+@variable(gep, x[r in 1:R_all] >= 0) # Capacity, MW
 
 # Non-served energy
 @variable(gep, nse[t in 1:T, s in 1:S] >= 0)
+
+# Storage
+@variable(gep, discharge[r_s in 1:R_S, t in 1:T, s in 1:S] >= 0)
+@variable(gep, charge[r_s in 1:R_S, t in 1:T, s in 1:S] >= 0)
+# State of charge
+@variable(gep, e[r_s in 1:R_S, t in 1:T, s in 1:S] >= 0)
 
 # Risk aversion
 if risk_aversion
@@ -124,8 +141,26 @@ else
     @objective(gep, Min, sum(x[r]*cost_inv[r] for r in 1:R) + sum(P[s]*g[r,t,s]*cost_var[r] for r in 1:R, t in 1:T, s in 1:S) + sum(P[s]*price_cap*nse[t,s] for t in 1:T, s in 1:S))
 end
 
-@constraint(gep, PowerBalance[t in 1:T, s in 1:S], sum(g[r,t,s] for r in 1:R) + nse[t,s] == demand[t,s])
+@constraint(gep, PowerBalance[t in 1:T, s in 1:S], sum(g[r,t,s] for r in 1:R) + nse[t,s] + sum(discharge[r_s,t,s] for r_s in 1:R_S) -sum(charge[r_s,t,s] for r_s in 1:R_S) == demand[t,s])
 @constraint(gep, CapacityLimit[r in 1:R, t in 1:T, s in 1:S], g[r,t,s] <= x[r]*availability[t,r])
+#@constraint(gep, x[1]==0)
+
+#Storage constraints
+# Loop through storage technologies
+for r in (resources_input[(resources_input[!,:Storage].==1),:][!,:Index_ID])
+    # Wrap first and last periods
+    @constraint(gep, state_of_charge_start[r_s in 1:R_S, t in 1:1, s in 1:S], e[r_s,t,s] == e[r_s,T,s] - (1/eff_down)*discharge[r_s,t,s] + eff_up*charge[r_s,t,s])
+    # Energy balance for the remaining periods
+    @constraint(gep, state_of_charge[r_s in 1:R_S, t in 2:T, s in 1:S], e[r_s,t,s] == e[r_s,t-1,s] - (1/eff_down)*discharge[r_s,t,s] + eff_up*charge[r_s,t,s])
+    @constraint(gep, energy_limit[r_s in 1:R_S, t in 1:T, s in 1:S], e[r_s,t,s] <= (1/p_e_ratio)*x[r_s])
+    @constraint(gep, charge_limit_total[r_s in 1:R_S, t in 1:T, s in 1:S], charge[r_s,t,s] <= (1/eff_up)*x[r_s])
+    @constraint(gep, charge_limit[r_s in 1:R_S, t in 1:T, s in 1:S], charge[r_s,t,s] <= (1/p_e_ratio)*x[r_s] - e[r_s,t,s])
+    @constraint(gep, discharge_limit_total[r_s in 1:R_S, t in 1:T, s in 1:S], discharge[r_s,t,s] <= eff_down*x[r_s])
+    @constraint(gep, discharge_limit[r_s in 1:R_S, t in 1:T, s in 1:S], discharge[r_s,t,s] <= e[r_s,t,s])
+    @constraint(gep, charge_discharge_balance[r_s in 1:R_S, t in 1:T, s in 1:S], (1/eff_down)*discharge[r_s,t,s] + eff_up*charge[r_s,t,s] <= x[r_s])
+end
+
+
 
 # Climate policy
 
@@ -141,17 +176,19 @@ gen = value.(g)
 nse_all = value.(nse)
 cap = value.(x)
 co2_price = dual.(emissions_cap) 
+#c = value(charge)
+#d = value(discharge)
 
 # Collect results (the code needs work, currently only compiles results for one scenario)
 scenario_for_results = 1
 
-df_cap = DataFrame(Resource = resources, Capacity = cap)
-df_gen = DataFrame(transpose(gen[:,:,scenario_for_results]), resources)
+df_cap = DataFrame(Resource = resources[1:R,1], Capacity = cap[1:R])
+df_gen = DataFrame(transpose(gen[:,:,scenario_for_results]), resources[1:R,1])
 insertcols!(df_gen, 1, :Time => time_index)
 df_price = DataFrame(Time = time_index, Price = dual.(PowerBalance)[:,scenario_for_results])
 df_nse = DataFrame(Time = time_index, Non_served_energy = nse_all[:,scenario_for_results])
 
-co2_tot = zeros(3)
+co2_tot = zeros(S)
 for s in 1:S
     co2_tot[s] = sum(gen[i,t,s]*co2_factors[i] for i in 1:R, t in 1:T)
 end
@@ -163,70 +200,58 @@ CSV.write(string(results_path,sep,"generation.csv"), df_gen)
 CSV.write(string(results_path,sep,"price.csv"), df_price)
 CSV.write(string(results_path,sep,"nse.csv"), df_nse)
 
+#Estimate Net income per tecnology
+revenues = zeros(6)     #[Nuclear, Coal, gas, wind, solar, batteries]
 
-#ploting the recomended output
-display(Plots.plot(df_cap.Resource, df_cap.Capacity,title ="Production capacity",ylabel="Capacity [MWh]" ,seriestype =[:bar], palette = cgrad(:greens), fill=0, alpha=0.6))
-
-#Estimate revenues per tecnology
-revenues = zeros(3)     #[gas, wind, solar]
-
-for r in 1:R-1
-    revenues[r] = sum((df_price[i,2]-var_cost[r])*df_gen[i,r+1] for i in 1:T)
+for r in 1:R
+    print(r)
+    revenues[r] = sum((df_price[i,2]-cost_var[r])*df_gen[i,r+1] for i in 1:T)
+    #if revenues[r] > 0
+        #revenues[r] =- cost_inv[r]/sum(df_gen[i,r] for i in 1:T)
+    #end
 end
 
 #Estimation of revenue per technology
-
-df_rev = DataFrame(Resource = resources, Revenue = revenues)
+df_rev = DataFrame(Resource = resources[1:R,1], Revenue = revenues[1:5])
 CSV.write(string(results_path,sep,"revenue.csv"), df_rev)
-display(Plots.plot(df_rev.Resource, df_rev.Revenue, title = "Revenue per resource", ylabel = "Revenue [USD]" ,seriestype =[:bar], palette = cgrad(:blues), fill=0, alpha=0.6))
-
 
 #Estimation of emissions
-
 CO2_price = 70 #[$/tCO2]
-CO2_emission_factor = [0.4,0,0] #[tCO2/MWh] [gas, wind, solar]
 emissions = zeros(T,R)
 
-for j in 1:R-1
+for j in 1:R
     for i in 1:T
-    emissions[i,j] = df_gen[i,j+1] * CO2_emission_factor[j]
+    emissions[i,j] = df_gen[i,j+1] * co2_factors[j]
     end
 end
 
-df_emission = DataFrame(emissions,resources)
+df_emission = DataFrame(emissions,resources[1:R,1])
 insertcols!(df_emission, 1, :Time => time_index)
-
 CSV.write(string(results_path,sep,"emissions_per_tec.csv"), df_emission)
-display(Plots.plot(collect(1:T), emissions ,title = "Emission per Technology",ylabel = "[Ton CO2]", seriestype =[:bar], palette = cgrad(:reds), fill=0, alpha=0.2, layout = (3,2))) #, label =("Nuclear", "Gas","Wind","Solar","Batteries")
-
-Sum_Emissions = sum(df_emission.Gas + df_emission.Wind +df_emission.Solar)
+Sum_Emissions = sum(df_emission.Gas + df_emission.Wind +df_emission.Solar +df_emission.Nuclear + df_emission.Coal)
 print("Total Emissions [ton CO2]: ")
 display(Sum_Emissions)
 
 #None served Energy
-
-display(Plots.plot(df_nse.Time, df_nse.Non_served_energy, xlabel = "Time [h]", ylabel="[MWh]", title ="Non Served Energy", label = "NSE"))
-
-
 SumNSE = sum(df_nse.Non_served_energy) 
 print("Non served energy [MWh]: ")
 display(SumNSE)
 
 
-#Revenue on batteries
-c_trans = transpose(c)
-d_trans =transpose(d)
+#Earnings on batteries
+#c_trans = transpose(c)
+#d_trans =transpose(d)
 
-df_storage = DataFrame(Charge = vec(c_trans), Discharge =vec(d_trans))#,Discharge=transpose(d), StateOfCharge = transpose(e))
-insertcols!(df_storage,1,:Time => time_index)
+#df_storage = DataFrame(Charge = vec(c_trans), Discharge =vec(d_trans))#,Discharge=transpose(d), StateOfCharge = transpose(e))
+#insertcols!(df_storage,1,:Time => time_index)
 #display(df_storage)
 
-revenue_storage = zeros(T)
-for i in 1:T
-    revenue_storage[i] = df_storage.Charge[i]*df_price.Price[i] + df_storage.Discharge[i]*df_price.Price[i]
-end
+#revenue_storage = zeros(T)
+#for i in 1:T
+    #revenue_storage[i] = df_storage.Charge[i]*df_price.Price[i] + df_storage.Discharge[i]*df_price.Price[i]
+#end
 #display(cost_inv)
-print("Investment cost storage: ",cost_inv[5])
-tot_revenue_storage = sum(revenue_storage) - cost_inv[5]
+#print("Investment cost storage: ",cost_inv[2])
+#tot_revenue_storage = sum(revenue_storage) - cost_inv[2]
 
-print("Storage Revenue: ", tot_revenue_storage)
+#print("Storage Revenue: ", tot_revenue_storage)""""
