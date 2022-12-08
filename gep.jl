@@ -18,7 +18,8 @@ using Pkg
 
 # Policy]
 # Carbon constraint
-co2_cap_flag = false
+co2_cap_flag = true
+
 
 # ~~~
 # Folder paths
@@ -71,8 +72,8 @@ cost_inv = resources_input[:,"Investment cost"] # $/MW-336days
 cost_var = resources_input[:, "Operating cost"] # $/MWh
 co2_factors = resources_input[:,"Emissions_ton_per_MWh"] # ton per MWh
 availability = Matrix(resource_avail_input[:, 2:end])
-price_cap = 70 # $/MWh
-carbon_cap = 300e3 # tCO2, arbitrary
+price_cap = 1000 # $/MWh
+carbon_cap = 114956929 # tCO2, arbitrary
 # Storage
 # Current parameters assume battery storage
 p_e_ratio = 1/8 # Power to energy ratio
@@ -115,10 +116,13 @@ gep = Model(Gurobi.Optimizer)
 # ~~~
 
 # Energy balance
-@constraint(gep, power_balance[t in 1:T], sum(g[r,t] for r in 1:G) + sum(discharge[s,t] - charge[s,t] for s in 1:S) + nse[t] == demand[t])
-
+#@constraint(gep, power_balance[t in 1:T], sum(g[r,t] for r in 1:G) + sum(discharge[s,t] - charge[s,t] for s in 1:S) + nse[t] == demand[t])
+@constraint(gep, power_balance[t in 1:T], sum(g[r,t] for r in 1:G) + nse[t] + sum(discharge[s,t] for s in 1:S) -sum(charge[s,t] for s in 1:S) == demand[t])
 # Generation capacity limit
-@constraint(gep, capacity_limit[r=resources_input[(resources_input[!,:Generation].==1),:][!,:Index_ID], t in 1:T], x[r]*availability[t,r] >= g[r,t])
+#@constraint(gep, capacity_limit[r=resources_input[(resources_input[!,:Generation].==1),:][!,:Index_ID], t in 1:T], x[r]*availability[t,r] >= g[r,t])
+@constraint(gep, capacity_limit[r in 1:G, t in 1:T], g[r,t] <= x[r]*availability[t,r])
+#Nuclear constraint
+@constraint(gep, x[1]<= 4000)
 
 # Storage constraints
 # Loop through storage technologies
@@ -170,6 +174,7 @@ if co2_cap_flag
     co2_price = dual.(emissions_cap)
     println("CO2 price is ", round(co2_price))
 end
+
 # Write output files
 CSV.write(string(results_path,sep,"capacity.csv"), df_cap)
 CSV.write(string(results_path,sep,"generation.csv"), df_gen)
@@ -184,13 +189,16 @@ println("Emissions equal ", round(co2_tot), " tons")
 
 #Ploting the ouput capacities
 
-display(Plots.plot(df_cap.Resource, df_cap.Capacity,title ="Production capacity",ylabel="Capacity [MWh]" ,seriestype =[:bar], palette = cgrad(:greens), fill=0, alpha=0.6))
+#display(Plots.plot(df_cap.Resource, df_cap.Capacity,title ="Production capacity",ylabel="Capacity [MWh]" ,seriestype =[:bar], palette = cgrad(:greens), fill=0, alpha=0.6))
 
 #Estimate revenues per tecnology
 revenues = zeros(R)#[nuclear, gas, wind, solar, batteries]
 
 for r in 1:R-1
-    revenues[r] = sum((df_price[i,2]-cost_var[r])*df_gen[i,r+1] for i in 1:T)
+    revenues[r] = sum(((df_price[i,2]/3)-cost_var[r])*df_gen[i,r+1] for i in 1:T)
+    if revenues[r] > 0
+        revenues[r] = revenues[r]-cost_inv[r]
+    end
 end
 
 
@@ -199,17 +207,15 @@ end
 df_rev = DataFrame(Resource = resources, Revenue = revenues)
 
 CSV.write(string(results_path,sep,"revenue.csv"), df_rev)
-display(Plots.plot(df_rev.Resource, df_rev.Revenue, title = "Revenue per resource", ylabel = "Revenue [USD]" ,seriestype =[:bar], palette = cgrad(:blues), fill=0, alpha=0.6))
+#display(Plots.plot(df_rev.Resource, df_rev.Revenue, title = "Revenue per resource", ylabel = "Revenue [USD]" ,seriestype =[:bar], palette = cgrad(:blues), fill=0, alpha=0.6))
 
 
 #Estimate and compile the emissions
-CO2_price = 70 #[$/tCO2]
-CO2_emission_factor = [0,0.8,0.4,0,0,0] #[tCO2/MWh] [Nuclear, gas, wind, solar, batteries]
 emissions = zeros(T,R)
 
 for j in 1:R-1
     for i in 1:T
-    emissions[i,j] = df_gen[i,j+1] * CO2_emission_factor[j]
+    emissions[i,j] = df_gen[i,j+1] * co2_factors[j]
     end
 end
 
@@ -217,7 +223,7 @@ df_emission = DataFrame(emissions,resources)
 insertcols!(df_emission, 1, :Time => time_index)
 
 CSV.write(string(results_path,sep,"emissions_per_tec.csv"), df_emission)
-display(Plots.plot(collect(1:T), emissions ,title = "Emission per Technology",ylabel = "[Ton CO2]", seriestype =[:bar], palette = cgrad(:reds), fill=0, alpha=0.2, layout = (3,2))) #, label =("Nuclear", "Gas","Wind","Solar","Batteries")
+#display(Plots.plot(collect(1:T), emissions ,title = "Emission per Technology",ylabel = "[Ton CO2]", seriestype =[:bar], palette = cgrad(:reds), fill=0, alpha=0.2, layout = (3,2))) #, label =("Nuclear", "Gas","Wind","Solar","Batteries")
 
 Sum_Emissions = sum(df_emission.Coal+df_emission.Gas + df_emission.Nuclear + df_emission.Wind +df_emission.Solar + df_emission.Storage)
 print("Total Emissions [ton CO2]: ")
@@ -225,7 +231,7 @@ display(Sum_Emissions)
 
 #Non served energy, just for fun
 
-display(Plots.plot(df_nse.Time, df_nse.Non_served_energy, xlabel = "Time [h]", ylabel="[MWh]", title ="Non Served Energy", label = "NSE"))
+#display(Plots.plot(df_nse.Time, df_nse.Non_served_energy, xlabel = "Time [h]", ylabel="[MWh]", title ="Non Served Energy", label = "NSE"))
 
 
 SumNSE = sum(df_nse.Non_served_energy) 
@@ -235,7 +241,7 @@ display(SumNSE)
 
 #Revenue on batteries
 #display(transpose(e))
-if df_cap.Resource.Storage > 0 
+if df_cap[6,2] > 0 
     c_trans = transpose(c)
     d_trans =transpose(d)
 
@@ -243,12 +249,13 @@ if df_cap.Resource.Storage > 0
     insertcols!(df_storage,1,:Time => time_index)
     #display(df_price)
 
-    revenue_storage = zeros(T)
-    for i in 1:T
-        revenue_storage[i] = -df_storage.Charge[i]*df_price.Price[i] + df_storage.Discharge[i]*df_price.Price[i]
+    Price = dual.(PowerBalance)
+    revenue_storage = zeros(R_S)
+    for r_s in 1:R_S
+        revenue_storage[r_s] = sum(value.(discharge[r_s,t])*eff_up*Price[t]-value.(charge[r_s,t])*Price[t] for t in 1:T)
     end
-    print("Investment cost storage: ",cost_inv[5])
-    tot_revenue_storage = sum(revenue_storage) - cost_inv[5]
+    print("Investment cost storage: ",cost_inv[6])
+    tot_revenue_storage = sum(revenue_storage) - cost_inv[6]
     print("Storage Revenue: ", tot_revenue_storage)
 else
     print("No storage buildt")
@@ -257,12 +264,6 @@ end
 
 
 
-#QUESTIONS
-# Struggel how i can get values out of the dataframes df_price for a for loop etc. How should I do this
-#Is this the right way to define variables
-#Is this the type of plot you was thinking of? 
-#Shoud we implement this at the end of the script as it is now, or should it be located elsewhere?
-#How can I implement the new taxes in the most realistic way(maybe some logic so we can choose to include them or not)? And what are the different values telling us? If NSE grows --> risk increas? economic benificial decreas?
 
 
 

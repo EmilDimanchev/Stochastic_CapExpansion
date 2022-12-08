@@ -2,14 +2,15 @@ using DataFrames
 using JuMP
 using CSV
 using Gurobi
-using Plots
+using Plots; theme(:dark)
 using gep.jl
+using RDatasets
 
 #seriestype =[:bar], palette = cgrad(:greens), fill=0, alpha=0.6
 #fillcolor=[:red,:green,:blue,:yellow, :black]
 
 #revenue per tecnology
-
+"""
 r_vec() = Vector{Float64}(undef,5) #[nuclear, gas, wind, solar, batteries]
 i=1
 
@@ -178,4 +179,7 @@ end
 print("Investment cost storage: ",cost_inv[5])
 tot_revenue_storage = sum(revenue_storage) - cost_inv[5]
 
-print("Storage Revenue: ", tot_revenue_storage)
+print("Storage Revenue: ", tot_revenue_storage) """
+
+iris = dataset("datasets","iris")
+
