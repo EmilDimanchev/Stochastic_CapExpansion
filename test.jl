@@ -9,6 +9,27 @@ using RDatasets
 #seriestype =[:bar], palette = cgrad(:greens), fill=0, alpha=0.6
 #fillcolor=[:red,:green,:blue,:yellow, :black]
 
+#revenue storage
+#c_trans = transpose(c)
+#d_trans =transpose(d)
+
+#df_storage = DataFrame(Charge = vec(c_trans), Discharge =vec(d_trans))#,Discharge=transpose(d), StateOfCharge = transpose(e))
+#insertcols!(df_storage,1,:Time => time_index)
+#display(df_storage)
+
+
+
+#
+#for i in 1:T
+    #revenue_storage[i] = -df_storage.Charge[i]*df_price.Price[i] + df_storage.Discharge[i]*df_price.Price[i]
+#end
+#display(cost_inv)
+#print("Investment cost storage: ",cost_inv[2])
+#tot_revenue_storage = sum(revenue_storage) - cost_inv[2]
+
+#print("Storage Revenue: ", tot_revenue_storage)""""
+
+
 #revenue per tecnology
 """
 r_vec() = Vector{Float64}(undef,5) #[nuclear, gas, wind, solar, batteries]
