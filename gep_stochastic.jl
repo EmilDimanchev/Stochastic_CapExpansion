@@ -22,10 +22,10 @@ using Pkg
 
 # Choose stochastic or deterministic
 stochastic = true
-risk_aversion = false
+risk_aversion = true
 # Policy
 # Carbon constraint
-co2_cap_flag = false
+co2_cap_flag = true
 #CO2-tax policy
 CO2_tax_flag = false
 
@@ -210,8 +210,8 @@ for r in (resources_input[(resources_input[!,:Storage].==1),:][!,:Index_ID])
     @constraint(gep, energy_limit[t in 1:T, s in 1:S, z in 1:Z], e[r,t,s,z] <= (1/p_e_ratio)*x[r,z])
     @constraint(gep, charge_limit_total[t in 1:T, s in 1:S, z in 1:Z], charge[r,t,s,z] <= (1/eff_up)*x[r,z])
     @constraint(gep, charge_limit[t in 1:T, s in 1:S, z in 1:Z], charge[r,t,s,z] <= (1/p_e_ratio)*x[r,z] - e[r,t,s,z])
-    @constraint(gep, discharge_limit_total[r in 1:R_S, t in 1:T, s in 1:S, z in 1:Z], discharge[r,t,s,z] <= eff_down*x[r,z])
-    @constraint(gep, discharge_limit[ t in 1:T, s in 1:S, z in 1:Z], discharge[r,t,s,z] <= e[r,t,s,z])
+    @constraint(gep, discharge_limit_total[t in 1:T, s in 1:S, z in 1:Z], discharge[r,t,s,z] <= eff_down*x[r,z])
+    @constraint(gep, discharge_limit[t in 1:T, s in 1:S, z in 1:Z], discharge[r,t,s,z] <= e[r,t,s,z])
     @constraint(gep, charge_discharge_balance[t in 1:T, s in 1:S, z in 1:Z], (1/eff_down)*discharge[r,t,s,z] + eff_up*charge[r,t,s,z] <= x[r,z])
 end
 
@@ -282,7 +282,7 @@ for s in 1:S
     for r in 1:R_all
         for z in 1:Z
             if r == R_all-R_S+1
-                revenues[r,s,z] = sum(value.(discharge[r_s,t,s,z])*eff_up*Price[t,s,z]-value.(charge[r_s,t,s,z])*Price[t,s,z] for t in 1:T)
+                revenues[r,s,z] = sum(value.(discharge[r_s,t,s,z])*eff_down*Price[t,s,z]-value.(charge[r_s,t,s,z])*Price[t,s,z]*eff_up for t in 1:T)
             else
                 revenues[r,s,z] = sum(m[r,t,s,z]*gen[r,t,s,z]*-1 for t in 1:T)
             end
