@@ -22,7 +22,7 @@ using Pkg
 
 # Choose stochastic or deterministic
 stochastic = true
-risk_aversion = true
+risk_aversion = false
 # Policy
 # Carbon constraint
 co2_cap_flag = true
@@ -95,8 +95,8 @@ L = size(transmission_input[:,3])[1]
 Z = size(transmission_input[:,2])[1]
 
 ## Parameters 
-cost_inv = resources_input[1:R+R_S,"Investment cost"] # $/MW-336days
-cost_var = resources_input[1:R+R_S, "Operating cost"] # $/MWh
+cost_inv = resources_input[1:R_all,"Investment cost"] # $/MW-336days
+cost_var = resources_input[1:R_all, "Operating cost"] # $/MWh
 CO2_Tax = resources_input[1:R_all, "CO2_tax_per_ton_CO2"]
 
 availability = zeros(T,R_all,Z)
@@ -151,10 +151,10 @@ gep = Model(Gurobi.Optimizer)
 @variable(gep, nse[t in 1:T, s in 1:S, z in 1:Z] >= 0)
 
 # Storage
-@variable(gep, discharge[r_s in 1:R_all, t in 1:T, s in 1:S, z in 1:Z] >= 0)
-@variable(gep, charge[r_s in 1:R_all, t in 1:T, s in 1:S, z in 1:Z] >= 0)
+@variable(gep, discharge[r in 1:R_all, t in 1:T, s in 1:S, z in 1:Z] >= 0)
+@variable(gep, charge[r in 1:R_all, t in 1:T, s in 1:S, z in 1:Z] >= 0)
 # State of charge
-@variable(gep, e[r_s in 1:R_all, t in 1:T, s in 1:S, z in 1:Z] >= 0)
+@variable(gep, e[r in 7:R_all, t in 1:T, s in 1:S, z in 1:Z] >= 0)
 
 ##Variables, Zones and Transmission
 @variable(gep, MaxTransCap[l in 1:L] >= 0)
@@ -187,7 +187,7 @@ else
 end
 
 
-@constraint(gep, PowerBalance[t in 1:T, s in 1:S, z in 1:Z], sum(g[r,t,s,z] for r in 1:R) + nse[t,s,z] + sum(discharge[r_s,t,s,z] for r_s in 1:R_S) -sum(charge[r_s,t,s,z] for r_s in 1:R_S) + sum(Flow[t,l]*ZoneMap[l,z] for l in 1:L) == demand[t,s,z])
+@constraint(gep, PowerBalance[t in 1:T, s in 1:S, z in 1:Z], sum(g[r,t,s,z] for r in 1:R) + nse[t,s,z] + sum(discharge[r,t,s,z] for r in 1:R_all) -sum(charge[r,t,s,z] for r in 1:R_all) + sum(Flow[t,l]*ZoneMap[l,z] for l in 1:L) == demand[t,s,z])
 @constraint(gep, CapacityLimit[r in 1:R, t in 1:T, s in 1:S, z in 1:Z], g[r,t,s,z] <= x[r,z]*availability[t,r,z])
 @constraint(gep, x[1,1]<= 4000)
 #@constraint(gep, x[1,2] == 0)
@@ -282,7 +282,7 @@ for s in 1:S
     for r in 1:R_all
         for z in 1:Z
             if r == R_all-R_S+1
-                revenues[r,s,z] = sum(value.(discharge[r_s,t,s,z])*eff_down*Price[t,s,z]-value.(charge[r_s,t,s,z])*Price[t,s,z]*eff_up for t in 1:T)
+                revenues[r,s,z] = sum(value.(discharge[r,t,s,z])*eff_down*Price[t,s,z]-value.(charge[r,t,s,z])*Price[t,s,z]*eff_up for t in 1:T)
             else
                 revenues[r,s,z] = sum(m[r,t,s,z]*gen[r,t,s,z]*-1 for t in 1:T)
             end
