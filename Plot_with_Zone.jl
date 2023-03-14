@@ -51,12 +51,12 @@ Plots.savefig(Grouped_barPlot_Cap,"Results/Plots_with_zones/grouped_Cap_with_zon
 
 
 #Plotting Flows
-Flows = CSV.read(string(inputs_path_plots,sep,"Transmission_Flows.csv"), DataFrame, header=true)
-time = Flows.Time
+Flows_plt = CSV.read(string(inputs_path_plots,sep,"Transmission_Flows.csv"), DataFrame, header=true)
+hours = value.(Flows_plt[:,1])
 
-plt_flow_CN_to_SK = Plots.plot(time[1:300],Flows[1:300,2],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Flow CN-SK",xlabel = "Time [h]",ylabel = "MW")
-plt_flow_CN_to_GB = Plots.plot(time[1:300],Flows[1:300,3],tickfontsize =10,titel = "Flow on transmission line CN-GB",label = "Flow CN-GB",xlabel = "Time [h]",ylabel = "MW")
-plt_flow_SK_to_GB = Plots.plot(time[1:300],Flows[1:300,4],tickfontsize =10,titel = "Flow on transmission line SK-GB",label = "Flow SK-GB",xlabel = "Time [h]",ylabel = "MW")
+plt_flow_CN_to_SK = Plots.plot(hours[1:300],Flows_plt[1:300,2],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Flow CN-SK",xlabel = "Time [h]",ylabel = "MW")
+plt_flow_CN_to_GB = Plots.plot(hours[1:300],Flows_plt[1:300,3],tickfontsize =10,titel = "Flow on transmission line CN-GB",label = "Flow CN-GB",xlabel = "Time [h]",ylabel = "MW")
+plt_flow_SK_to_GB = Plots.plot(hours[1:300],Flows_plt[1:300,4],tickfontsize =10,titel = "Flow on transmission line SK-GB",label = "Flow SK-GB",xlabel = "Time [h]",ylabel = "MW")
 Plots.savefig(plt_flow_CN_to_SK,"Results/Plots_with_zones/Transmission_flow_CN_to_SK.pdf")
 Plots.savefig(plt_flow_CN_to_GB,"Results/Plots_with_zones/Transmission_flow_CN_to_GB.pdf")
 Plots.savefig(plt_flow_SK_to_GB,"Results/Plots_with_zones/Transmission_flow_SK_to_GB.pdf")
@@ -102,9 +102,35 @@ Plots.savefig(Grouped_barplt_rev,"Results/Plots_with_zones/Revenue_per_zone.pdf"
 
 #Plotting Power Price
 Price_all_zones = CSV.read(string(inputs_path_plots,sep,"price.csv"), DataFrame, header=true)
-plt_price_z1 = Plots.plot(time[1:3000],Price_all_zones[1:3000,2],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Power Price Z1",xlabel = "Time [h]",ylabel = "EUR/MWh")
-plt_price_z2 = Plots.plot(time[1:3000],Price_all_zones[1:3000,3],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Power Price Z2",xlabel = "Time [h]",ylabel = "EUR/MWh")
-plt_price_z3 = Plots.plot(time[1:3000],Price_all_zones[1:3000,4],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Power Price Z3",xlabel = "Time [h]",ylabel = "EUR/MWh")
+plt_price_z1 = Plots.plot(hours[1:1000],Price_all_zones[1:1000,2],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Power Price Z1",xlabel = "Time [h]",ylabel = "EUR/MWh")
+plt_price_z2 = Plots.plot(hours[1:1000],Price_all_zones[1:1000,3],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Power Price Z2",xlabel = "Time [h]",ylabel = "EUR/MWh")
+plt_price_z3 = Plots.plot(hours[1:1000],Price_all_zones[1:1000,4],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Power Price Z3",xlabel = "Time [h]",ylabel = "EUR/MWh")
 plt_comb_price = Combined_Plots_flow=Plots.plot(plt_price_z1,plt_price_z2,plt_price_z3, layout =(3,1),plot_title ="Power Price for each Zone")
 Plots.savefig(plt_comb_price,"Results/Plots_with_zones/Power_Price_per_zone.pdf")
+
+#Plot chanrging and discharging of batteries
+charge_for_plt = CSV.read(string(inputs_path_plots,sep,"charge.csv"), DataFrame, header=true)
+discharge_for_plt = CSV.read(string(inputs_path_plots,sep,"discharge.csv"), DataFrame, header=true)
+charge_all = zeros(T,Z)
+discharge_all =zeros(T,Z)
+plt_charge = zeros(Z)
+for i in 1:Z
+    charge_all[:,i] = charge_for_plt[:,i]
+    discharge_all[:,i] = discharge_for_plt[:,i]
+end
+plt_charge_z1 = Plots.plot(hours[400:500],charge_all[400:500,1],tickfontsize =10,titel = "Charging of Battery",label = "Charge",xlabel = "Time [h]",ylabel = "MW")
+plt_charge_z2 = Plots.plot(hours[1:500],charge_all[1:500,2],tickfontsize =10,titel = "Charging of Battery",label = "Charge",xlabel = "Time [h]",ylabel = "MW")
+plt_charge_z3 = Plots.plot(hours[1:500],charge_all[1:500,3],tickfontsize =10,titel = "Charging of Battery",label = "Charge",xlabel = "Time [h]",ylabel = "MW")
+
+plt_discharge_z1 = Plots.plot(hours[400:500],discharge_all[400:500,1],tickfontsize =10,titel = "Discharging of Battery",label = "Discharge",xlabel = "Time [h]",ylabel = "MW")
+plt_discharge_z2 = Plots.plot(hours[1:500],discharge_all[1:500,2],tickfontsize =10,titel = "Discharging of Battery",label = "Discharge",xlabel = "Time [h]",ylabel = "MW")
+plt_discharge_z3 = Plots.plot(hours[1:500],discharge_all[1:500,3],tickfontsize =10,titel = "Discharging of Battery",label = "Discharge",xlabel = "Time [h]",ylabel = "MW")
+
+plt_ch_dch_comb_z1 = Combined_Plots_flow=Plots.plot(plt_charge_z1,plt_discharge_z1, layout =(2,1),plot_title ="Charging and Discharging of battery in Z1")
+plt_ch_dch_comb_z2 = Combined_Plots_flow=Plots.plot(plt_charge_z2,plt_discharge_z2, layout =(2,1),plot_title ="Charging and Discharging of battery in Z2")
+plt_ch_dch_comb_z3 = Combined_Plots_flow=Plots.plot(plt_charge_z3,plt_discharge_z3, layout =(2,1),plot_title ="Charging and Discharging of battery in Z3")
+
+
+
+
 
