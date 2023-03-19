@@ -25,7 +25,7 @@ stochastic = true
 risk_aversion = false
 # Policy
 # Carbon constraint
-co2_cap_flag = false
+co2_cap_flag = true
 #CO2-tax policy
 CO2_tax_flag = false
 
@@ -106,7 +106,7 @@ availability[:,:,3] = Matrix(resource_avail_input_z3[:, 2:9])
 
 co2_factors = resources_input[:,"Emissions_ton_per_MWh"] # ton per MWh
 price_cap = 1000 # €/MWh
-carbon_cap = 186725947.1 #114956929.4*3  # tCO2, -80% from CO2 emisiions without CO2 cap
+carbon_cap = 1.7642609241406734e9*0.2  # tCO2, -80% from Deterministic CO2 emisiions without CO2 cap
 
 # Storage
 # Current parameters assume battery storage
@@ -119,7 +119,7 @@ if risk_aversion
     # CVaR
     # Define parameters
     α = 1/3 # parameter for VaR
-    γ = 1 # parameter for degree of risk aversion, 1 means max/perfect risk aversion
+    γ = 0.5 # parameter for degree of risk aversion, 1 means max/perfect risk aversion
 else
     γ = 0
 end
@@ -262,14 +262,6 @@ end
 co2_expected = sum(P[s]*co2_tot[s] for s in 1:S)
 
 
-CSV.write(string(results_path,sep,"capacity.csv"), df_cap)
-CSV.write(string(results_path,sep,"generation_z1_CN.csv"), df_gen_z1_CN)
-CSV.write(string(results_path,sep,"generation_z2_SK.csv"), df_gen_z2_SK)
-CSV.write(string(results_path,sep,"generation_z3_GB.csv"), df_gen_z3_GB)
-CSV.write(string(results_path,sep,"generation_all.csv"), df_gen_all)
-CSV.write(string(results_path,sep,"price.csv"), df_price[:,:])
-CSV.write(string(results_path,sep,"nse.csv"), df_nse)
-
 #Estimate Revenues per resource
 # and Revenues on storage
 revenues = zeros(R_all,S,Z)
@@ -303,7 +295,7 @@ end
 
 #Apply to dataframe
 df_rev = DataFrame(Resource = resources[1:R_all,1], Revenue_z1_CN = revenues[1:R_all,scenario_for_results,1],Revenue_z2_SK = revenues[1:R_all,scenario_for_results,2],Revenue_z3_GB = revenues[1:R_all,scenario_for_results,3])
-CSV.write(string(results_path,sep,"revenue.csv"), df_rev)
+
 
 #Estimation of emissions
 emissions = zeros(T,R,Z)
@@ -318,7 +310,6 @@ end
 
 df_emission = DataFrame(Emissions_z1_CN = sum(emissions[:,1:R,1]),Emissions_z2_SK = sum(emissions[:,1:R,2]),Emissions_z3_GB = sum(emissions[:,1:R,3]))
 #insertcols!(df_emission, 1, :Time => time_index)
-CSV.write(string(results_path,sep,"emissions_per_zone.csv"), df_emission)
 Sum_Emissions = sum(df_emission[1,:])
 print("Total Emissions [ton CO2]: ")
 display(Sum_Emissions)
@@ -332,13 +323,12 @@ display(SumNSE)
 #Flow on transmissions lines
 df_Flow = DataFrame(CN_to_SK = value.(Flow[:,1]),CN_to_GB = value.(Flow[:,2]), SK_to_GB = value.(Flow[:,3]))
 insertcols!(df_Flow, 1, :Time => time_index)
-CSV.write(string(results_path,sep,"Transmission_Flows.csv"), df_Flow)
+
 
 #Charging and discharging of battery
 df_charge = DataFrame(z1 = value.(charge[R_all,:,scenario_for_results,1]),z2 = value.(charge[R_all,:,scenario_for_results,2]),z3 = value.(charge[R_all,:,scenario_for_results,3]))
 df_discharge = DataFrame(z1 = value.(discharge[R_all,:,scenario_for_results,1]),z2 = value.(discharge[R_all,:,scenario_for_results,2]),z3 = value.(discharge[R_all,:,scenario_for_results,3]))
-CSV.write(string(results_path,sep,"charge.csv"), df_charge)
-CSV.write(string(results_path,sep,"discharge.csv"), df_discharge)
+
 #df_soc = DataFrame(z1 = value.(e[R_all,:,scenario_for_results,1]),z2 = value.(e[R_all,:,scenario_for_results,2]),z3 = value.(e[R_all,:,scenario_for_results,3]))
 #df_stateOfCharge = DataFrame(z1 = value.(e[R_all,:,scenario_for_results,1]))
 
@@ -353,3 +343,27 @@ average_price[2] = mean(dual.(PowerBalance)[:,scenario_for_results,2])
 average_price[3] = mean(dual.(PowerBalance)[:,scenario_for_results,3])
 println("Mean price z1 [€/MWh]: ", average_price[1], ", Mean price z2 [€/MWh]: ", average_price[2],", Mean price z3 [€/MWh]: ", average_price[3])
 
+
+#Write to CSV files
+
+CSV.write(string(results_path,sep,"capacity_RN_co2_cap.csv"), df_cap)
+CSV.write(string(results_path,sep,"generation_z1_CN_RN_co2_cap.csv"), df_gen_z1_CN)
+CSV.write(string(results_path,sep,"generation_z2_SK_RN_co2_cap.csv"), df_gen_z2_SK)
+CSV.write(string(results_path,sep,"generation_z3_GB_RN_co2_cap.csv"), df_gen_z3_GB)
+CSV.write(string(results_path,sep,"generation_all_RN_co2_cap.csv"), df_gen_all)
+CSV.write(string(results_path,sep,"price_RN_co2_cap.csv"), df_price[:,:])
+CSV.write(string(results_path,sep,"nse_RN_co2_cap.csv"), df_nse)
+CSV.write(string(results_path,sep,"revenue_RN_co2_cap.csv"), df_rev)
+CSV.write(string(results_path,sep,"emissions_per_zone_RN_co2_cap.csv"), df_emission)
+CSV.write(string(results_path,sep,"Transmission_Flows_RN_co2_cap.csv"), df_Flow)
+CSV.write(string(results_path,sep,"charge_RN_co2_cap.csv"), df_charge)
+CSV.write(string(results_path,sep,"discharge_RN_co2_cap.csv"), df_discharge)
+
+#Filenames for scenarios and policies
+#_D_No_co2_policies, _RN_No_co2_policies, _RA_No_co2_policies
+#_D_co2_cap, _RN_co2_cap, _RA_co2_cap
+#_D_co2_tax, _RN_co2_tax, _RA_co2_tax
+#_D_both_co2_cap_and_tax, _RN_both_co2_cap_and_tax, _RA_both_co2_cap_and_tax
+
+#Filenames differnt levels of risk aversion
+#_RA_0_no_co2_policy,_RA_0.25_no_co2_policy,_RA_0.5_no_co2_policy,_RA_0.75_no_co2_policy, _RA_1_no_co2_policy
