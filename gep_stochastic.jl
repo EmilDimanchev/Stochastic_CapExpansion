@@ -22,12 +22,12 @@ using Pkg
 
 # Choose stochastic or deterministic
 stochastic = true
-risk_aversion = false
+risk_aversion = true
 # Policy
 # Carbon constraint
 co2_cap_flag = true
 #CO2-tax policy
-CO2_tax_flag = false
+CO2_tax_flag = true
 
 # ~~~
 # Folder paths
@@ -189,15 +189,12 @@ end
 
 @constraint(gep, PowerBalance[t in 1:T, s in 1:S, z in 1:Z], sum(g[r,t,s,z] for r in 1:R) + nse[t,s,z] + sum(discharge[r,t,s,z] - charge[r,t,s,z] for r in (resources_input[(resources_input[!,:Storage].==1),:][!,:Index_ID]))  + sum(Flow[t,l]*ZoneMap[l,z] for l in 1:L) == demand[t,s,z])
 @constraint(gep, CapacityLimit[r in 1:R, t in 1:T, s in 1:S, z in 1:Z], g[r,t,s,z] <= x[r,z]*availability[t,r,z])
+
+#Nuclear constraints
 @constraint(gep, x[1,1]<= 8500)
 @constraint(gep, x[1,2] <= 7000)
 @constraint(gep, x[1,3] <= 6000)
-#@constraint(gep, x[3,2] == 10000)
-#@constraint(gep, x[4,2] == 10000)
-#@constraint(gep, x[5,2] == 0)
-#@constraint(gep, x[6,2] == 10000)
-#@constraint(gep, x[7,2] == 10000)
-#@constraint(gep, x[2,2] == 0)
+
 
 #Storage constraints
 # Loop through storage technologies
@@ -219,14 +216,9 @@ if co2_cap_flag
     @constraint(gep, emissions_cap[s in 1:S], sum(g[r,t,s,z]*co2_factors[r] for r in 1:R, t in 1:T, z in 1:Z) <= carbon_cap)
 end
 
-
 ## Constraints, Transmission and zones
 @constraint(gep, MaxFlowPos[l in 1:L,t in 1:T], Flow[t,l] <= MaxTransCapacity[l])
 @constraint(gep, MaxFlowNeg[l in 1:L,t in 1:T], Flow[t,l] >= -MaxTransCapacity[l])
-
-#Transmission losses
-
-
 
 JuMP.optimize!(gep)
 
@@ -346,18 +338,19 @@ println("Mean price z1 [€/MWh]: ", average_price[1], ", Mean price z2 [€/MWh
 
 #Write to CSV files
 
-CSV.write(string(results_path,sep,"capacity_RN_co2_cap.csv"), df_cap)
-CSV.write(string(results_path,sep,"generation_z1_CN_RN_co2_cap.csv"), df_gen_z1_CN)
-CSV.write(string(results_path,sep,"generation_z2_SK_RN_co2_cap.csv"), df_gen_z2_SK)
-CSV.write(string(results_path,sep,"generation_z3_GB_RN_co2_cap.csv"), df_gen_z3_GB)
-CSV.write(string(results_path,sep,"generation_all_RN_co2_cap.csv"), df_gen_all)
-CSV.write(string(results_path,sep,"price_RN_co2_cap.csv"), df_price[:,:])
-CSV.write(string(results_path,sep,"nse_RN_co2_cap.csv"), df_nse)
-CSV.write(string(results_path,sep,"revenue_RN_co2_cap.csv"), df_rev)
-CSV.write(string(results_path,sep,"emissions_per_zone_RN_co2_cap.csv"), df_emission)
-CSV.write(string(results_path,sep,"Transmission_Flows_RN_co2_cap.csv"), df_Flow)
-CSV.write(string(results_path,sep,"charge_RN_co2_cap.csv"), df_charge)
-CSV.write(string(results_path,sep,"discharge_RN_co2_cap.csv"), df_discharge)
+CSV.write(string(results_path,sep,"capacity_RA_both_co2_cap_and_tax.csv"), df_cap)
+CSV.write(string(results_path,sep,"generation_z1_CN_RA_both_co2_cap_and_tax.csv"), df_gen_z1_CN)
+CSV.write(string(results_path,sep,"generation_z2_SK_RA_both_co2_cap_and_tax.csv"), df_gen_z2_SK)
+CSV.write(string(results_path,sep,"generation_z3_GB_RA_both_co2_cap_and_tax.csv"), df_gen_z3_GB)
+CSV.write(string(results_path,sep,"generation_all_RA_both_co2_cap_and_tax.csv"), df_gen_all)
+CSV.write(string(results_path,sep,"price_RA_both_co2_cap_and_tax.csv"), df_price[:,:])
+CSV.write(string(results_path,sep,"nse_RA_both_co2_cap_and_tax.csv"), df_nse)
+CSV.write(string(results_path,sep,"revenue_RA_both_co2_cap_and_tax.csv"), df_rev)
+CSV.write(string(results_path,sep,"emissions_per_zone_RA_both_co2_cap_and_tax.csv"), df_emission)
+CSV.write(string(results_path,sep,"Transmission_Flows_RA_both_co2_cap_and_tax.csv"), df_Flow)
+CSV.write(string(results_path,sep,"charge_RA_both_co2_cap_and_tax.csv"), df_charge)
+CSV.write(string(results_path,sep,"discharge_RA_both_co2_cap_and_tax.csv"), df_discharge)
+
 
 #Filenames for scenarios and policies
 #_D_No_co2_policies, _RN_No_co2_policies, _RA_No_co2_policies
