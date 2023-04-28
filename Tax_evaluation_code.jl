@@ -25,7 +25,7 @@ risk_aversion = false
 # Carbon constraint
 co2_cap_flag = false
 #CO2-tax policy
-CO2_tax_flag = true
+CO2_tax_flag = false
 #Choose tax
 Ground_rent_tax = true
 High_price_tax =false
@@ -76,23 +76,23 @@ transmission_input = CSV.read(string(inputs_path,sep,"trans_cap_and_zones.csv"),
 
 #Tax costs input values
 if Ground_rent_tax
-    GRtax_cost_input_z1 = CSV.read(string(inputs_path_tax_cost,sep,"Ground_Rent_Tax_Cost_Z1.csv"), DataFrame, header=true)
-    GRtax_cost_input_z2 = CSV.read(string(inputs_path_tax_cost,sep,"Ground_Rent_Tax_Cost_Z2.csv"), DataFrame, header=true)
-    GRtax_cost_input_z3 = CSV.read(string(inputs_path_tax_cost,sep,"Ground_Rent_Tax_Cost_Z3.csv"), DataFrame, header=true)
+    GRtax_cost_input_z1 = CSV.read(string(inputs_path_tax_cost,sep,"Ground_Rent_Tax_Cost_Z1_RN_No_co2_policies.csv"), DataFrame, header=true)
+    GRtax_cost_input_z2 = CSV.read(string(inputs_path_tax_cost,sep,"Ground_Rent_Tax_Cost_Z2_RN_No_co2_policies.csv"), DataFrame, header=true)
+    GRtax_cost_input_z3 = CSV.read(string(inputs_path_tax_cost,sep,"Ground_Rent_Tax_Cost_Z3_RN_No_co2_policies.csv"), DataFrame, header=true)
 else
-    GRtax_cost_input_z1 = zeros(T,R_all)
-    GRtax_cost_input_z2 = zeros(T,R_all)
-    GRtax_cost_input_z3 = zeros(T,R_all)
+    GRtax_cost_input_z1 = zeros(S,R_all)
+    GRtax_cost_input_z2 = zeros(S,R_all)
+    GRtax_cost_input_z3 = zeros(S,R_all)
 end
-if High_price_tax
-    HPtax_cost_input_z1 = CSV.read(string(inputs_path_tax_cost,sep,"High_price_Tax_Cost_Z1.csv"), DataFrame, header=true)
-    HPtax_cost_input_z2 = CSV.read(string(inputs_path_tax_cost,sep,"High_price_Tax_Cost_Z2.csv"), DataFrame, header=true)
-    HPtax_cost_input_z3 = CSV.read(string(inputs_path_tax_cost,sep,"High_price_Tax_Cost_Z3.csv"), DataFrame, header=true)
-else
-    HPtax_cost_input_z1 = zeros(T,R_all)
-    HPtax_cost_input_z2 = zeros(T,R_all)
-    HPtax_cost_input_z3 = zeros(T,R_all)
-end
+#if High_price_tax
+   # HPtax_cost_input_z1 = CSV.read(string(inputs_path_tax_cost,sep,"High_price_Tax_Cost_Z1.csv"), DataFrame, header=true)
+    #HPtax_cost_input_z2 = CSV.read(string(inputs_path_tax_cost,sep,"High_price_Tax_Cost_Z2.csv"), DataFrame, header=true)
+    #HPtax_cost_input_z3 = CSV.read(string(inputs_path_tax_cost,sep,"High_price_Tax_Cost_Z3.csv"), DataFrame, header=true)
+#else
+#    HPtax_cost_input_z1 = zeros(T,R_all)
+#    HPtax_cost_input_z2 = zeros(T,R_all)
+#   HPtax_cost_input_z3 = zeros(T,R_all)
+#end
 
 # ~~~
 # Model
@@ -159,8 +159,8 @@ LineLoss = transmission_input[:,9]
 ZoneMap = transmission_input[:,5:7]
 
 #define tax costs
-GR_tax_cost = zeros(T,R_all,Z)
-GR_tax_cost[:,:,1] = Array(GRtax_cost_input_z1[1:T,1:end])
+GR_tax_cost = zeros(S,R_all,Z)
+GR_tax_cost[:,:,1] = Array(GRtax_cost_input_z1[:,1:end])
 GR_tax_cost[:,:,2] = Array(GRtax_cost_input_z2[:,1:end])
 GR_tax_cost[:,:,3] = Array(GRtax_cost_input_z3[:,1:end])
 
@@ -198,17 +198,18 @@ end
 # Objective function
 if CO2_tax_flag
     if risk_aversion
-        @objective(gep, Min, sum(x[r,z]*cost_inv[r] for r in 1:R_all, z in 1:Z) +(1-γ)*(sum(P[s]*g[r,t,s,z]*cost_var[r] for r in 1:R, t in 1:T, s in 1:S, z in 1:Z) + sum(P[s]*price_cap*nse[t,s,z] for t in 1:T, s in 1:S, z in 1:Z)) + γ*(VaR + 1/α*sum(P[s]*u[s] for s in 1:S)) + sum(CO2_Tax[r]*co2_factors[r]*g[r,t,s,z] for r in 1:R, t in 1:T, s in 1:S, z in 1:Z) + sum(GR_tax_cost[t,r,z] for t in 1:T, r in 1:R_all, z in 1:Z))
+        @objective(gep, Min, sum(x[r,z]*cost_inv[r] for r in 1:R_all, z in 1:Z) +(1-γ)*(sum(P[s]*g[r,t,s,z]*cost_var[r] for r in 1:R, t in 1:T, s in 1:S, z in 1:Z) + sum(P[s]*price_cap*nse[t,s,z] for t in 1:T, s in 1:S, z in 1:Z)+ sum(P[s]*CO2_Tax[r]*co2_factors[r]*g[r,t,s,z] for r in 1:R_all, t in 1:T, s in 1:S, z in 1:Z)+sum(P[s]*GR_tax_cost[s,r,z]*g[r,t,s,z] for t in 1:T, s in 1:S, r in 1:R, z in 1:Z)) + γ*(VaR + 1/α*sum(P[s]*u[s] for s in 1:S)))
+
     else
         # Risk neutral
-        @objective(gep, Min, sum(x[r,z]*cost_inv[r] for r in 1:R_all, z in 1:Z) + sum(P[s]*g[r,t,s,z]*cost_var[r] for r in 1:R, t in 1:T, s in 1:S, z in 1:Z) + sum(P[s]*price_cap*nse[t,s,z] for t in 1:T, s in 1:S, z in 1:Z)+ sum(CO2_Tax[r]*co2_factors[r]*g[r,t,s,z] for r in 1:R, t in 1:T, s in 1:S, z in 1:Z) + sum(GR_tax_cost[t,r,z] for t in 1:T, r in 1:R_all, z in 1:Z))
+        @objective(gep, Min, sum(x[r,z]*cost_inv[r] for r in 1:R_all, z in 1:Z) + sum(P[s]*g[r,t,s,z]*cost_var[r] for r in 1:R, t in 1:T, s in 1:S, z in 1:Z) + sum(P[s]*price_cap*nse[t,s,z] for t in 1:T, s in 1:S, z in 1:Z)+ sum(CO2_Tax[r]*co2_factors[r]*g[r,t,s,z] for r in 1:R, t in 1:T, s in 1:S, z in 1:Z) + sum(P[s]*GR_tax_cost[s,r,z]*g[r,t,s,z] for t in 1:T, s in 1:S, r in 1:R, z in 1:Z))
     end
 else
     if risk_aversion
-        @objective(gep, Min, sum(x[r,z]*cost_inv[r] for r in 1:R_all, z in 1:Z) +(1-γ)*(sum(P[s]*g[r,t,s,z]*cost_var[r] for r in 1:R, t in 1:T, s in 1:S, z in 1:Z) + sum(P[s]*price_cap*nse[t,s,z] for t in 1:T, s in 1:S, z in 1:Z)) + γ*(VaR + 1/α*sum(P[s]*u[s] for s in 1:S))+ sum(GR_tax_cost[t,r,z] for t in 1:T, r in 1:R_all, z in 1:Z))
+        @objective(gep, Min, sum(x[r,z]*cost_inv[r] for r in 1:R_all, z in 1:Z) +(1-γ)*(sum(P[s]*g[r,t,s,z]*cost_var[r] for r in 1:R, t in 1:T, s in 1:S, z in 1:Z) + sum(P[s]*price_cap*nse[t,s,z] for t in 1:T, s in 1:S, z in 1:Z)+sum(P[s]*GR_tax_cost[s,r,z]*g[r,t,s,z] for t in 1:T, s in 1:S, r in 1:R, z in 1:Z)) + γ*(VaR + 1/α*sum(P[s]*u[s] for s in 1:S)))
     else
         # Risk neutral
-        @objective(gep, Min, sum(x[r,z]*cost_inv[r] for r in 1:R_all, z in 1:Z) + sum(P[s]*g[r,t,s,z]*cost_var[r] for r in 1:R, t in 1:T, s in 1:S, z in 1:Z) + sum(P[s]*price_cap*nse[t,s,z] for t in 1:T, s in 1:S, z in 1:Z)+ sum(GR_tax_cost[t,r,z] for t in 1:T, r in 1:R_all, z in 1:Z))
+        @objective(gep, Min, sum(x[r,z]*cost_inv[r] for r in 1:R_all, z in 1:Z) + sum(P[s]*g[r,t,s,z]*cost_var[r] for r in 1:R, t in 1:T, s in 1:S, z in 1:Z) + sum(P[s]*price_cap*nse[t,s,z] for t in 1:T, s in 1:S, z in 1:Z)+ sum(P[s]*GR_tax_cost[s,r,z]*g[r,t,s,z] for t in 1:T, s in 1:S, r in 1:R, z in 1:Z))
     end
 end
 
@@ -256,3 +257,4 @@ cap = value.(x)
 if co2_cap_flag
     co2_price = dual.(emissions_cap)
 end 
+
