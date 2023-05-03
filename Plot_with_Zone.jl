@@ -23,7 +23,7 @@ working_path = pwd()
 
 # Define input and output paths
 inputs_path_plots = string(working_path, sep, "Results", sep, "Results_stochastic_031422") #"Inputs_course_3techs", "Inputs_course_all_techs_annual_2041"
-results_path_plots = string(working_path, sep, "Results", sep, "Different_RA_Plots_with_zones")
+results_path_plots = string(working_path, sep, "Results", sep, "RA_Plots_with_zones")
 
 if !(isdir(results_path_plots))
     mkdir(results_path_plots)
@@ -40,45 +40,47 @@ Zone_stack =["","Z1","Z2","Z3"]
 Zones = ["Z1 CN" , "Z2 SK" , "Z3 GB"]
 
 
-Capacities = CSV.read(string(inputs_path_plots,sep,"capacity_D_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
+Capacities = CSV.read(string(inputs_path_plots,sep,"capacity_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
 plt_cap_all = zeros(8,3)
 for i in 1:3
-    plt_cap_all[:,i] = Capacities[:,i+1]
+    plt_cap_all[:,i] = Capacities[:,i+1]/1000
 end
 plt_cap = transpose(plt_cap_all)
-Grouped_barPlot_Cap = StatsPlots.groupedbar([3;plt_cap[1:3,:]],bar_position =:stack, bar_width=0.9, xlim = (1.47,6), xticks =(1:8,Zone_stack),title ="Capacities for each Zone",label = ["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"], ylabel = "MW",xlabel ="Zones", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]])
-Plots.savefig(Grouped_barPlot_Cap,"Results/D_Plots_with_zones/grouped_Cap_D_co2_tax_with_Nuclear_const.pdf")
+Grouped_barPlot_Cap = StatsPlots.groupedbar([3;plt_cap[1:3,:]],bar_position =:stack, bar_width=0.9, xlim = (1.47,6), xticks =(1:8,Zone_stack),title ="Capacities for each Zone",label = ["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"],legendfont =font(8),legendfontsize=6, ylabel = "GW",xlabel ="Zones", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]])
+Plots.savefig(Grouped_barPlot_Cap,"Results/RA_Plots_with_zones/grouped_Cap_RA_co2_tax_and_Nuclear_const.pdf")
 
 
 
 #Plotting Flows
-Flows_plt = CSV.read(string(inputs_path_plots,sep,"Transmission_Flows_D_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
+Flows_plt = CSV.read(string(inputs_path_plots,sep,"Transmission_Flows_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
 hours = value.(Flows_plt[:,1])
 
-plt_flow_CN_to_SK = Plots.plot(hours[4000:4500],Flows_plt[4000:4500,2],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Flow Z1-Z2",xlabel = "Time [h]",ylabel = "MW",ylim=(-7000,7000))
+plt_flow_CN_to_SK = Plots.plot(hours[1:8760],Flows_plt[1:8760,2],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Flow Z1-Z2",xlabel = "Time [h]",ylabel = "MW",ylim=(-10000,90000))
 plt_flow_CN_to_GB = Plots.plot(hours[4000:4500],Flows_plt[4000:4500,3],tickfontsize =10,titel = "Flow on transmission line CN-GB",label = "Flow Z1-Z3",xlabel = "Time [h]",ylabel = "MW",ylim=(-5000,5000))
-plt_flow_SK_to_GB = Plots.plot(hours[4000:4500],Flows_plt[4000:4500,4],tickfontsize =10,titel = "Flow on transmission line SK-GB",label = "Flow Z2-Z3",xlabel = "Time [h]",ylabel = "MW",ylim=(-3000,3000))
-Plots.savefig(plt_flow_CN_to_SK,"Results/D_Plots_with_zones/Transmission_flow_CN_to_SK.pdf")
-Plots.savefig(plt_flow_CN_to_GB,"Results/D_Plots_with_zones/Transmission_flow_CN_to_GB.pdf")
-Plots.savefig(plt_flow_SK_to_GB,"Results/D_Plots_with_zones/Transmission_flow_SK_to_GB.pdf")
-Combined_Plots_flow=Plots.plot(plt_flow_CN_to_SK,plt_flow_CN_to_GB,plt_flow_SK_to_GB, layout =(3,1),plot_title ="Flow on all Transmission lines")
-Plots.savefig(Combined_Plots_flow,"Results/D_Plots_with_zones/Transmission_flow_combined_D_co2_tax_with_Nuclear_const.pdf")
+#plt_flow_SK_to_GB = Plots.plot(hours[4000:4500],Flows_plt[4000:4500,4],tickfontsize =10,titel = "Flow on transmission line SK-GB",label = "Flow Z2-Z3",xlabel = "Time [h]",ylabel = "MW",ylim=(-3000,3000))
+Plots.savefig(plt_flow_CN_to_SK,"Results/RA_Plots_with_zones/Transmission_flow_CN_to_SK.pdf")
+Plots.savefig(plt_flow_CN_to_GB,"Results/RA_Plots_with_zones/Transmission_flow_CN_to_GB.pdf")
+Plots.savefig(plt_flow_SK_to_GB,"Results/RA_Plots_with_zones/Transmission_flow_SK_to_GB.pdf")
+Combined_Plots_flow=Plots.plot(plt_flow_CN_to_SK,plt_flow_CN_to_GB, layout =(2,1),plot_title ="Flow on all Transmission lines")
+Plots.savefig(Combined_Plots_flow,"Results/RA_Plots_with_zones/Transmission_flow_combined_RA_co2_tax_and_Nuclear_const.pdf")
 
 
 #Plotting emissions
-Emission_per_zone = CSV.read(string(inputs_path_plots,sep,"emissions_per_zone_D_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
-em_zone = zeros(Z)
-for i in 1:Z
- em_zone[i] = Emission_per_zone[1,i]
+Emission_per_zone = CSV.read(string(inputs_path_plots,sep,"emissions_per_zone_D_No_co2_policies.csv"), DataFrame, header=true)
+em_zone = zeros(R_all,Z)
+for r in R_all
+    for i in 1:Z
+        em_zone[i] = Emission_per_zone[1,i]/(1000000)
+    end
 end
-plt_Emission_zone = Plots.plot(Zones,em_zone,label = "Ton CO2",title = "Emissions per zone",xlabel="Zone",ylabel="Ton CO2",seriestype =[:bar])
-Plots.savefig(plt_Emission_zone,"Results/D_Plots_with_zones/Emissions_per_zone_D_co2_tax_with_Nuclear_const.pdf")
+plt_Emission_zone = Plots.plot(Zones,em_zone,label = "MtCO2",title = "Emissions per zone",xlabel="Zone",ylabel="MtCO2",seriestype =[:bar])
+Plots.savefig(plt_Emission_zone,"Results/RA_Plots_with_zones/Emissions_per_zone_RA_co2_tax_and_Nuclear_const.pdf")
 
 
 #Plotting generation
-Generation_z1 = CSV.read(string(inputs_path_plots,sep,"generation_z1_CN_D_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
-Generation_z2 = CSV.read(string(inputs_path_plots,sep,"generation_z2_SK_D_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
-Generation_z3 = CSV.read(string(inputs_path_plots,sep,"generation_z3_GB_D_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
+Generation_z1 = CSV.read(string(inputs_path_plots,sep,"generation_z1_CN_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
+Generation_z2 = CSV.read(string(inputs_path_plots,sep,"generation_z2_SK_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
+Generation_z3 = CSV.read(string(inputs_path_plots,sep,"generation_z3_GB_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
 Gen_all = zeros(R,Z)
 for i in 1:R
     Gen_all[i,1] = sum(Generation_z1[:,i+1])/1000000 
@@ -87,31 +89,31 @@ for i in 1:R
 end 
 plt_gen_all = transpose(Gen_all)
 Grouped_barplt_gen = StatsPlots.groupedbar([3;plt_gen_all[1:Z,:]],bar_position =:stack, bar_width=0.9, xlim = (1.47,6), xticks =(1:8,Zone_stack),title ="Generation for each Zone",label = ["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar"], ylabel = "TWh",xlabel ="Zones", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]])
-Plots.savefig(Grouped_barplt_gen,"Results/D_Plots_with_zones/Generation_per_zone_D_co2_tax_with_Nuclear_const.pdf")
+Plots.savefig(Grouped_barplt_gen,"Results/RA_Plots_with_zones/Generation_per_zone_RA_co2_tax_and_Nuclear_const.pdf")
 
 #Plotting Revenues
-Revenues_all_zones = CSV.read(string(inputs_path_plots,sep,"revenue_D_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
+Revenues_all_zones = CSV.read(string(inputs_path_plots,sep,"revenue_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
 plt_rev_all = zeros(R_all,Z)
 for i in 1:Z
-    plt_rev_all[:,i] = Revenues_all_zones[:,i+1]/1000000
+    plt_rev_all[:,i] = Revenues_all_zones[:,i+1]/1000000000
 end
 
 plt_rev = transpose(plt_rev_all)
-Grouped_barplt_rev = StatsPlots.groupedbar([3;plt_rev[1:Z,:]],bar_position =:stack, bar_width=0.9, xlim = (1.47,6), xticks =(1:8,Zone_stack),title ="Revenues for each Zone",label = ["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"], ylabel = " Million EUR",xlabel ="Zones", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]])
-Plots.savefig(Grouped_barplt_rev,"Results/D_Plots_with_zones/Revenue_per_zone_D_co2_tax_with_Nuclear_const.pdf")
+Grouped_barplt_rev = StatsPlots.groupedbar([3;plt_rev[1:Z,:]],bar_position =:stack, bar_width=0.9, ylim=(0,2.5),xlim = (1.47,6), xticks =(1:8,Zone_stack),title ="Revenues for each Zone",label = ["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"], ylabel = " Billion €",xlabel ="Zones", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]])
+Plots.savefig(Grouped_barplt_rev,"Results/RA_Plots_with_zones/Revenue_per_zone_RA_co2_tax_and_Nuclear_const.pdf")
 
 
 #Plotting Power Price
-Price_all_zones = CSV.read(string(inputs_path_plots,sep,"price_D_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
+Price_all_zones = CSV.read(string(inputs_path_plots,sep,"price_D_co2_cap.csv"), DataFrame, header=true)
 plt_price_z1 = Plots.plot(hours[1:8760],Price_all_zones[1:8760,2],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Power Price Z1",xlabel = "Time [h]",ylabel = "EUR/MWh")
 plt_price_z2 = Plots.plot(hours[1:8760],Price_all_zones[1:8760,3],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Power Price Z2",xlabel = "Time [h]",ylabel = "EUR/MWh")
 plt_price_z3 = Plots.plot(hours[1:8760],Price_all_zones[1:8760,4],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Power Price Z3",xlabel = "Time [h]",ylabel = "EUR/MWh")
 plt_comb_price = Plots.plot(plt_price_z1,plt_price_z2,plt_price_z3, layout =(3,1),plot_title ="Power Price for each Zone")
-Plots.savefig(plt_comb_price,"Results/D_Plots_with_zones/Power_Price_per_zone_D_co2_tax_with_Nuclear_const.pdf")
+Plots.savefig(plt_comb_price,"Results/RA_Plots_with_zones/Power_Price_per_zone_RA_co2_tax_and_Nuclear_const.pdf")
 
 #Plot chanrging and discharging of batteries
-charge_for_plt = CSV.read(string(inputs_path_plots,sep,"charge_D_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
-discharge_for_plt = CSV.read(string(inputs_path_plots,sep,"discharge_D_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
+charge_for_plt = CSV.read(string(inputs_path_plots,sep,"charge_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
+discharge_for_plt = CSV.read(string(inputs_path_plots,sep,"discharge_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
 charge_all = zeros(T,Z)
 discharge_all =zeros(T,Z)
 plt_charge = zeros(Z)
@@ -133,7 +135,7 @@ plt_ch_dch_comb_z3 = Combined_Plots_flow=Plots.plot(plt_charge_z3,plt_discharge_
 
 
 #Plotting NSE
-nse = CSV.read(string(inputs_path_plots,sep,"nse_D_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
+nse = CSV.read(string(inputs_path_plots,sep,"nse_RA_co2_tax_and_Nuclear_cons.csv"), DataFrame, header=true)
 plt_nse_all = zeros(T,Z)
 for i in 1:Z
     plt_nse_all[:,i] = nse[:,i+1]
@@ -141,10 +143,10 @@ end
 
 plt_nse = transpose(plt_nse_all)
 plt_nse_z1 = Plots.plot(hours[1:8760],plt_nse[1,:],xlabel = "Time [h]",ylabel = "MWh",label = "NSE Z1")
-plt_nse_z2 = Plots.plot(hours[1:8760],plt_nse[2,:],xlabel = "Time [h]",ylabel = "MWh",label = "NSE Z1")
-plt_nse_z3 = Plots.plot(hours[1:8760],plt_nse[3,:],xlabel = "Time [h]",ylabel = "MWh",label = "NSE Z1")
+plt_nse_z2 = Plots.plot(hours[1:8760],plt_nse[2,:],xlabel = "Time [h]",ylabel = "MWh",label = "NSE Z2")
+plt_nse_z3 = Plots.plot(hours[1:8760],plt_nse[3,:],xlabel = "Time [h]",ylabel = "MWh",label = "NSE Z3")
 plt_comb_nse = Plots.plot(plt_nse_z1,plt_nse_z2,plt_nse_z3, layout =(3,1),plot_title ="Non Served Energy for each Zone")
-Plots.savefig(plt_comb_nse,"Results/D_Plots_with_zones/NSE_per_zone_D_co2_tax_with_Nuclear_const.pdf")
+Plots.savefig(plt_comb_nse,"Results/RA_Plots_with_zones/NSE_per_zone_RA_co2_tax_and_Nuclear_const.pdf")
 
 
 #PLOTS FOR DIFFERENT DEGREES OF RISK AVERSION
