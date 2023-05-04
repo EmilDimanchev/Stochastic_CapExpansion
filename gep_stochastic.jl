@@ -25,7 +25,7 @@ stochastic = true
 risk_aversion = false
 # Policy
 # Carbon constraint
-co2_cap_flag = true
+co2_cap_flag = false
 #CO2-tax policy
 CO2_tax_flag = false
 
@@ -125,7 +125,7 @@ if risk_aversion
     # CVaR
     # Define parameters
     α = 1/4 # parameter for VaR set to 1/4 to look at worst case scenario which is the high demand scenario
-    γ = 1 # parameter for degree of risk aversion, 1 means max/perfect risk aversion
+    γ = 0.5 # parameter for degree of risk aversion, 1 means max/perfect risk aversion
 else
     γ = 0
 end
@@ -140,7 +140,8 @@ P = ones(S)*1/S # uniform distribution
 
 #Transmission parameters
 MaxTransCapacity = transmission_input[:,8]
-LineLoss = transmission_input[:,9]
+MinTransCapacity = transmission_input[:,9]
+LineLoss = transmission_input[:,10]
 ZoneMap = transmission_input[:,5:7]
 
 
@@ -157,10 +158,10 @@ gep = Model(Gurobi.Optimizer)
 @variable(gep, nse[t in 1:T, s in 1:S, z in 1:Z-1] >= 0)
 
 # Storage
-@variable(gep, discharge[r in 1:R_all, t in 1:T, s in 1:S, z in 1:Z] >= 0)
-@variable(gep, charge[r in 1:R_all, t in 1:T, s in 1:S, z in 1:Z] >= 0)
+@variable(gep, discharge[r in 1:R_all, t in 1:T, s in 1:S, z in 1:Z-1] >= 0)
+@variable(gep, charge[r in 1:R_all, t in 1:T, s in 1:S, z in 1:Z-1] >= 0)
 # State of charge
-@variable(gep, e[r in 7:R_all, t in 1:T, s in 1:S, z in 1:Z] >= 0)
+@variable(gep, e[r in R:R_all, t in 1:T, s in 1:S, z in 1:Z-1] >= 0)
 
 ##Variables, Zones and Transmission
 @variable(gep, MaxTransCap[l in 1:L] >= 0)
@@ -172,7 +173,7 @@ if risk_aversion
     # Auxiliary varliables for CVaR
     @variable(gep, u[s in 1:S] >= 0) # loss relative to VaR, €/MW
     @variable(gep, VaR) # VaR variable, €/MW
-    @constraint(gep, u_expression[s in 1:S, z in 1:Z], u[s] >= sum(g[r,t,s,z]*cost_var[r] + price_cap*nse[t,s,z] for r in 1:R, t in 1:T, z in 1:Z-1) - VaR)
+    @constraint(gep, u_expression[s in 1:S], u[s] >= sum(g[r,t,s,z]*cost_var[r] for r in 1:R, t in 1:T, z in 1:Z) + sum(price_cap*nse[t,s,z] for r in 1:R, t in 1:T, z in 1:Z-1) - VaR)
 end 
 
 # Objective function
@@ -193,9 +194,9 @@ else
 end
 
 
-@constraint(gep, PowerBalance[t in 1:T, s in 1:S, z in 1:Z], sum(g[r,t,s,z] for r in 1:R) + sum(nse[t,s,z] for z in 1:Z-1 )+ sum(discharge[r,t,s,z] - charge[r,t,s,z] for r in (resources_input[(resources_input[!,:Storage].==1),:][!,:Index_ID]))  + sum(Flow[t,l]*ZoneMap[l,z] for l in 1:L) == demand[t,s,z])
-
+@constraint(gep, PowerBalance[t in 1:T, s in 1:S, z in 1:Z-1], sum(g[r,t,s,z] for r in 1:R) + nse[t,s,z]+ sum(discharge[r,t,s,z] - charge[r,t,s,z] for r in (resources_input[(resources_input[!,:Storage].==1),:][!,:Index_ID]))  + sum(Flow[t,l]*ZoneMap[l,z] for l in 1:L, z in 1:Z) == demand[t,s,z])
 @constraint(gep, CapacityLimit[r in 1:R, t in 1:T, s in 1:S, z in 1:Z], g[r,t,s,z] <= x[r,z]*availability[t,r,z])
+
 
 #CAPACITY CONSTRAINTS ZONE 1
 @constraint(gep, x[1,1] <= 8500)
@@ -203,6 +204,13 @@ end
 @constraint(gep, x[5,1] <= 43906.825)
 @constraint(gep, x[6,1] == 0)
 @constraint(gep, x[7,1] <= 423697.5)
+
+#CAPACITY CONSTRAINTS ZONE 2 NOW REPRESENTIN UK
+@constraint(gep, x[1,2] <= 6000)
+@constraint(gep, x[4,2] <= 80170.994)
+@constraint(gep, x[5,2] <= 88526)
+@constraint(gep, x[7,2] <= 371750)
+
 #CAPACITY CONSTRAINTS ZONE 3 NOW REPRESENTING THE OFFSHORE GRID
 @constraint(gep, x[1,3] == 0)
 @constraint(gep, x[2,3] == 0)
@@ -212,26 +220,21 @@ end
 @constraint(gep, x[7,3] == 0)
 @constraint(gep, x[8,3] == 0)
 
-#CAPACITY CONSTRAINTS ZONE 2 NOW REPRESENTIN UK
-@constraint(gep, x[1,2] <= 6000)
-@constraint(gep, x[4,2] <= 80170.994)
-@constraint(gep, x[5,2] <= 88526)
-@constraint(gep, x[7,2] <= 371750)
 
 
 #Storage constraints
 # Loop through storage technologies
 for r in (resources_input[(resources_input[!,:Storage].==1),:][!,:Index_ID])
     # Wrap first and last periods
-    @constraint(gep, state_of_charge_start[t in 1:1, s in 1:S, z in 1:Z], e[r,t,s,z] == e[r,T,s,z] - (1/eff_down)*discharge[r,T,s,z] + eff_up*charge[r,T,s,z])
+    @constraint(gep, state_of_charge_start[t in 1:1, s in 1:S, z in 1:Z-1], e[r,t,s,z] == e[r,T,s,z] - (1/eff_down)*discharge[r,T,s,z] + eff_up*charge[r,T,s,z])
     # Energy balance for the remaining periods
-    @constraint(gep, state_of_charge[t in 2:T, s in 1:S,z in 1:Z], e[r,t,s,z] == e[r,t-1,s,z] - (1/eff_down)*discharge[r,t-1,s,z] + eff_up*charge[r,t-1,s,z]) 
-    @constraint(gep, energy_limit[t in 1:T, s in 1:S, z in 1:Z], e[r,t,s,z] <= (1/p_e_ratio)*x[r,z])
-    @constraint(gep, charge_limit_total[t in 1:T, s in 1:S, z in 1:Z], charge[r,t,s,z] <= (1/eff_up)*x[r,z])
-    @constraint(gep, charge_limit[t in 1:T, s in 1:S, z in 1:Z], charge[r,t,s,z] <= (1/p_e_ratio)*x[r,z] - e[r,t,s,z])
-    @constraint(gep, discharge_limit_total[t in 1:T, s in 1:S, z in 1:Z], discharge[r,t,s,z] <= eff_down*x[r,z])
-    @constraint(gep, discharge_limit[t in 1:T, s in 1:S, z in 1:Z], discharge[r,t,s,z] <= e[r,t,s,z])
-    @constraint(gep, charge_discharge_balance[t in 1:T, s in 1:S, z in 1:Z], (1/eff_down)*discharge[r,t,s,z] + eff_up*charge[r,t,s,z] <= x[r,z])
+    @constraint(gep, state_of_charge[t in 2:T, s in 1:S,z in 1:Z-1], e[r,t,s,z] == e[r,t-1,s,z] - (1/eff_down)*discharge[r,t-1,s,z] + eff_up*charge[r,t-1,s,z]) 
+    @constraint(gep, energy_limit[t in 1:T, s in 1:S, z in 1:Z-1], e[r,t,s,z] <= (1/p_e_ratio)*x[r,z])
+    @constraint(gep, charge_limit_total[t in 1:T, s in 1:S, z in 1:Z-1], charge[r,t,s,z] <= (1/eff_up)*x[r,z])
+    @constraint(gep, charge_limit[t in 1:T, s in 1:S, z in 1:Z-1], charge[r,t,s,z] <= (1/p_e_ratio)*x[r,z] - e[r,t,s,z])
+    @constraint(gep, discharge_limit_total[t in 1:T, s in 1:S, z in 1:Z-1], discharge[r,t,s,z] <= eff_down*x[r,z])
+    @constraint(gep, discharge_limit[t in 1:T, s in 1:S, z in 1:Z-1], discharge[r,t,s,z] <= e[r,t,s,z])
+    @constraint(gep, charge_discharge_balance[t in 1:T, s in 1:S, z in 1:Z-1], (1/eff_down)*discharge[r,t,s,z] + eff_up*charge[r,t,s,z] <= x[r,z])
 end
 
 # Climate policy
@@ -241,7 +244,7 @@ end
 
 ## Constraints, Transmission and zones
 @constraint(gep, MaxFlowPos[l in 1:L,t in 1:T], Flow[t,l] <= MaxTransCapacity[l])
-@constraint(gep, MaxFlowNeg[l in 1:L,t in 1:T], Flow[t,l] >= -MaxTransCapacity[l])
+@constraint(gep, MaxFlowNeg[l in 1:L,t in 1:T], Flow[t,l] >= MinTransCapacity[l])
 
 
 JuMP.optimize!(gep)
@@ -258,7 +261,7 @@ end
 # Collect results (the code needs work, currently only compiles results for one scenario)
 scenario_for_results = 1
 df_cap = DataFrames.DataFrameStyle()
-df_cap = DataFrame(Resource = resources[1:R+1,1], Capacity_z1_CN = cap[1:R+1,1], Capacity_z2_SK =cap[1:R+1,2], Capacity_z3_GB = cap[1:R+1,3])
+df_cap = DataFrame(Resource = resources[1:R+1,1], Capacity_z1_CN = cap[1:R+1,1], Capacity_z2_GB =cap[1:R+1,2], Capacity_z3_NS = cap[1:R+1,3])
 df_gen_z1_CN = DataFrame(transpose(gen[:,:,scenario_for_results,1]), resources[1:R,1])
 insertcols!(df_gen_z1_CN, 1, :Time => time_index)
 df_gen_z2_SK = DataFrame(transpose(gen[:,:,scenario_for_results,2]), resources[1:R,1])
@@ -267,12 +270,12 @@ df_gen_z3_GB = DataFrame(transpose(gen[:,:,scenario_for_results,3]), resources[1
 insertcols!(df_gen_z3_GB, 1, :Time => time_index)
 df_gen_all = DataFrame(z1 = df_gen_z1_CN, z2 = df_gen_z2_SK, z3 = df_gen_z3_GB)
 #Price =  convert(Array, dual.(PowerBalance))
-df_price = DataFrame(Time = time_index, Price_z1 = dual.(PowerBalance)[:,scenario_for_results,1],Price_z2 = dual.(PowerBalance)[:,scenario_for_results,2] , Price_z3 = dual.(PowerBalance)[:,scenario_for_results,3]) #Price_z2 = dual.(PowerBalance)[:,scenario_for_results,2],
+df_price = DataFrame(Time = time_index, Price_z1 = dual.(PowerBalance)[:,scenario_for_results,1],Price_z2 = dual.(PowerBalance)[:,scenario_for_results,2])# , Price_z3 = dual.(PowerBalance)[:,scenario_for_results,3]) #Price_z2 = dual.(PowerBalance)[:,scenario_for_results,2],
 #nse_all_array = convert(Array, nse_all)
-df_nse = DataFrame(Non_served_energy_z1 = nse_all[:,scenario_for_results,1],Non_served_energy_z3 = nse_all[:,scenario_for_results,2])
+df_nse = DataFrame(Non_served_energy_z1 = nse_all[:,scenario_for_results,1],Non_served_energy_z2 = nse_all[:,scenario_for_results,2])
 df_price_z1_all_scenarios = DataFrame(Time = time_index, Z1_Price_base_demand= dual.(PowerBalance)[:,1,1], Z1_Price_low_demand= dual.(PowerBalance)[:,2,1], Z1_Price_high_demand= dual.(PowerBalance)[:,3,1], Z1_Price_very_high_demand= dual.(PowerBalance)[:,4,1])
 df_price_z2_all_scenarios = DataFrame(Time = time_index, Z2_Price_base_demand= dual.(PowerBalance)[:,1,2], Z2_Price_low_demand= dual.(PowerBalance)[:,2,2], Z2_Price_high_demand= dual.(PowerBalance)[:,3,2], Z2_Price_very_high_demand= dual.(PowerBalance)[:,4,2])
-df_price_z3_all_scenarios = DataFrame(Time = time_index, Z3_Price_base_demand= dual.(PowerBalance)[:,1,3], Z3_Price_low_demand= dual.(PowerBalance)[:,2,3], Z3_Price_high_demand= dual.(PowerBalance)[:,3,3], Z3_Price_very_high_demand= dual.(PowerBalance)[:,4,3])
+#df_price_z3_all_scenarios = DataFrame(Time = time_index, Z3_Price_base_demand= dual.(PowerBalance)[:,1,3], Z3_Price_low_demand= dual.(PowerBalance)[:,2,3], Z3_Price_high_demand= dual.(PowerBalance)[:,3,3], Z3_Price_very_high_demand= dual.(PowerBalance)[:,4,3])
 
 
 gen_all_scen = zeros(S,R)
@@ -304,9 +307,17 @@ for s in 1:S
     for r in 1:R_all
         for z in 1:Z
             if r == R_all-R_S+1
-                revenues[r,s,z] = sum(value.(discharge[r,t,s,z])*eff_down*Price[t,s,z]-value.(charge[r,t,s,z])*Price[t,s,z]*eff_up for t in 1:T)
+                if z < Z
+                    revenues[r,s,z] = sum(value.(discharge[r,t,s,z])*eff_down*Price[t,s,z]-value.(charge[r,t,s,z])*Price[t,s,z]*eff_up for t in 1:T)
+                else
+                    revenues[r,s,z] == 0
+                end
             else
-                revenues[r,s,z] = sum(m[r,t,s,z]*gen[r,t,s,z]*-1 for t in 1:T)
+                if z == Z
+                    revenues[r,s,z] = sum(m[r,t,s,1]*gen[r,t,s,z]*-1 for t in 1:T)
+                else
+                    revenues[r,s,z] = sum(m[r,t,s,z]*gen[r,t,s,z]*-1 for t in 1:T)
+                end
             end
         end 
         sum_rev_per_scen[r,s] = sum(revenues[r,s,:])
@@ -328,7 +339,7 @@ end
 
 
 #Apply to dataframe
-df_rev = DataFrame(Resource = resources[1:R_all,1], Revenue_z1_CN = revenues[1:R_all,scenario_for_results,1],Revenue_z2_SK = revenues[1:R_all,scenario_for_results,2],Revenue_z3_GB = revenues[1:R_all,scenario_for_results,3])
+df_rev = DataFrame(Resource = resources[1:R_all,1], Revenue_z1_CN = revenues[1:R_all,scenario_for_results,1],Revenue_z2_GB = revenues[1:R_all,scenario_for_results,2],Revenue_z3_NS = revenues[1:R_all,scenario_for_results,3])
 df_rev_per_scen = DataFrame(Resource = resources[1:R_all,1], Revenue_base_demand =sum_rev_per_scen[1:R_all,1], Revenue_low_demand =sum_rev_per_scen[1:R_all,2], Revenue_high_demand =sum_rev_per_scen[1:R_all,3], Revenue_very_high_demand =sum_rev_per_scen[1:R_all,4])
 
 #Estimation of emissions
@@ -349,19 +360,19 @@ print("Total Emissions [ton CO2]: ")
 display(Sum_Emissions)
 
 #Non-served Energy
-SumNSE = sum(df_nse.Non_served_energy_z1 + df_nse.Non_served_energy_z3) 
+SumNSE = sum(df_nse.Non_served_energy_z1 + df_nse.Non_served_energy_z2) 
 print("Non served energy [MWh]: ")
 display(SumNSE)
 
 
 #Flow on transmissions lines
-df_Flow = DataFrame(CN_to_SK = value.(Flow[:,1]),CN_to_GB = value.(Flow[:,2]), SK_to_GB = value.(Flow[:,3]))
+df_Flow = DataFrame(CN_to_GB = value.(Flow[:,1]),CN_to_NS = value.(Flow[:,2]), GB_to_NS = value.(Flow[:,3]))
 insertcols!(df_Flow, 1, :Time => time_index)
 
 
 #Charging and discharging of battery
-df_charge = DataFrame(z1 = value.(charge[R_all,:,scenario_for_results,1]),z2 = value.(charge[R_all,:,scenario_for_results,2]),z3 = value.(charge[R_all,:,scenario_for_results,3]))
-df_discharge = DataFrame(z1 = value.(discharge[R_all,:,scenario_for_results,1]),z2 = value.(discharge[R_all,:,scenario_for_results,2]),z3 = value.(discharge[R_all,:,scenario_for_results,3]))
+df_charge = DataFrame(z1 = value.(charge[R_all,:,scenario_for_results,1]),z2 = value.(charge[R_all,:,scenario_for_results,2]))#,z3 = value.(charge[R_all,:,scenario_for_results,3]))
+df_discharge = DataFrame(z1 = value.(discharge[R_all,:,scenario_for_results,1]),z2 = value.(discharge[R_all,:,scenario_for_results,2]))#,z3 = value.(discharge[R_all,:,scenario_for_results,3]))
 
 #df_soc = DataFrame(z1 = value.(e[R_all,:,scenario_for_results,1]),z2 = value.(e[R_all,:,scenario_for_results,2]),z3 = value.(e[R_all,:,scenario_for_results,3]))
 #df_stateOfCharge = DataFrame(z1 = value.(e[R_all,:,scenario_for_results,1]))
@@ -370,11 +381,11 @@ max_prices = zeros(Z)
 average_price =zeros(Z)
 max_prices[1] = maximum(dual.(PowerBalance)[:,scenario_for_results,1])
 max_prices[2] = maximum(dual.(PowerBalance)[:,scenario_for_results,2])
-max_prices[3] = maximum(dual.(PowerBalance)[:,scenario_for_results,3])
+max_prices[3] = maximum(dual.(PowerBalance)[:,scenario_for_results,1])
 println("Max price z1 [€/MWh]: ", max_prices[1], ", Max price z2 [€/MWh]: ", max_prices[2],", Max price z3 [€/MWh]: ", max_prices[3])
 average_price[1] = mean(dual.(PowerBalance)[:,scenario_for_results,1])
 average_price[2] = mean(dual.(PowerBalance)[:,scenario_for_results,2])
-average_price[3] = mean(dual.(PowerBalance)[:,scenario_for_results,3])
+average_price[3] = mean(dual.(PowerBalance)[:,scenario_for_results,1])
 println("Mean price z1 [€/MWh]: ", average_price[1], ", Mean price z2 [€/MWh]: ", average_price[2],", Mean price z3 [€/MWh]: ", average_price[3])
 
 #calculating revenues after Ground rent Tax 
@@ -384,7 +395,11 @@ select_scenario = 1
 for s in 1:S
     for r in 4:6#R_all-1
         for z in 1:Z
-            Revenue_GroundRentTax_per_tech[s,r,z] = sum(Price[:,s,z]*GroundRentTax_rate) 
+            if z < Z
+                Revenue_GroundRentTax_per_tech[s,r,z] = sum(Price[:,s,z]*GroundRentTax_rate) 
+            else
+                Revenue_GroundRentTax_per_tech[s,r,z] = sum(Price[:,s,1]*GroundRentTax_rate)
+            end
         end
     end
 end
@@ -408,8 +423,13 @@ Mean_price_all_scen = zeros(S,Z)
 nse_sumScen =zeros(S,2)
 for s in 1:S
     for z in 1:Z
-        Max_price_all_scen[s,z]=maximum(dual.(PowerBalance)[:,s,z])
-        Mean_price_all_scen[s,z]=mean(dual.(PowerBalance)[:,s,z])
+        if z < Z
+            Max_price_all_scen[s,z]=maximum(dual.(PowerBalance)[:,s,z])
+            Mean_price_all_scen[s,z]=mean(dual.(PowerBalance)[:,s,z])
+        else
+            Max_price_all_scen[s,z]=maximum(dual.(PowerBalance)[:,s,1])
+            Mean_price_all_scen[s,z]=mean(dual.(PowerBalance)[:,s,1])
+        end
     end
 end
 for s in 1:S
@@ -432,30 +452,30 @@ df_sum_em_per_scen = DataFrame(Scenarios = Scenario_stack[:], Coal = emission_su
 df_Total_system_cost = DataFrame(Total_System_Cost = obj)
 
 #Write to CSV files
-#CSV.write(string(results_path,sep,"capacity_RA_1_co2_cap.csv"), df_cap)
-#CSV.write(string(results_path,sep,"generation_z1_CN_RA_1_co2_cap.csv"), df_gen_z1_CN)
-#CSV.write(string(results_path,sep,"generation_z2_SK_RA_1_co2_cap.csv"), df_gen_z2_SK)
-#CSV.write(string(results_path,sep,"generation_z3_GB_RA_1_co2_cap.csv"), df_gen_z3_GB)
-#CSV.write(string(results_path,sep,"generation_all_RA_1_co2_cap.csv"), df_gen_all)
-#CSV.write(string(results_path,sep,"price_RA_1_co2_cap.csv"), df_price[:,:])
-#CSV.write(string(results_path,sep,"nse_RA_1_co2_cap.csv"), df_nse)
-#CSV.write(string(results_path,sep,"revenue_RA_1_co2_cap.csv"), df_rev)
-#CSV.write(string(results_path,sep,"emissions_per_zone_RA_1_co2_cap.csv"), df_emission)
-#CSV.write(string(results_path,sep,"Transmission_Flows_RA_1_co2_cap.csv"), df_Flow)
-#CSV.write(string(results_path,sep,"charge_RA_1_co2_cap.csv"), df_charge)
-#CSV.write(string(results_path,sep,"discharge_RA_1_co2_cap.csv"), df_discharge)
-#CSV.write(string(results_path,sep,"Total_System_Cost_RA_1_co2_cap.csv"), df_Total_system_cost)
-#CSV.write(string(results_path,sep,"Generation_all_scenarios_RA_1_co2_cap.csv"), df_gen_all_scen)
-#CSV.write(string(results_path,sep,"Emission_sum_all_scen_RA_1_co2_cap.csv"), df_sum_em_per_scen)
-#CSV.write(string(results_path,sep,"Revenues_all_scenarios_RA_1_co2_cap.csv"), df_rev_per_scen)
-#CSV.write(string(results_path,sep,"NSE_sum_all_scen_RA_1_co2_cap.csv"), df_nse_sum_all_scen)
-#CSV.write(string(results_path,sep,"Z1_price_all_scen_RA_1_co2_cap.csv"), df_price_z1_all_scenarios)
-#CSV.write(string(results_path,sep,"Z2_price_all_scen_RA_1_co2_cap.csv"), df_price_z2_all_scenarios)
-#CSV.write(string(results_path,sep,"Z3_price_all_scen_RA_1_co2_cap.csv"), df_price_z3_all_scenarios)
+CSV.write(string(results_path,sep,"capacity_RA_No_co2_policies.csv"), df_cap)
+CSV.write(string(results_path,sep,"generation_z1_CN_RA_No_co2_policies.csv"), df_gen_z1_CN)
+CSV.write(string(results_path,sep,"generation_z2_SK_RA_No_co2_policies.csv"), df_gen_z2_SK)
+CSV.write(string(results_path,sep,"generation_z3_GB_RA_No_co2_policies.csv"), df_gen_z3_GB)
+CSV.write(string(results_path,sep,"generation_all_RA_No_co2_policies.csv"), df_gen_all)
+CSV.write(string(results_path,sep,"price_RA_No_co2_policies.csv"), df_price[:,:])
+CSV.write(string(results_path,sep,"nse_RA_No_co2_policies.csv"), df_nse)
+CSV.write(string(results_path,sep,"revenue_RA_No_co2_policies.csv"), df_rev)
+CSV.write(string(results_path,sep,"emissions_per_zone_RA_No_co2_policies.csv"), df_emission)
+CSV.write(string(results_path,sep,"Transmission_Flows_RA_No_co2_policies.csv"), df_Flow)
+CSV.write(string(results_path,sep,"charge_RA_No_co2_policies.csv"), df_charge)
+CSV.write(string(results_path,sep,"discharge_RA_No_co2_policies.csv"), df_discharge)
+CSV.write(string(results_path,sep,"Total_System_Cost_RA_No_co2_policies.csv"), df_Total_system_cost)
+CSV.write(string(results_path,sep,"Generation_all_scenarios_RA_No_co2_policies.csv"), df_gen_all_scen)
+CSV.write(string(results_path,sep,"Emission_sum_all_scen_RA_No_co2_policies.csv"), df_sum_em_per_scen)
+CSV.write(string(results_path,sep,"Revenues_all_scenarios_RA_No_co2_policies.csv"), df_rev_per_scen)
+CSV.write(string(results_path,sep,"NSE_sum_all_scen_RA_No_co2_policies.csv"), df_nse_sum_all_scen)
+CSV.write(string(results_path,sep,"Z1_price_all_scen_RA_No_co2_policies.csv"), df_price_z1_all_scenarios)
+CSV.write(string(results_path,sep,"Z2_price_all_scen_RA_No_co2_policies.csv"), df_price_z2_all_scenarios)
+CSV.write(string(results_path,sep,"Z3_price_all_scen_RA_No_co2_policies.csv"), df_price_z1_all_scenarios)
 #CSV tax files
-#CSV.write(string(results_path,sep,"Ground_Rent_Tax_Cost_Z1_RA_1_co2_cap.csv"), GroundRent_cost_z1)
-#CSV.write(string(results_path,sep,"Ground_Rent_Tax_Cost_Z2_RA_1_co2_cap.csv"), GroundRent_cost_z2)
-#CSV.write(string(results_path,sep,"Ground_Rent_Tax_Cost_Z3_RA_1_co2_cap.csv"), GroundRent_cost_z3)
+CSV.write(string(results_path,sep,"Ground_Rent_Tax_Cost_Z1_RA_No_co2_policies.csv"), GroundRent_cost_z1)
+CSV.write(string(results_path,sep,"Ground_Rent_Tax_Cost_Z2_RA_No_co2_policies.csv"), GroundRent_cost_z2)
+CSV.write(string(results_path,sep,"Ground_Rent_Tax_Cost_Z3_RA_No_co2_policies.csv"), GroundRent_cost_z3)
 
 #Filenames for scenarios and policies
 #_D_No_co2_policies, _RN_No_co2_policies, _RA_No_co2_policies
@@ -472,7 +492,7 @@ df_Total_system_cost = DataFrame(Total_System_Cost = obj)
 #_RN_CO2_Tax_10_EUR_per_tCO2, _RN_CO2_Tax_20_EUR_per_tCO2,_RN_CO2_Tax_40_EUR_per_tCO2,_RN_CO2_Tax_15_EUR_per_tCO2,_RN_CO2_Tax_12_EUR_per_tCO2, _RN_CO2_Tax_13_EUR_per_tCO2, _RN_CO2_Tax_14_EUR_per_tCO2, _RN_CO2_Tax_120_EUR_per_tCO2
 
 
-##CSV.write(string(results_path,sep,"High_price_Tax_Cost_Z1.csv"), High_price_cost_z1 )
+#CSV.write(string(results_path,sep,"High_price_Tax_Cost_Z1.csv"), High_price_cost_z1 )
 #CSV.write(string(results_path,sep,"High_Price_Tax_Cost_Z2.csv"), High_price_cost_z2)
 #CSV.write(string(results_path,sep,"High_Price_Tax_Cost_Z3.csv"), High_price_cost_z3 )
 

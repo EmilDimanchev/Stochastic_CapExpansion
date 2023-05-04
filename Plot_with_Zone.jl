@@ -52,11 +52,11 @@ Plots.savefig(Grouped_barPlot_Cap,"Results/RA_Plots_with_zones/grouped_Cap_RA_co
 
 
 #Plotting Flows
-Flows_plt = CSV.read(string(inputs_path_plots,sep,"Transmission_Flows_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
+Flows_plt = CSV.read(string(inputs_path_plots,sep,"Transmission_Flows_RA_No_co2_policies.csv"), DataFrame, header=true)
 hours = value.(Flows_plt[:,1])
 
-plt_flow_CN_to_SK = Plots.plot(hours[1:8760],Flows_plt[1:8760,2],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Flow Z1-Z2",xlabel = "Time [h]",ylabel = "MW",ylim=(-10000,90000))
-plt_flow_CN_to_GB = Plots.plot(hours[4000:4500],Flows_plt[4000:4500,3],tickfontsize =10,titel = "Flow on transmission line CN-GB",label = "Flow Z1-Z3",xlabel = "Time [h]",ylabel = "MW",ylim=(-5000,5000))
+plt_flow_CN_to_GB = Plots.plot(hours[1:8760],Flows_plt[1:8760,2],tickfontsize =10,titel = "Flow on transmission line CN-SK",label = "Flow Z1-Z2",xlabel = "Time [h]",ylabel = "MW",ylim=(-5000,5000))
+plt_flow_CN_to_NS = Plots.plot(hours[1:8760],Flows_plt[1:8760,3],tickfontsize =10,titel = "Flow on transmission line CN-GB",label = "Flow Z1-Z3",xlabel = "Time [h]",ylabel = "MW")#,ylim=(-10000,90000))
 #plt_flow_SK_to_GB = Plots.plot(hours[4000:4500],Flows_plt[4000:4500,4],tickfontsize =10,titel = "Flow on transmission line SK-GB",label = "Flow Z2-Z3",xlabel = "Time [h]",ylabel = "MW",ylim=(-3000,3000))
 Plots.savefig(plt_flow_CN_to_SK,"Results/RA_Plots_with_zones/Transmission_flow_CN_to_SK.pdf")
 Plots.savefig(plt_flow_CN_to_GB,"Results/RA_Plots_with_zones/Transmission_flow_CN_to_GB.pdf")
