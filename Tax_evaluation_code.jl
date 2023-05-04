@@ -27,7 +27,7 @@ co2_cap_flag = false
 #CO2-tax policy
 CO2_tax_flag = false
 #Choose tax
-Ground_rent_tax = true
+Ground_rent_tax = false
 High_price_tax =false
 # ~~~
 # Folder paths
