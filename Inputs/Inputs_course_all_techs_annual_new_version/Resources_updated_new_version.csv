@@ -1,0 +1,11 @@
+﻿Resources;Existing capacity;Investment cost;Operating cost;Emissions_ton_per_MWh;CO2_tax_per_ton_CO2;Storage;Generation;Index_ID
+Nuclear;0;203682.1023;11.2;0;120;0;1;1
+Coal;0;74552.46085;13.4;0.986;120;0;1;2
+Gas;0;31980.04482;24.31;0.419;120;0;1;3
+Onshore_Wind;0;55632.55537;0.15;0;120;0;1;4
+Offshore_Wind_Fixed;0;89000.52257;0.39;0;120;0;1;5
+Offshore_wind_Float;0;134281.4902;0.39;0;120;0;1;6
+Solar;0;22004.35272;0;0;120;0;1;7
+NS_Wind_Fixed;0;124000.5226;0.39;0;120;0;1;8
+NS_windFloat;0;169281.4902;0.39;0;120;0;1;9
+Storage;0;44162.12869;0;0;120;1;0;10

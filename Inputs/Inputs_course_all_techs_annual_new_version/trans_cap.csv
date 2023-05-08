@@ -1,0 +1,4 @@
+﻿Region;Network zone;Line number;NETWORK MAP -->;z1;z2;z3;Line max capacity [MW];Line loss [%/1000km];Transmission path name;length [km]
+Continent [CN];z1;1;;1;-1;0;6795;0.035;CN_to_SK;620
+Scandinavia [SK];z2;2;;1;0;-1;4800;0.035;CN_to_GB;700
+Grate Britain [GB];z3;3;;0;1;-1;2800;0.035;SK_to_GB;700

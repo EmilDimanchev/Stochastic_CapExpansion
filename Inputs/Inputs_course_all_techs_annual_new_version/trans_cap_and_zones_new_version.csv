@@ -1,0 +1,3 @@
+﻿Region;Network_zone;Line_number;NETWORK_MAP-->;z1;z2;Line_Max_capacity[MW];Line_Min_capacity[MW];Line_loss[%/1000km];Transmission_path_name;length[km]
+Continent_[CN];z1;1;0;1;-1;4800;-4800;0.035;CN_to_GB;
+United_Kingdom_[UK];z2;2;0;0;0;0;0;0.035;CN_to_NS;

@@ -22,7 +22,7 @@ using Pkg
 
 # Choose stochastic or deterministic
 stochastic = true
-risk_aversion = false
+risk_aversion = true
 # Policy
 # Carbon constraint
 co2_cap_flag = false
@@ -125,7 +125,7 @@ if risk_aversion
     # CVaR
     # Define parameters
     α = 1/4 # parameter for VaR set to 1/4 to look at worst case scenario which is the high demand scenario
-    γ = 0.5 # parameter for degree of risk aversion, 1 means max/perfect risk aversion
+    γ = 1 # parameter for degree of risk aversion, 1 means max/perfect risk aversion
 else
     γ = 0
 end
@@ -194,7 +194,10 @@ else
 end
 
 
-@constraint(gep, PowerBalance[t in 1:T, s in 1:S, z in 1:Z-1], sum(g[r,t,s,z] for r in 1:R) + nse[t,s,z]+ sum(discharge[r,t,s,z] - charge[r,t,s,z] for r in (resources_input[(resources_input[!,:Storage].==1),:][!,:Index_ID]))  + sum(Flow[t,l]*ZoneMap[l,z] for l in 1:L, z in 1:Z) == demand[t,s,z])
+@constraint(gep, PowerBalance[t in 1:T, s in 1:S, z in 1:Z-1], sum(g[r,t,s,z] for r in 1:R) + nse[t,s,z]+ sum(discharge[r,t,s,z] - charge[r,t,s,z] for r in (resources_input[(resources_input[!,:Storage].==1),:][!,:Index_ID]))  + sum(Flow[t,l]*ZoneMap[l,z] for l in 1:L) == demand[t,s,z])
+
+@constraint(gep, PowerBalance_z3[t in 1:T,s in 1:S,z in Z], sum(g[r,t,s,z] for r in 1:R) + sum(Flow[t,l]*ZoneMap[l,z] for l in 1:L) == demand[t,s,z])
+
 @constraint(gep, CapacityLimit[r in 1:R, t in 1:T, s in 1:S, z in 1:Z], g[r,t,s,z] <= x[r,z]*availability[t,r,z])
 
 
@@ -366,7 +369,7 @@ display(SumNSE)
 
 
 #Flow on transmissions lines
-df_Flow = DataFrame(CN_to_GB = value.(Flow[:,1]),CN_to_NS = value.(Flow[:,2]), GB_to_NS = value.(Flow[:,3]))
+df_Flow = DataFrame(CN_to_GB = value.(Flow[:,1,1]),CN_to_NS = value.(Flow[:,2,1]), GB_to_NS = value.(Flow[:,3,1]))
 insertcols!(df_Flow, 1, :Time => time_index)
 
 
@@ -452,30 +455,30 @@ df_sum_em_per_scen = DataFrame(Scenarios = Scenario_stack[:], Coal = emission_su
 df_Total_system_cost = DataFrame(Total_System_Cost = obj)
 
 #Write to CSV files
-CSV.write(string(results_path,sep,"capacity_RA_No_co2_policies.csv"), df_cap)
-CSV.write(string(results_path,sep,"generation_z1_CN_RA_No_co2_policies.csv"), df_gen_z1_CN)
-CSV.write(string(results_path,sep,"generation_z2_SK_RA_No_co2_policies.csv"), df_gen_z2_SK)
-CSV.write(string(results_path,sep,"generation_z3_GB_RA_No_co2_policies.csv"), df_gen_z3_GB)
-CSV.write(string(results_path,sep,"generation_all_RA_No_co2_policies.csv"), df_gen_all)
-CSV.write(string(results_path,sep,"price_RA_No_co2_policies.csv"), df_price[:,:])
-CSV.write(string(results_path,sep,"nse_RA_No_co2_policies.csv"), df_nse)
-CSV.write(string(results_path,sep,"revenue_RA_No_co2_policies.csv"), df_rev)
-CSV.write(string(results_path,sep,"emissions_per_zone_RA_No_co2_policies.csv"), df_emission)
-CSV.write(string(results_path,sep,"Transmission_Flows_RA_No_co2_policies.csv"), df_Flow)
-CSV.write(string(results_path,sep,"charge_RA_No_co2_policies.csv"), df_charge)
-CSV.write(string(results_path,sep,"discharge_RA_No_co2_policies.csv"), df_discharge)
-CSV.write(string(results_path,sep,"Total_System_Cost_RA_No_co2_policies.csv"), df_Total_system_cost)
-CSV.write(string(results_path,sep,"Generation_all_scenarios_RA_No_co2_policies.csv"), df_gen_all_scen)
-CSV.write(string(results_path,sep,"Emission_sum_all_scen_RA_No_co2_policies.csv"), df_sum_em_per_scen)
-CSV.write(string(results_path,sep,"Revenues_all_scenarios_RA_No_co2_policies.csv"), df_rev_per_scen)
-CSV.write(string(results_path,sep,"NSE_sum_all_scen_RA_No_co2_policies.csv"), df_nse_sum_all_scen)
-CSV.write(string(results_path,sep,"Z1_price_all_scen_RA_No_co2_policies.csv"), df_price_z1_all_scenarios)
-CSV.write(string(results_path,sep,"Z2_price_all_scen_RA_No_co2_policies.csv"), df_price_z2_all_scenarios)
-CSV.write(string(results_path,sep,"Z3_price_all_scen_RA_No_co2_policies.csv"), df_price_z1_all_scenarios)
+CSV.write(string(results_path,sep,"capacity_RA_1_no_co2_policy.csv"), df_cap)
+CSV.write(string(results_path,sep,"generation_z1_CN_RA_1_no_co2_policy.csv"), df_gen_z1_CN)
+CSV.write(string(results_path,sep,"generation_z2_SK_RA_1_no_co2_policy.csv"), df_gen_z2_SK)
+CSV.write(string(results_path,sep,"generation_z3_GB_RA_1_no_co2_policy.csv"), df_gen_z3_GB)
+CSV.write(string(results_path,sep,"generation_all_RA_1_no_co2_policy.csv"), df_gen_all)
+CSV.write(string(results_path,sep,"price_RA_1_no_co2_policy.csv"), df_price[:,:])
+CSV.write(string(results_path,sep,"nse_RA_1_no_co2_policy.csv"), df_nse)
+CSV.write(string(results_path,sep,"revenue_RA_1_no_co2_policy.csv"), df_rev)
+CSV.write(string(results_path,sep,"emissions_per_zone_RA_1_no_co2_policy.csv"), df_emission)
+CSV.write(string(results_path,sep,"Transmission_Flows_RA_1_no_co2_policy.csv"), df_Flow)
+CSV.write(string(results_path,sep,"charge_RA_1_no_co2_policy.csv"), df_charge)
+CSV.write(string(results_path,sep,"discharge_RA_1_no_co2_policy.csv"), df_discharge)
+CSV.write(string(results_path,sep,"Total_System_Cost_RA_1_no_co2_policy.csv"), df_Total_system_cost)
+CSV.write(string(results_path,sep,"Generation_all_scenarios_RA_1_no_co2_policy.csv"), df_gen_all_scen)
+CSV.write(string(results_path,sep,"Emission_sum_all_scen_RA_1_no_co2_policy.csv"), df_sum_em_per_scen)
+CSV.write(string(results_path,sep,"Revenues_all_scenarios_RA_1_no_co2_policy.csv"), df_rev_per_scen)
+CSV.write(string(results_path,sep,"NSE_sum_all_scen_RA_1_no_co2_policy.csv"), df_nse_sum_all_scen)
+CSV.write(string(results_path,sep,"Z1_price_all_scen_RA_1_no_co2_policy.csv"), df_price_z1_all_scenarios)
+CSV.write(string(results_path,sep,"Z2_price_all_scen_RA_1_no_co2_policy.csv"), df_price_z2_all_scenarios)
+CSV.write(string(results_path,sep,"Z3_price_all_scen_RA_1_no_co2_policy.csv"), df_price_z1_all_scenarios)
 #CSV tax files
-CSV.write(string(results_path,sep,"Ground_Rent_Tax_Cost_Z1_RA_No_co2_policies.csv"), GroundRent_cost_z1)
-CSV.write(string(results_path,sep,"Ground_Rent_Tax_Cost_Z2_RA_No_co2_policies.csv"), GroundRent_cost_z2)
-CSV.write(string(results_path,sep,"Ground_Rent_Tax_Cost_Z3_RA_No_co2_policies.csv"), GroundRent_cost_z3)
+CSV.write(string(results_path,sep,"Ground_Rent_Tax_Cost_Z1_RA_1_no_co2_policy.csv"), GroundRent_cost_z1)
+CSV.write(string(results_path,sep,"Ground_Rent_Tax_Cost_Z2_RA_1_no_co2_policy.csv"), GroundRent_cost_z2)
+CSV.write(string(results_path,sep,"Ground_Rent_Tax_Cost_Z3_RA_1_no_co2_policy.csv"), GroundRent_cost_z3)
 
 #Filenames for scenarios and policies
 #_D_No_co2_policies, _RN_No_co2_policies, _RA_No_co2_policies
