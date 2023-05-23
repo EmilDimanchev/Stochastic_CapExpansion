@@ -24,7 +24,8 @@ working_path = pwd()
 # Define input and output paths
 inputs_path_plots = string(working_path, sep, "Results", sep, "Results_stochastic_031422") #"Inputs_course_3techs", "Inputs_course_all_techs_annual_2041"
 results_path_plots = string(working_path, sep, "Results", sep, "Results_plots_csv")
-
+results_dc_plots = string(working_path, sep, "Results", sep, "Results_DC_plots")
+inputs_path = string(working_path, sep, "Inputs", sep, "Inputs_course_all_techs_annual_2041")
 if !(isdir(results_path_plots))
     mkdir(results_path_plots)
 end
@@ -32,6 +33,8 @@ end
 Palette = cgrad(:Paired_12)
 Palette_dark = cgrad(:RdGy)
 Palette_bright = cgrad(:seaborn_pastel)
+Palette_green =cgrad(:YlGn_8)
+palette_clear = cgrad(:Set2_6)
 
 
 #Plotting capacities
@@ -40,14 +43,14 @@ Zone_stack =["","Z1","Z2","Z3"]
 Zones = ["Z1 CN" , "Z2 UK" , "Z3 NS"]
 
 
-Capacities = CSV.read(string(inputs_path_plots,sep,"capacity_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
+Capacities = CSV.read(string(inputs_path_plots,sep,"capacity_RA_co2_cap_sensitivity_analysis.csv"), DataFrame, header=true)
 plt_cap_all = zeros(8,3)
 for i in 1:3
     plt_cap_all[:,i] = Capacities[:,i+1]/1000
 end
 plt_cap = transpose(plt_cap_all)
 Grouped_barPlot_Cap = StatsPlots.groupedbar([3;plt_cap[1:3,:]],bar_position =:stack, bar_width=0.9, xlim = (1.47,6), xticks =(1:8,Zone_stack),title ="Capacities for each Zone",label = ["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"],legendfont =font(8),legendfontsize=6, ylabel = "GW",xlabel ="Zones", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]])
-Plots.savefig(Grouped_barPlot_Cap,"Results/RA_Plots_with_zones/grouped_Cap_RA_co2_tax_and_Nuclear_const.pdf")
+Plots.savefig(Grouped_barPlot_Cap,"Results/RA_Plots_with_zones/grouped_Cap_RA_CO2_Cap_Sensitivity_analysis.pdf")
 
 
 
@@ -91,7 +94,7 @@ Grouped_barplt_gen = StatsPlots.groupedbar([3;plt_gen_all[1:Z,:]],bar_position =
 Plots.savefig(Grouped_barplt_gen,"Results/RA_Plots_with_zones/Generation_per_zone_D_No_co2_policies.pdf")
 
 #Plotting Revenues
-Revenues_all_zones = CSV.read(string(inputs_path_plots,sep,"revenue_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
+Revenues_all_zones = CSV.read(string(inputs_path_plots,sep,"revenue_RA_1_Capacity_In_D_for_REV_no_policy.csv"), DataFrame, header=true)
 plt_rev_all = zeros(R_all,Z)
 for i in 1:Z
     plt_rev_all[:,i] = Revenues_all_zones[:,i+1]/1e9
@@ -134,18 +137,18 @@ plt_ch_dch_comb_z2 = Combined_Plots_flow=Plots.plot(plt_charge_z2,plt_discharge_
 
 
 #Plotting NSE
-nse = CSV.read(string(inputs_path_plots,sep,"nse_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
+nse = CSV.read(string(inputs_path_plots,sep,"nse_RA_no policy_VH_demand.csv"), DataFrame, header=true)
 plt_nse_all = zeros(T,Z-1)
 for i in 1:Z-1
-    plt_nse_all[:,i] = nse[:,i]
+    plt_nse_all[:,i] = nse[:,i]/1000
 end
 
 plt_nse = transpose(plt_nse_all)
-plt_nse_z1 = Plots.plot(hours[1:8760],plt_nse[1,:],xlabel = "Time [h]",ylabel = "MWh",label = "NSE Z1")
-plt_nse_z2 = Plots.plot(hours[1:8760],plt_nse[2,:],xlabel = "Time [h]",ylabel = "MWh",label = "NSE Z2")
+plt_nse_z1 = Plots.plot(hours[200:300],plt_nse[1,200:300],xlabel = "Time [h]",ylabel = "GWh",label = "NSE Z1")
+plt_nse_z2 = Plots.plot(hours[200:300],plt_nse[2,200:300],xlabel = "Time [h]",ylabel = "GWh",label = "NSE Z2")
 #plt_nse_z3 = Plots.plot(hours[1:8760],plt_nse[3,:],xlabel = "Time [h]",ylabel = "MWh",label = "NSE Z3")
 plt_comb_nse = Plots.plot(plt_nse_z1,plt_nse_z2, layout =(2,1),plot_title ="Non Served Energy for each Zone")
-Plots.savefig(plt_comb_nse,"Results/RA_Plots_with_zones/NSE_per_zone_RA_co2_tax_and_Nuclear_const.pdf")
+Plots.savefig(plt_comb_nse,"Results/RA_Plots_with_zones/NSE_per_zone_VH_demand_RA_no_policy_h200_200.pdf")
 
 
 #PLOTS FOR DIFFERENT DEGREES OF RISK AVERSION
@@ -525,11 +528,11 @@ Plots.savefig(plot_emission_per_scen_CO2_Tax,"Results/New_Differnt_RA_Plots_with
 #PLOT GENERATION DUFFERENT LEVELS OF RA
 
 #PLOT GENERATION FOR CO2 TAX
-RA_gen_all_scen_co2_tax_0 = CSV.read(string(inputs_path_plots,sep,"Generation_all_scenarios_RN_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
-RA_gen_all_scen_co2_tax_025 = CSV.read(string(inputs_path_plots,sep,"Generation_all_scenarios_RA_0.25_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
-RA_gen_all_scen_co2_tax_05 = CSV.read(string(inputs_path_plots,sep,"Generation_all_scenarios_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
-RA_gen_all_scen_co2_tax_075 = CSV.read(string(inputs_path_plots,sep,"Generation_all_scenarios_RA_0.75_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
-RA_gen_all_scen_co2_tax_1 = CSV.read(string(inputs_path_plots,sep,"Generation_all_scenarios_RA_1_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
+RA_gen_all_scen_co2_tax_0 = CSV.read(string(inputs_path_plots,sep,"Generation_all_scenarios_RN_co2_cap.csv"), DataFrame, header=true)
+RA_gen_all_scen_co2_tax_025 = CSV.read(string(inputs_path_plots,sep,"Generation_all_scenarios_RA_0.25_co2_cap.csv"), DataFrame, header=true)
+RA_gen_all_scen_co2_tax_05 = CSV.read(string(inputs_path_plots,sep,"Generation_all_scenarios_RA_co2_cap.csv"), DataFrame, header=true)
+RA_gen_all_scen_co2_tax_075 = CSV.read(string(inputs_path_plots,sep,"Generation_all_scenarios_RA_0.75_co2_cap.csv"), DataFrame, header=true)
+RA_gen_all_scen_co2_tax_1 = CSV.read(string(inputs_path_plots,sep,"Generation_all_scenarios_RA_1_co2_cap.csv"), DataFrame, header=true)
 
 RA_gen_all_in_TWh = zeros(4,R,5)
 for s in 1:4
@@ -542,11 +545,11 @@ for s in 1:4
     end
 end
 
-plt_RA_gen_all_scen_co2_tax_0 = StatsPlots.groupedbar(RA_gen_all_in_TWh[:,:,1],bar_position =:stack, bar_width=0.9, xlim = (0.2,7.8), xticks =(1:8,demand_stack),title ="Generation, CO2 Tax, γ=0",label =["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"] ,legendfont =font(8),legendfontsize=6, ylabel = "TWh",xlabel ="Demand Scenario", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]]) 
-plt_RA_gen_all_scen_co2_tax_025 = StatsPlots.groupedbar(RA_gen_all_in_TWh[:,:,2],bar_position =:stack, bar_width=0.9, xlim = (0.2,7.8), xticks =(1:8,demand_stack),title ="Generation, CO2 Tax, γ=0.25",label =["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"] ,legendfont =font(8),legendfontsize=6, ylabel = "TWh",xlabel ="Demand Scenario", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]]) 
-plt_RA_gen_all_scen_co2_tax_05 = StatsPlots.groupedbar(RA_gen_all_in_TWh[:,:,3],bar_position =:stack, bar_width=0.9, xlim = (0.2,7.8), xticks =(1:8,demand_stack),title ="Generation, CO2 Tax, γ=0.5",label =["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"] ,legendfont =font(8),legendfontsize=6, ylabel = "TWh",xlabel ="Demand Scenario", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]]) 
-plt_RA_gen_all_scen_co2_tax_075 = StatsPlots.groupedbar(RA_gen_all_in_TWh[:,:,4],bar_position =:stack, bar_width=0.9, xlim = (0.2,7.8), xticks =(1:8,demand_stack),title ="Generation, CO2 Tax, γ=0.75",label =["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"] ,legendfont =font(8),legendfontsize=6, ylabel = "TWh",xlabel ="Demand Scenario", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]]) 
-plt_RA_gen_all_scen_co2_tax_1 = StatsPlots.groupedbar(RA_gen_all_in_TWh[:,:,5],bar_position =:stack, bar_width=0.9, xlim = (0.2,7.8), xticks =(1:8,demand_stack),title ="Generation, CO2 Tax, γ=1",label =["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"] ,legendfont =font(8),legendfontsize=6, ylabel = "TWh",xlabel ="Demand Scenario", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]]) 
+plt_RA_gen_all_scen_co2_tax_0 = StatsPlots.groupedbar(RA_gen_all_in_TWh[:,:,1],bar_position =:stack, bar_width=0.9, xlim = (0.2,7.8), xticks =(1:8,demand_stack),title ="Generation, CO2 Cap, γ=0",label =["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"] ,legendfont =font(8),legendfontsize=6, ylabel = "TWh",xlabel ="Demand Scenario", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]]) 
+plt_RA_gen_all_scen_co2_tax_025 = StatsPlots.groupedbar(RA_gen_all_in_TWh[:,:,2],bar_position =:stack, bar_width=0.9, xlim = (0.2,7.8), xticks =(1:8,demand_stack),title ="Generation, CO2 Cap, γ=0.25",label =["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"] ,legendfont =font(8),legendfontsize=6, ylabel = "TWh",xlabel ="Demand Scenario", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]]) 
+plt_RA_gen_all_scen_co2_tax_05 = StatsPlots.groupedbar(RA_gen_all_in_TWh[:,:,3],bar_position =:stack, bar_width=0.9, xlim = (0.2,7.8), xticks =(1:8,demand_stack),title ="Generation, CO2 Cap, γ=0.5",label =["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"] ,legendfont =font(8),legendfontsize=6, ylabel = "TWh",xlabel ="Demand Scenario", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]]) 
+plt_RA_gen_all_scen_co2_tax_075 = StatsPlots.groupedbar(RA_gen_all_in_TWh[:,:,4],bar_position =:stack, bar_width=0.9, xlim = (0.2,7.8), xticks =(1:8,demand_stack),title ="Generation, CO2 Cap, γ=0.75",label =["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"] ,legendfont =font(8),legendfontsize=6, ylabel = "TWh",xlabel ="Demand Scenario", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]]) 
+plt_RA_gen_all_scen_co2_tax_1 = StatsPlots.groupedbar(RA_gen_all_in_TWh[:,:,5],bar_position =:stack, bar_width=0.9, xlim = (0.2,7.8), xticks =(1:8,demand_stack),title ="Generation, CO2 Cap, γ=1",label =["Nuclear" "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshore Wind Float" "Solar" "Storage"] ,legendfont =font(8),legendfontsize=6, ylabel = "TWh",xlabel ="Demand Scenario", color =[Palette[3] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] Palette[9] Palette[11] Palette[6]]) 
 
 
 
@@ -567,5 +570,204 @@ end
 
 df_co2_price_dif_RA = DataFrame(Scenarios = Scenario_stack, gamma_0 = RA_all_co2_price[:,1], gamma_025 = RA_all_co2_price[:,2], gamma_05 = RA_all_co2_price[:,3], gamma_075 = RA_all_co2_price[:,4], gamma_1 = RA_all_co2_price[:,5])
 CSV.write(string(results_path_plots,sep,"CO2_PRICE_dif_RA_Co2_Cax_policy.csv"), df_co2_price_dif_RA)
+
+
+
+#PLOTTING DURATION CURVE
+#FOR RISK NEUTRAL MODEL
+demand_z1 = CSV.read(string(inputs_path,sep,"demand_z1.csv"), DataFrame, header=true)
+demand_z2 = CSV.read(string(inputs_path,sep,"demand_z2.csv"), DataFrame, header=true)
+demand_base = zeros(T)
+demand_low = zeros(T)
+demand_high = zeros(T)
+demand_very_high = zeros(T)
+for t in 1:T
+    demand_base[t] = (demand_z1[t,2]+demand_z2[t,2])/1000
+    demand_low[t] = (demand_z1[t,3]+demand_z2[t,3])/1000
+    demand_high[t] = (demand_z1[t,4]+demand_z2[t,4])/1000
+    demand_very_high[t] = (demand_z1[t,5]+demand_z2[t,5])/1000
+end
+generation_z1 = CSV.read(string(inputs_path_plots,sep,"generation_z1_CN_RN_No_co2_policies.csv"), DataFrame, header=true) #For base demand
+generation_z2 = CSV.read(string(inputs_path_plots,sep,"generation_z2_SK_RN_No_co2_policies.csv"), DataFrame, header=true)
+generation_z3 = CSV.read(string(inputs_path_plots,sep,"generation_z3_GB_RN_No_co2_policies.csv"), DataFrame, header=true)
+generation_nuclear = zeros(T)
+generation_coal = zeros(T)
+generation_gas = zeros(T)
+generation_on_wind = zeros(T)
+generation_off_wind_fix = zeros(T)
+generation_off_wind_float = zeros(T)
+generation_solar = zeros(T)
+generation_VRES = zeros(T)
+for t in 1:T
+    generation_nuclear[t] = (generation_z1[t,2] + generation_z2[t,2] + generation_z3[t,2])/1000
+    generation_coal[t] = (generation_z1[t,3] + generation_z2[t,3] + generation_z3[t,3])/1000
+    generation_gas[t] = (generation_z1[t,4] + generation_z2[t,4] + generation_z3[t,4])/1000
+    generation_on_wind[t] = (generation_z1[t,5] + generation_z2[t,5] + generation_z3[t,5])/1000
+    generation_off_wind_fix[t] = (generation_z1[t,6] + generation_z2[t,6] + generation_z3[t,6])/1000
+    generation_off_wind_float[t] = (generation_z1[t,7] + generation_z2[t,7] + generation_z3[t,7])/1000
+    generation_solar[t] = (generation_z1[t,8] + generation_z2[t,8] + generation_z3[t,8])/1000
+end
+for t in 1:T
+    generation_VRES[t] = generation_on_wind[t] + generation_off_wind_fix[t] + generation_off_wind_float[t] + generation_solar[t]
+end
+
+dc_demand_base = sort(demand_base, rev= true)    
+dc_generation_nuclear = sort(generation_nuclear, rev=true)
+dc_generation_coal = sort(generation_coal, rev=true)
+dc_generation_gas = sort(generation_gas, rev=true)
+dc_generation_on_wind = sort(generation_on_wind, rev=true)
+dc_generation_off_wind_fix = sort(generation_off_wind_fix, rev=true)
+dc_generation_off_wind_float = sort(generation_off_wind_float, rev=true)
+dc_generation_solar = sort(generation_solar, rev=true)
+dc_generation_VRES = sort(generation_VRES, rev=true)
+
+net_load = zeros(T)
+for t in 1:T
+    net_load[t] = demand_base[t] - generation_VRES[t]
+end
+dc_net_load = sort(net_load, rev=true)
+
+DC_plot_gen = Plots.plot([dc_demand_base,dc_generation_VRES,dc_net_load,dc_generation_coal,dc_generation_gas, dc_generation_on_wind,dc_generation_off_wind_fix,dc_generation_solar],tickfontsize =10,title = "Duration Curve, Risk Neutral, No Policy",label = ["Demand" "VRES" "Net Load" "Coal" "Gas" "Onshore wind" "Offshore wind fixed" "Solar"],xlabel = "Time [h]",ylabel = "GWh",legendfont =font(8),legendfontsize=6, color =[Palette_dark[2] Palette_green[7] Palette[8] Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] palette_clear[6]])
+Plots.savefig(DC_plot_gen,"Results/Results_DC_plots/DC_plot_RN_no_policy_base_demand.pdf")
+
+#RISK NEUTRAL GENERATION
+generation_base_RN_no_policy = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_Base_demand_scen_RN_No_co2_policies.csv"), DataFrame, header=true) #For base demand
+generation_low_RN_no_policy = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_low_demand_scen_RN_No_co2_policies.csv"), DataFrame, header=true)
+generation_high_RN_no_policy = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_high_demand_scen_RN_No_co2_policies.csv"), DataFrame, header=true)
+generation_Very_high_RN_no_policy = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_Very_high_demand_scen_RN_No_co2_policies.csv"), DataFrame, header=true)
+
+generation_base_RN_co2_cap = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_Base_demand_scen_RN_co2_cap.csv"), DataFrame, header=true) #For base demand
+generation_low_RN_co2_cap = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_low_demand_scen_RN_co2_cap.csv"), DataFrame, header=true)
+generation_high_RN_co2_cap = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_high_demand_scen_RN_co2_cap.csv"), DataFrame, header=true)
+generation_Very_high_RN_co2_cap = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_Very_high_demand_scen_RN_co2_cap.csv"), DataFrame, header=true)
+
+generation_base_RN_co2_tax = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_Base_demand_scen_RN_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true) #For base demand
+generation_low_RN_co2_tax = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_low_demand_scen_RN_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
+generation_high_RN_co2_tax = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_high_demand_scen_RN_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
+generation_Very_high_RN_co2_tax = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_Very_high_demand_scen_RN_co2_tax_with_Nuclear_const.csv"), DataFrame, header=true)
+
+
+
+#DURATION CURVCE AND STORAGE PLOTS FOR RA GAMMA=0.5 WITH CO2 CAP POLICY
+generation_base_RA_05_no_policy = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_Base_demand_scen_RA_No_co2_policies.csv"), DataFrame, header=true) #For base demand
+generation_low_RA_05_no_policy = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_low_demand_scen_RA_No_co2_policies.csv"), DataFrame, header=true)
+generation_high_RA_05_no_policy = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_high_demand_scen_RA_No_co2_policies.csv"), DataFrame, header=true)
+generation_Very_high_RA_05_no_policy = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_Very_high_demand_scen_RA_No_co2_policies.csv"), DataFrame, header=true)
+
+generation_base_RA_05_co2_cap = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_Base_demand_scen_RA_co2_cap.csv"), DataFrame, header=true) #For base demand
+generation_low_RA_05_co2_cap = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_low_demand_scen_RA_co2_cap.csv"), DataFrame, header=true)
+generation_high_RA_05_co2_cap = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_high_demand_scen_RA_co2_cap.csv"), DataFrame, header=true)
+generation_Very_high_RA_05_co2_cap = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_Very_high_demand_scen_RA_co2_cap.csv"), DataFrame, header=true)
+
+generation_base_RA_05_co2_tax = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_Base_demand_scen_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true) #For base demand
+generation_low_RA_05_co2_tax = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_low_demand_scen_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
+generation_high_RA_05_co2_tax = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_high_demand_scen_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
+generation_Very_high_RA_05_co2_tax = CSV.read(string(inputs_path_plots,sep,"All_Zones_gen_Very_high_demand_scen_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
+
+
+generation_all_RA = zeros(T,R,S)
+for t in 1:T, r in 1:R
+    generation_all_RA[t,r,1] = generation_base_RA_05_co2_tax[t,r]
+    generation_all_RA[t,r,2] = generation_low_RA_05_co2_tax[t,r]
+    generation_all_RA[t,r,3] = generation_high_RA_05_co2_tax[t,r]
+    generation_all_RA[t,r,4] = generation_Very_high_RA_05_co2_tax[t,r]
+end
+
+plt_scen = 4 #choose wich demand scenario to plot for 1 (base), 2(low) 3(high) 4(very high)
+generation_nuclear_RA = zeros(T)
+generation_coal_RA = zeros(T)
+generation_gas_RA = zeros(T)
+generation_on_wind_RA = zeros(T)
+generation_off_wind_fix_RA = zeros(T)
+generation_off_wind_float_RA = zeros(T)
+generation_solar_RA = zeros(T)
+generation_VRES_RA = zeros(T)
+for t in 1:T
+    generation_nuclear_RA[t] = (generation_all_RA[t,1,plt_scen])/1000
+    generation_coal_RA[t] = (generation_all_RA[t,2,plt_scen])/1000
+    generation_gas_RA[t] = (generation_all_RA[t,3,plt_scen])/1000
+    generation_on_wind_RA[t] = (generation_all_RA[t,4,plt_scen])/1000
+    generation_off_wind_fix_RA[t] = (generation_all_RA[t,5,plt_scen])/1000
+    generation_off_wind_float_RA[t] = (generation_all_RA[t,6,plt_scen])/1000
+    generation_solar_RA[t] = (generation_all_RA[t,7,plt_scen])/1000
+end
+for t in 1:T
+    generation_VRES_RA[t] = generation_on_wind_RA[t] + generation_off_wind_fix_RA[t] + generation_off_wind_float_RA[t] + generation_solar_RA[t]
+end
+
+net_load_RA = zeros(T)
+for t in 1:T
+    net_load_RA[t] = demand_base[t] - generation_VRES_RA[t]
+end
+dc_net_load_RA = sort(net_load_RA,rev=true)
+
+
+dc_demand_base_RA = sort(demand_very_high, rev= true) #Choose demand scenario    
+dc_generation_nuclear_RA = sort(generation_nuclear_RA, rev=true)
+dc_generation_coal_RA = sort(generation_coal_RA, rev=true)
+dc_generation_gas_RA = sort(generation_gas_RA, rev=true)
+dc_generation_on_wind_RA = sort(generation_on_wind_RA, rev=true)
+dc_generation_off_wind_fix_RA = sort(generation_off_wind_fix_RA, rev=true)
+dc_generation_off_wind_float_RA = sort(generation_off_wind_float_RA, rev=true)
+dc_generation_solar_RA = sort(generation_solar_RA, rev=true)
+dc_generation_VRES_RA = sort(generation_VRES_RA, rev=true)
+
+#NEED TO GET CHARGE AND DISCHARGE FROM OTHER DEMAND SCENARIOS
+
+DC_plot_gen_RA_no_policy = Plots.plot([dc_demand_base_RA,dc_generation_VRES_RA,dc_net_load_RA,dc_generation_coal_RA,dc_generation_gas_RA, dc_generation_on_wind_RA,dc_generation_off_wind_fix_RA,dc_generation_solar_RA],tickfontsize =10,title = "Duration Curve",label = ["Demand" "VRES" "Net Load"  "Coal" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Solar"],xlabel = "Time [h]",ylabel = "GWh",legendfont =font(8),legendfontsize=6, color =[Palette_dark[2] Palette_green[7] Palette[8]  Palette_dark[11] Palette_dark[8] Palette[1] Palette[2] palette_clear[6]])
+DC_plot_gen_RA_co2_cap = Plots.plot([dc_demand_base_RA,dc_generation_VRES_RA,dc_net_load_RA,dc_generation_nuclear_RA,dc_generation_gas_RA, dc_generation_on_wind_RA,dc_generation_off_wind_fix_RA,dc_generation_off_wind_float_RA,dc_generation_solar_RA],tickfontsize =10,title = "Duration Curve",label = ["Demand" "VRES" "Net Load"  "Nuclear" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Offshre Wind Float" "Solar"],xlabel = "Time [h]",ylabel = "GWh",legendfont =font(8),legendfontsize=6, color =[Palette_dark[2] Palette_green[7] Palette[8]  Palette[3] Palette_dark[8] Palette[1] Palette[2] Palette[9] palette_clear[6]])
+DC_plot_gen_RA_co2_tax = Plots.plot([dc_demand_base_RA,dc_generation_VRES_RA,dc_net_load_RA,dc_generation_nuclear_RA,dc_generation_gas_RA, dc_generation_on_wind_RA,dc_generation_off_wind_fix_RA,dc_generation_solar_RA],tickfontsize =10,title = "Duration Curve",label = ["Demand" "VRES" "Net Load"  "Nuclear" "Gas" "Onshore Wind" "Offshore Wind Fixed" "Solar"],xlabel = "Time [h]",ylabel = "GWh",legendfont =font(8),legendfontsize=6, color =[Palette_dark[2] Palette_green[7] Palette[8]  Palette[3] Palette_dark[8] Palette[1] Palette[2] palette_clear[6]])
+Plots.savefig(DC_plot_gen_RA_co2_tax,"Results/Results_DC_plots/DC_plot_RN_co2_tax_very_high_demand.pdf") #,dc_generation_nuclear_RA    "Nuclear" Palette[3]
+
+charge_RA_no_policy = CSV.read(string(inputs_path_plots,sep,"All_Zones_charge_all_demand_scen_RA_No_co2_policies.csv"), DataFrame, header=true)
+discharge_RA_no_policy = CSV.read(string(inputs_path_plots,sep,"All_Zones_discharge_all_demand_scen_RA_No_co2_policies.csv"), DataFrame, header=true)
+charge_RA_co2_cap = CSV.read(string(inputs_path_plots,sep,"All_Zones_charge_all_demand_scen_RA_co2_cap.csv"), DataFrame, header=true)
+discharge_RA_co2_cap = CSV.read(string(inputs_path_plots,sep,"All_Zones_discharge_all_demand_scen_RA_co2_cap.csv"), DataFrame, header=true)
+charge_RA_co2_tax = CSV.read(string(inputs_path_plots,sep,"All_Zones_charge_all_demand_scen_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
+discharge_RA_co2_tax = CSV.read(string(inputs_path_plots,sep,"All_Zones_discharge_all_demand_scen_RA_co2_tax_and_Nuclear_const.csv"), DataFrame, header=true)
+
+storage_sum = zeros(T)
+
+for t in 1:T
+    storage_sum[t] = -1*charge_RA_co2_tax[t,plt_scen]/1000 + discharge_RA_co2_tax[t,plt_scen]/1000
+end
+dc_storage = sort(storage_sum,rev=true)
+
+DC_plot_storage_vs_NetLoad = Plots.plot([dc_net_load_RA,dc_storage],tickfontsize =10,title = "Duration Curve",label = ["Net Load" "Storage"], xlabel = "Time [h]",ylabel = "GWh",legendfont =font(8),legendfontsize=6, color = [Palette[8] Palette[6]])
+Plots.savefig(DC_plot_storage_vs_NetLoad,"Results/Results_DC_plots/DC_plot_RN_co2_tax_netLoad_vs_storage.pdf")
+
+
+
+#PLOT HOW THE RENEWABLES COVER THE DEMAND OVER 5 DAYS
+Demand_1_week = demand_very_high[169:336] #Week number 10
+week = zeros(168)
+for i in 1:168
+    week[i] = 168+i
+end
+#FOR RA WITH CO2 CAP
+on_wind_1_week = generation_on_wind_RA[168:336]
+off_wind_fix_1_week = generation_off_wind_fix_RA[168:336]
+off_wind_float_1_week = generation_off_wind_float_RA[168:336]
+solar_1_week = generation_solar_RA[168:336]
+VRES_1_week = zeros(168)
+layer_1 = zeros(168)
+layer_2 = zeros(168)
+layer_3 = zeros(168)
+layer_4 = zeros(168)
+layer_5 = zeros(168)
+for t in 1:168
+    VRES_1_week[t] = on_wind_1_week[t] + off_wind_fix_1_week[t] + off_wind_float_1_week[t] + solar_1_week[t]
+    layer_1[t] = off_wind_float_1_week[t]
+    layer_2[t] = off_wind_float_1_week[t] +off_wind_fix_1_week[t]
+    layer_3[t] = on_wind_1_week[t] + off_wind_fix_1_week[t] + off_wind_float_1_week[t]
+    layer_4[t] = on_wind_1_week[t] + off_wind_fix_1_week[t] + off_wind_float_1_week[t] + solar_1_week[t]
+    layer_5[t] = on_wind_1_week[t] + off_wind_fix_1_week[t] + off_wind_float_1_week[t] + solar_1_week[t] + storage_sum[t+168]
+end
+
+
+plt_all_no_policy = Plots.plot(week,[Demand_1_week,layer_2,layer_3,layer_4],tickfontsize =10,fill=true,fillalpha= [0 0.2 0.2 0.2 0.2],title = "Demand and VRES Production",label = ["Demand" "Offshore Wind Fixed" "Onshore Wind" "Solar"], xlabel = "Time [h]",ylabel = "GWh",legendfont =font(8),legendfontsize=6 ,color=[Palette_dark[2] Palette[4] Palette[9] palette_clear[6]])
+plt_all_co2_cap = Plots.plot(week,[Demand_1_week,layer_1,layer_2,layer_3,layer_4,storage_sum[169:336],layer_5],tickfontsize =10,fill=true,fillalpha= [0 0.2 0.2 0.2 0.2 0 0],title = "Demand and VRES Production",label = ["Demand"  "Offshore Wind Float" "Offshore Wind Fixed" "Onshore Wind" "Solar" "Storage" "VRES + Storage"], xlabel = "Time [h]",ylabel = "GWh",legendfont =font(8),legendfontsize=5 ,color=[Palette_dark[2] Palette[1] Palette[2] Palette[9] palette_clear[6] :orange :black])
+plt_all_co2_tax = Plots.plot(week,[Demand_1_week,layer_2,layer_3,layer_4,storage_sum[169:336],layer_5],tickfontsize =10,fill=true,fillalpha= [0 0.2 0.2 0.2 0 0],title = "Demand and VRES Production",label = ["Demand" "Offshore Wind Fixed" "Onshore Wind" "Solar" "Storage" "VRES + Storage"], xlabel = "Time [h]",ylabel = "GWh",legendfont =font(8),legendfontsize=5 ,color=[Palette_dark[2] Palette[2] Palette[9] palette_clear[6] :orange :black])
+Plots.savefig(plt_all_co2_tax,"Results/Results_DC_plots/Demand_and_VRES_plot_RA_co2_tax_very_high_scenario.pdf")
 
 
