@@ -112,7 +112,7 @@ if risk_aversion
     # Auxiliary varliables for CVaR
     @variable(gep, u[s in 1:S] >= 0) # loss relative to VaR, $/MW
     @variable(gep, VaR) # VaR variable, $/MW
-    @constraint(gep, u_expression[s in 1:S], u[s] >= sum(g[r,t,s]*cost_var[r] + price_cap*nse[t,s] for r in 1:R, t in 1:T) - VaR)
+    @constraint(gep, u_expression[s in 1:S], u[s] >= sum(g[r,t,s]*cost_var[r] for r in 1:R, t in 1:T) + sum(price_cap*nse[t,s] for t in 1:T) - VaR)
 end 
 
 # Objective function
