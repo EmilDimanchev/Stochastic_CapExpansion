@@ -217,9 +217,6 @@ function optimization_model(inputs, settings)
         co2_cap = 0
     end
 
-    
-
-
     # ~~~
     # Objective function
     # ~~~ 
