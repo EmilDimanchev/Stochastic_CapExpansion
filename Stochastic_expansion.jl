@@ -17,7 +17,6 @@ function optimization_model(inputs, settings)
     set_optimizer_attribute(gep, "Crossover", 0)
     set_optimizer_attribute(gep, "BarConvTol", 1e-2)
     
-
     # ~~~~
     # Load inputs
     # ~~~
@@ -113,19 +112,14 @@ function optimization_model(inputs, settings)
     cost_inv = cost_inv./scaling_factor_cost
     cost_var = cost_var./scaling_factor_cost
     g_max = 50e3/scaling_factor_demand
-    # price_cap = settings["Price cap"]/scaling_factor_cost # originally $/MWh before scaling
-    price_nse = settings["Price cap"]./scaling_factor_cost # originally $/MWh    
-    max_nse = [1] # percentage of demand that can be curtailed in each segments
-    NSE_SEGS = 1
-    # price_nse = [2e3,1800,1100,400]./scaling_factor_cost # originally $/MWh    
-    # max_nse = [1,0.04,0.024,0.003] # percentage of demand that can be curtailed in each segments
-    # NSE_SEGS = 4
-
+    # Demand flexibility
+    price_nse = [2e3,1800,1100,400]./scaling_factor_cost # originally $/MWh    
+    max_nse = [1,0.04,0.024,0.003] # percentage of demand that can be curtailed in each segments
+    NSE_SEGS = 4
 
     # ~~~
     # Model formulation
     # ~~~
-
 
     # Generation
     @variable(gep, 0 <= g[r in 1:G, t in 1:T, s in 1:S, f in 1:F] <= g_max) # MWh
@@ -137,9 +131,8 @@ function optimization_model(inputs, settings)
 
     if risk_aversion_flag
         # Auxiliary varliables for CVaR
-        @variable(gep, u[s in 1:S, f in 1:F] >= 0) # loss relative to VaR, $/MW
-        @variable(gep, ζ) # VaR variable, $/MW
-        # @constraint(gep, cvar_tail[s in 1:S, f in 1:F], u[s,f] >= sum(t_weights[t]*g[r,t,s,f]*cost_var[r,f] for r in 1:G, t in 1:T) + sum(t_weights[t]*eNSE_Cost[t,s,f] for t in 1:T) + sum(cost_inv[r]*x[r] for r in 1:R) - ζ)
+        @variable(gep, u[s in 1:S, f in 1:F] >= 0) # Gain/loss relative to VaR, $
+        @variable(gep, ζ) # VaR variable, $
         @constraint(gep, cvar_tail[s in 1:S, f in 1:F], u[s,f] >= sum(t_weights[t]*g[r,t,s,f]*cost_var[r,f] for r in 1:G, t in 1:T) + sum(t_weights[t]*g[r,t,s,f]*co2_tax*co2_factors[r] for r in 1:G, t in 1:T) + sum(t_weights[t]*eNSE_Cost[t,s,f] for t in 1:T)  - ζ)
     end 
 
@@ -223,21 +216,12 @@ function optimization_model(inputs, settings)
 
     @expression(gep, sys_cost, sum(x[r]*cost_inv[r]*(1-itc[r]) for r in 1:R) + sum(P[s]*P_f[f]*t_weights[t]*g[r,t,s,f]*(cost_var[r,f]+co2_tax*co2_factors[r]) for r in 1:G, t in 1:T, s in 1:S, f in 1:F) + sum(P[s]*P_f[f]*t_weights[t]*eNSE_Cost[t,s,f] for t in 1:T, s in 1:S, f in 1:F))
 
-    # if settings["Emission test"]
-    #     @constraint(gep, emish_test, sys_cost <= 2.819466116)
-    #     # @constraint(gep, emish_test, 2.819466116 >= sys_cost)
-    # end
+    @expression(gep, risk_adjusted_sys_cost, sum(x[r]*cost_inv[r]*(1-itc[r]) for r in 1:R) + Ω*(sum(P[s]*P_f[f]*t_weights[t]*g[r,t,s,f]*(cost_var[r,f]+co2_tax*co2_factors[r]) for r in 1:G, t in 1:T, s in 1:S, f in 1:F) + sum(P[s]*P_f[f]*t_weights[t]*eNSE_Cost[t,s,f] for t in 1:T, s in 1:S, f in 1:F)) + (1-Ω)*(ζ + 1/Ψ*sum(P[s]*P_f[f]*u[s,f] for s in 1:S, f in 1:F)))
 
     if risk_aversion_flag
-        @objective(gep, Min, sum(x[r]*cost_inv[r]*(1-itc[r]) for r in 1:R) + Ω*(sum(P[s]*P_f[f]*t_weights[t]*g[r,t,s,f]*(cost_var[r,f]+co2_tax*co2_factors[r]) for r in 1:G, t in 1:T, s in 1:S, f in 1:F) + sum(P[s]*P_f[f]*t_weights[t]*eNSE_Cost[t,s,f] for t in 1:T, s in 1:S, f in 1:F)) + (1-Ω)*(ζ + 1/Ψ*sum(P[s]*P_f[f]*u[s,f] for s in 1:S, f in 1:F)))
-
-        # eps = 0.000001
-        # @constraint(gep, mga, sum(x[r]*cost_inv[r]*(1-itc[r]) for r in 1:R) + Ω*(sum(P[s]*P_f[f]*t_weights[t]*g[r,t,s,f]*(cost_var[r,f]+co2_tax*co2_factors[r]) for r in 1:G, t in 1:T, s in 1:S, f in 1:F) + sum(P[s]*P_f[f]*t_weights[t]*eNSE_Cost[t,s,f] for t in 1:T, s in 1:S, f in 1:F)) + (1-Ω)*(ζ + 1/Ψ*sum(P[s]*P_f[f]*u[s,f] for s in 1:S, f in 1:F)) <= 3.447079778 + eps)
-
-        # @constraint(gep, mga_lb, sum(x[r]*cost_inv[r]*(1-itc[r]) for r in 1:R) + Ω*(sum(P[s]*P_f[f]*t_weights[t]*g[r,t,s,f]*(cost_var[r,f]+co2_tax*co2_factors[r]) for r in 1:G, t in 1:T, s in 1:S, f in 1:F) + sum(P[s]*P_f[f]*t_weights[t]*eNSE_Cost[t,s,f] for t in 1:T, s in 1:S, f in 1:F)) + (1-Ω)*(ζ + 1/Ψ*sum(P[s]*P_f[f]*u[s,f] for s in 1:S, f in 1:F)) >= 3.447079778-eps)
-
-        # @objective(gep, Max, emissions_exp)
+        @objective(gep, Min, risk_adjusted_sys_cost)
     else
+        # Risk neutral
         @objective(gep, Min, sys_cost)
         
     end
@@ -263,52 +247,17 @@ function optimization_model(inputs, settings)
         for s in 1:S
             for f in 1:F
                 output["Risk adjusted probabilities"][s,f] = theta[s,f]
-                output["Consumer surplus"][s,f] = sum(t_weights.*price_nse.*demand[:,s] - price[:,s,f].*demand[:,s] + y[:,s,f].*(price[:,s,f] - t_weights.*price_nse))
             end
         end
     end
 
-    # output["--- risk-adjusted CS"] = output["Consumer surplus"][1,1]*0.75+output["Consumer surplus"][2,1]*0.25
 
-    # Calculate revenues
-    revenues = zeros(R,S,F)
-    for r in 1:R
-        for s in 1:S
-            for f in 1:F
-                if r <= G
-                    # revenues[r,s,f] = sum(mu[r,t,s,f]*availability[t,r] for t in 1:T)/(Ω*P[s]*P_f[f]+(1-Ω)*theta[s,f])
-                    revenues[r,s,f] = sum(mu[r,t,s,f]*availability[t,r] for t in 1:T)
-                    
-                    
-                    # revenues[r,s,f] = sum((price[t,s,f]/(Ω*P[s]*P_f[f]+(1-Ω)*theta[s,f])-cost_var[r,f])*value.(g)[r,t,s,f]/value.(x)[r] for t in 1:T)
-                    
-                else
-                    # Ignore storage revenues for now
-                end
-            end
-        end
-    end
-
-    
-    output["Generation marginal revenues"] = revenues
-    output["Storage marginal revenues"] = zeros(S,F)
     if storage_flag
         output["Storage charging"] = value.(z_ch)
         output["Storage discharging"] = value.(z_dch)
     end
     output["Power balance dual"] = price
     output["Unweighted dual"] = scaling_factor_cost.*price./t_weights
-    
-    # if settings["Emission test"]
-    #     power_price = settings["power price 1"]
-    #     cost_dual = dual.(emish_test)
-    #     cost_shadow_dual = shadow_price.(emish_test)
-    #     output["new_dual"] = cost_dual
-    #     output["new_shadow"] = cost_shadow_dual
-    #     # output["Unweighted dual_2"] = (price .- power_price.*cost_dual)./t_weights
-    #     output["Marginal emissions"] = (price .- power_price.*cost_dual)./t_weights
-    #     output["Power balance dual consistent"] = (price_shadow .- power_price.*cost_shadow_dual)./t_weights
-    # end
     
     output["Objective function value"] = objective_value(gep)
     output["CVAR duals"] = dual.(cvar_tail)

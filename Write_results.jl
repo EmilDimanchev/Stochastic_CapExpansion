@@ -32,26 +32,6 @@ function write_results(model_output, inputs, settings, results_folder)
     O =  inputs["Number of storage resources"]
     R = G + O 
 
-    # Revenues
-    marginal_revenues_gen = model_output["Generation marginal revenues"]
-    if storage_flag
-        marginal_revenues_stor = model_output["Storage marginal revenues"]
-    end
-    marginal_revenues = zeros(R,S,F)
-    total_revenues = zeros(R,S,F)
-    for r in 1:R
-        for s in 1:S
-            for f in 1:F
-                if r <= G
-                    marginal_revenues[r,s,f] = marginal_revenues_gen[r,s,f]
-                    total_revenues[r,s,f] = marginal_revenues_gen[r,s,f]*cap[r]
-                else
-                    total_revenues[r,s,f] = marginal_revenues_stor[s,f]*cap[r]
-                    marginal_revenues[r,s,f] = marginal_revenues_stor[s,f]
-                end
-            end
-        end
-    end
 
     if storage_flag
         charge = model_output["Storage charging"]
@@ -83,7 +63,6 @@ function write_results(model_output, inputs, settings, results_folder)
     df_co2_all = DataFrame()
     df_nse = DataFrame()
     insertcols!(df_nse, 1, :Time => time_index)
-    df_revenues = DataFrame(Resource = all_resources)
     df_u = DataFrame(Resource = all_resources)
     df_theta = DataFrame()
     insertcols!(df_theta, 1, :Resource => all_resources)
@@ -148,7 +127,7 @@ function write_results(model_output, inputs, settings, results_folder)
             end
             # Load shedding
             insertcols!(df_nse, col_name => shed[:,s,f])
-            insertcols!(df_revenues, col_name => marginal_revenues[:,s,f])
+            
             if !model_output["Risk sharing flag"]
                 insertcols!(df_u, col_name => model_output["CVaR Loss"][:,s,f])
             else
@@ -177,7 +156,6 @@ function write_results(model_output, inputs, settings, results_folder)
     CSV.write(string(results_folder,sep,"emissions.csv"), df_emissions)
     CSV.write(string(results_folder,sep,"emissions_all.csv"), df_co2_all)
     CSV.write(string(results_folder,sep,"oper_cost_all.csv"), df_oper_all)
-    CSV.write(string(results_folder,sep,"revenues.csv"), df_revenues)
     if settings["Risk aversion flag"] == true
         CSV.write(string(results_folder,sep,"VaR.csv"), df_var)
         CSV.write(string(results_folder,sep,"loss_cvar.csv"), df_u)
