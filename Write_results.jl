@@ -1,6 +1,10 @@
 # Write results from equilibrium risk-averse GEP model
 function write_results(model_output, inputs, settings, results_folder)
 
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+
     # Parameters
     P = inputs["Demand scenario probabilities"]
     P_f = inputs["Fuel price scenario probabilities"]

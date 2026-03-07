@@ -16,7 +16,7 @@ results_folder = "Results"
 
 inputs_path = string("./Inputs/",inputs_folder)
 
-results_path = "/Users/ed0400/Modeling/Stochastic_optimization/"
+results_path = "./"
 
 # ~~~
 # Set up experiment
@@ -57,6 +57,7 @@ inputs = load_input_data(inputs_path, settings)
 # Run model
 
 output = optimization_model(inputs, settings)
+
 
 # Write results
 results_destination = string(results_path,results_folder)
