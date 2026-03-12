@@ -1,8 +1,14 @@
-using CSV, DataFrames
+using Revise
+includet("Stochastic_CapExpansion.jl")
 
-include("./Write_results.jl")
-include("./Load_inputs.jl")
-include("./Stochastic_expansion.jl")
+using Pkg
+using .Stochastic_CapExpansion
+using CSV, DataFrames
+using JuMP
+
+
+
+
 
 function run_stochastic_exploration()
 
@@ -52,47 +58,82 @@ function run_stochastic_exploration()
     # Cap and trade
     settings["Carbon cap"] = 25e3 # Value used if activated
     settings["Contracts"] = false
+    settings["Budget Type"] = "System_Expectation"
 
     # Load data
     inputs = load_input_data(inputs_path, settings)
+    results_cap = []
+    results_syscost = []
+    results_syscost_risk = []
+    results_emissions = []
+    run_labels = []
+
     # Run model
 
     # Build base stochastic model and run for lowest first stage cost solution (risk aversion weight = 0)
-    model = build_optimization_model(inputs, settings, "Expectation", 0.5)
+    model = build_optimization_model(inputs, settings, "Expectation", 0.75)
     output_exp, model = run_optimization_model(model, inputs, settings)
     # Write results
     results_destination = string(results_path,results_folder,"/EV")
-    write_results(output_exp, inputs, settings, results_destination)
+    df_cap, df_syscost, df_syscost_risk, df_emissions = write_results(output_exp, inputs, settings, results_destination)
+    push!(results_cap, df_cap)
+    push!(results_syscost, df_syscost)
+    push!(results_syscost_risk, df_syscost_risk)
+    push!(results_emissions, df_emissions)
 
-    # Max Risk Aversion
-    set_objective!(model, "Weighted CVaR"; obj_weight=1.0)
+    @info("Expected value system cost of EV solution: ", output_exp["Expected cost"])
+
+    @info("Expected value objective function: ", objective_function(model))
+
+    #model = build_optimization_model(inputs, settings, "CVaR", 0.75)
+    set_objective!(model, "Weighted CVaR"; obj_weight=0.75)
+
+    @info("CVaR objective function: ", objective_function(model))
     output_cvar, model = run_optimization_model(model, inputs, settings)
-    results_destination = string(results_path,results_folder,"/CVaR_max")
-    write_results(output_cvar, inputs, settings, results_destination)
+    results_destination = string(results_path,results_folder,"/CVaR")
+    df_cap, df_syscost, df_syscost_risk, df_emissions = write_results(output_cvar, inputs, settings, results_destination)
+    push!(results_cap, df_cap)
+    push!(results_syscost, df_syscost)
+    push!(results_syscost_risk, df_syscost_risk)
+    push!(results_emissions, df_emissions)
 
 
     # Set budgets?
-    println("Risk adjusted system cost of EV solution: ", output_exp["Risk adjusted system cost"])
-    println("Risk adjusted system cost of CVaR solution: ", output_cvar["Risk adjusted system cost"])
-    println("Setting budget between the two solutions and running random exploration. Budget: ", 0.5*(output_cvar["Risk adjusted system cost"] + output_exp["Risk adjusted system cost"]))
-    add_budget_constraint!(model, 0.5*(output_cvar["Risk adjusted system cost"] + output_exp["Risk adjusted system cost"]) , "System_CVaR"; risk_aversion=0.75)
-    add_budget_constraint!(model, output_cvar["Investment cost"], "Investment"; risk_aversion=0.0)
+    @info("Risk adjusted system cost of EV solution: ", output_exp["Risk adjusted system cost"])
+    @info("Risk adjusted system cost of CVaR solution: ", output_cvar["Risk adjusted system cost"])
+    
+    #add_budget_constraint!(model, 0.5*(output_cvar["Risk adjusted system cost"] + output_exp["Risk adjusted system cost"]) , "System_CVaR"; risk_aversion=0.75)
+    add_budget_constraint!(model, (output_exp["Investment cost"] + output_exp["Expected cost"]), "System_Expected")
+    output_cvar_w_expbudget, model = run_optimization_model(model, inputs, settings)
+    results_destination = string(results_path,results_folder,"/CVaR_w_exp_budget")
+    df_cap, df_syscost, df_syscost_risk, df_emissions = write_results(output_cvar_w_expbudget, inputs, settings, results_destination)
+    push!(results_cap, df_cap)
+    push!(results_syscost, df_syscost)
+    push!(results_syscost_risk, df_syscost_risk)
+    push!(results_emissions, df_emissions)
+    #add_budget_constraint!(model, (output_exp["Risk adjusted system cost"]), "System_CVaR"; risk_aversion=0.75)
+    #add_budget_constraint!(model, output_cvar["Investment cost"], "Investment"; risk_aversion=0.0)
 
     # add nse cap constraint
-    println(sum(output_exp["Load shedding"][:,:,:]))
-    println("Load shedding in CVaR solution: ", sum(output_cvar["Load shedding"][:,:,:]))
+    @info("Load shedding in CVaR solution: ", sum(output_cvar["Load shedding"][:,:,:]))
     min_nse = min(sum(output_exp["Load shedding"][:,:,:]), sum(output_cvar["Load shedding"][:,:,:]))
-    println("Setting NSE cap at ", min_nse, " and running random exploration.")
-    add_nse_cap!(model, min_nse)
+    #@info("Setting NSE cap at ", min_nse, " and running random exploration.")
+    #add_nse_cap!(model, min_nse)
 
     for iteration in 1:5
-        set_objective!(model, "Capacity_Random")
+        set_objective!(model, "Capacity Random")
+        @info("Capacity random objective function: ", objective_function(model))
         output_random, model = run_optimization_model(model, inputs, settings)
         results_destination = string(results_path,results_folder,"/Random_",iteration)
-        write_results(output_random, inputs, settings, results_destination)
+        df_cap, df_syscost, df_syscost_risk, df_emissions = write_results(output_random, inputs, settings, results_destination)
+        push!(results_cap, df_cap)
+        push!(results_syscost, df_syscost)
+        push!(results_syscost_risk, df_syscost_risk)
+        push!(results_emissions, df_emissions)
     end
 
-
+    write_exploration_results!(results_cap, results_syscost, results_syscost_risk, results_emissions, results_folder)
+    
 end
 
 run_stochastic_exploration()

@@ -314,6 +314,7 @@ function build_optimization_model(inputs, settings, objective_type::String, obj_
     set_optimizer_attribute(gep, "Method", 2)
     set_optimizer_attribute(gep, "Crossover", 0)
     set_optimizer_attribute(gep, "BarConvTol", 1e-2)
+    set_optimizer_attribute(gep, "NumericFocus", 3)
     
     # ~~~~
     # Load inputs
@@ -543,6 +544,21 @@ function run_optimization_model(gep, inputs, settings)
 
     optimize!(gep)
 
+    if termination_status(gep) != MOI.OPTIMAL
+        @info("Model did not solve to optimality. Status: ", termination_status(gep))
+        compute_conflict!(gep)
+        list_of_conflicting_constraints = ConstraintRef[];
+        for (F, S) in list_of_constraint_types(gep)
+            for con in all_constraints(gep, F, S)
+                if get_attribute(con, MOI.ConstraintConflictStatus()) == MOI.IN_CONFLICT
+                    push!(list_of_conflicting_constraints, con)
+                end
+            end
+        end
+        display(list_of_conflicting_constraints)
+        error("Model infeasible. See conflicting constraints above.")
+    end
+
      # Numerical settings
     scaling_factor_demand = 1 # to GWs
     scaling_factor_obj = 1 
@@ -712,34 +728,78 @@ end
 function set_objective!(model, objective_type::String; obj_weight::Float64 = -1.0)
     if objective_type == "Expectation"
         @objective(model, Min, model[:investment_cost] + model[:expected_cost])
+    
     elseif objective_type == "Weighted CVaR"
         if obj_weight < -0.0001 || obj_weight > 1.001
             error("For Weighted CVaR objective, please provide a valid weight between 0 and 1.")
         end
         @objective(model, Min, model[:investment_cost] + obj_weight*model[:cvar] + (1-obj_weight)*model[:expected_cost])
-    else objective_type == "Capacity_Random"
-        simple_coeffs = rand(-1:1, size(model[:x]))
+    elseif objective_type == "Capacity Random"
+        simple_coeffs = randn(size(model[:x]))*1000
         @objective(model, Min, simple_coeffs'*model[:x])
+    else
+        error("Unsupported objective type. Please choose from 'Expectation', 'Weighted CVaR', or 'Capacity_Random'.")
     end
 end
 
 # Add budget constraint
 
 function add_budget_constraint!(model::Model, budget::Float64, budget_type::String; risk_aversion::Float64 = -1.0)
+    budget_added = Symbol[]
     if budget_type == "Investment"
-        @constraint(model, model[:investment_cost] <= budget)
+        @constraint(model, c_budget_inv, model[:investment_cost] <= budget)
+        push!(budget_added, :c_budget_inv)
     elseif budget_type == "Expected"
-        @constraint(model, model[:expected_cost] <= budget)
+        @constraint(model, c_budget_exp, model[:expected_cost] <= budget)
+        push!(budget_added, :c_budget_exp)
     elseif budget_type == "CVaR"
-        @constraint(model, model[:cvar] <= budget)
+        @constraint(model, c_budget_cvar, model[:cvar] <= budget)
+        push!(budget_added, :c_budget_cvar)
     elseif budget_type == "System_Expected"
-        @constraint(model, model[:investment_cost] + model[:expected_cost] <= budget)
+        @constraint(model, c_budget_sys_exp, model[:investment_cost] + model[:expected_cost] <= budget)
+        push!(budget_added, :c_budget_sys_exp)
     elseif budget_type == "System_CVaR"
         if risk_aversion <= 0 || risk_aversion >= 1
             error("For System_CVaR budget constraint, please provide a valid risk aversion weight between 0 and 1.")
         end
-        @constraint(model, model[:investment_cost] + risk_aversion*model[:cvar] + (1-risk_aversion)*model[:expected_cost] <= budget)
+        @constraint(model, c_budget_sys_cvar, model[:investment_cost] + (1-risk_aversion)*model[:cvar] + (risk_aversion)*model[:expected_cost] <= budget)
+        push!(budget_added, :c_budget_sys_cvar)
+    else
+        error("Unsupported budget type. Please choose from 'Investment', 'Expected', 'CVaR', 'System_Expected', or 'System_CVaR'.")
     end
+
+    @info("Added budget constraint: ", model[budget_added[1]])
+    return model
+end
+
+function add_budget_constraint!(model::Model, budget::Vector, budget_type::Vector; risk_aversion::Float64 = -1.0)
+    budget_added = Symbol[]
+    for i in 1:length(budget)
+        if budget_type[i] == "Investment"
+            @constraint(model, c_budget_inv, model[:investment_cost] <= budget[i])
+            push!(budget_added, :c_budget_inv)
+        elseif budget_type[i] == "Expected"
+            @constraint(model, c_budget_exp, model[:expected_cost] <= budget[i])
+            push!(budget_added, :c_budget_exp)
+        elseif budget_type[i] == "CVaR"
+            @constraint(model, c_budget_cvar, model[:cvar] <= budget[i])
+            push!(budget_added, :c_budget_cvar)
+        elseif budget_type[i] == "System_Expected"
+            @constraint(model, c_budget_sys_exp, model[:investment_cost] + model[:expected_cost] <= budget[i])
+            push!(budget_added, :c_budget_sys_exp)
+        elseif budget_type[i] == "System_CVaR"
+            if risk_aversion <= 0 || risk_aversion >= 1
+                error("For System_CVaR budget constraint, please provide a valid risk aversion weight between 0 and 1.")
+            end
+            @constraint(model, c_budget_sys_cvar, model[:investment_cost] + (1-risk_aversion)*model[:cvar] + (risk_aversion)*model[:expected_cost] <= budget[i])
+            push!(budget_added, :c_budget_sys_cvar)
+        else
+            error("Unsupported budget type. Please choose from 'Investment', 'Expected', 'CVaR', 'System_Expected', or 'System_CVaR'.")
+        end
+
+        @info("Added budget constraint: ", model[budget_added[i]])
+    end
+    return model
 end
 
 function add_nse_cap!(model::Model, cap::Float64)

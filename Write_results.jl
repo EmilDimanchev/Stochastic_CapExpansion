@@ -168,6 +168,72 @@ function write_results(model_output, inputs, settings, results_folder)
     CSV.write(string(results_folder,sep,"system_cost.csv"), df_syscost)
     CSV.write(string(results_folder,sep,"risk_system_cost.csv"), df_syscost_risk)
 
+    return df_cap, df_syscost, df_syscost_risk, df_emissions
+
 end
 
 
+function write_exploration_results!(dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_syscost_risk::AbstractVector, dfs_emissions::AbstractVector, results_folder::String, labels::AbstractVector = [])
+
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+
+    names = gather_names(dfs_cap[1], dfs_syscost[1], dfs_syscost_risk[1], dfs_emissions[1], length(labels) > 0)
+    data = Array{Float64,2}(undef, length(dfs_cap), length(names))
+    data = gather_data(data, dfs_cap, dfs_syscost, dfs_syscost_risk, dfs_emissions, labels)
+    df_exploration = DataFrame(data, names)
+
+    CSV.write(joinpath(@__DIR__,results_folder,"exploration_results.csv"), df_exploration)
+
+end
+
+function gather_names(cap::DataFrame, sys_cost::DataFrame, sys_cost_risk::DataFrame, emissions::DataFrame, label_bool::Bool = false)
+    name_vec = []
+    for resource in cap.Resource
+        push!(name_vec, resource)
+    end
+    for col in names(sys_cost)
+        push!(name_vec, col)
+    end
+    for col in names(sys_cost_risk)
+        push!(name_vec, col)
+    end
+    for col in names(emissions)
+        push!(name_vec, col)
+    end
+    if label_bool
+        name_vec = vcat("Iteration Name", name_vec)
+    end
+    return name_vec
+end
+
+function gather_data(data::AbstractArray,dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_syscost_risk::AbstractVector, dfs_emissions::AbstractVector, labels::AbstractVector)
+    
+    for i in 1:length(dfs_cap)
+        row = make_row(dfs_cap[i], dfs_syscost[i], dfs_syscost_risk[i], dfs_emissions[i], length(labels) > 0 ? labels[i] : "")
+        data[i,:] = row
+    end
+
+    return data
+end
+
+function make_row(cap::DataFrame, sys_cost::DataFrame, sys_cost_risk::DataFrame, emissions::DataFrame, label::String)
+    row = []
+    if label != ""
+        push!(row, label)
+    end
+    for resource in cap.Resource
+        push!(row, cap[cap.Resource .== resource, :Capacity][1])
+    end
+    for col in names(sys_cost)
+        push!(row, sys_cost[1,col])
+    end
+    for col in names(sys_cost_risk)
+        push!(row, sys_cost_risk[1,col])
+    end
+    for col in names(emissions)
+        push!(row, emissions[1,col])
+    end
+    return row
+end
