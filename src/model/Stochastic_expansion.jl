@@ -302,12 +302,13 @@ end
 
 #### Build model ---- base stochastic model
 
-function build_optimization_model(inputs, settings, objective_type::String, obj_weight::Float64)
+function build_optimization_model(inputs, settings, objective_type::String)
 
     # Numerical settings
     scaling_factor_demand = 1 # to GWs
     scaling_factor_obj = 1 
     scaling_factor_cost = 1 # to $1,000,000s
+    risk_aversion_weight = settings["Risk aversion weight"] ### Currently set consistently across runs and ahead of time
 
     # Model
     gep = Model(Gurobi.Optimizer)
@@ -321,9 +322,6 @@ function build_optimization_model(inputs, settings, objective_type::String, obj_
     # ~~~~
     # Load inputs
     # ~~~
-
-    risk_aversion_flag = objective_type
-    risk_aversion_weight = obj_weight #(between 0 and 1)
     # Settings
     storage_flag = inputs["Storage flag"]
     itc_flag = settings["Investment tax credits flag"]
@@ -536,7 +534,7 @@ function build_optimization_model(inputs, settings, objective_type::String, obj_
         
     end
     set_silent(gep)
-    gep.ext[:risk_aversion] = obj_weight
+    gep.ext[:risk_aversion] = risk_aversion_weight
     return gep
 
 end
@@ -741,7 +739,6 @@ function set_objective!(model, objective_type::String; obj_weight::Float64 = -1.
         if set_coeffs == []
             error("For Capacity objective, please provide a vector of coefficients for the capacity expression.")
         end
-        println(set_coeffs)
         @objective(model, Min, set_coeffs'*model[:x])
         @info("Objective set to minimize capacity expression: ", objective_function(model))
     else

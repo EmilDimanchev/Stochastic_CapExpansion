@@ -168,27 +168,27 @@ function write_results(model_output, inputs, settings, results_folder)
     CSV.write(string(results_folder,sep,"system_cost.csv"), df_syscost)
     CSV.write(string(results_folder,sep,"risk_system_cost.csv"), df_syscost_risk)
 
-    return df_cap, df_syscost, df_syscost_risk, df_emissions
+    return df_cap, df_syscost, df_syscost_risk, df_emissions, df_oper_all
 
 end
 
 
-function write_exploration_results!(dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_syscost_risk::AbstractVector, dfs_emissions::AbstractVector, results_folder::String, labels::AbstractVector = [])
+function write_exploration_results!(dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_syscost_risk::AbstractVector, dfs_emissions::AbstractVector, invcost::AbstractVector, dfs_opcost::AbstractVector, results_folder::String, labels::AbstractVector = [])
 
     if !isdir(results_folder)
         mkpath(results_folder)
     end
 
-    names = gather_names(dfs_cap[1], dfs_syscost[1], dfs_syscost_risk[1], dfs_emissions[1], length(labels) > 0)
-    data = Array{Float64,2}(undef, length(dfs_cap), length(names))
-    data = gather_data(data, dfs_cap, dfs_syscost, dfs_syscost_risk, dfs_emissions, labels)
+    names = gather_names(dfs_cap[1], dfs_syscost[1], dfs_syscost_risk[1], dfs_emissions[1], dfs_opcost[1], length(labels) > 0)
+    data = Array{Any,2}(undef, length(dfs_cap), length(names))
+    data = gather_data(data, dfs_cap, dfs_syscost, dfs_syscost_risk, dfs_emissions, invcost, dfs_opcost, labels)
     df_exploration = DataFrame(data, names)
 
-    CSV.write(joinpath(@__DIR__,results_folder,"exploration_results.csv"), df_exploration)
+    CSV.write(joinpath(results_folder,"exploration_results.csv"), df_exploration)
 
 end
 
-function gather_names(cap::DataFrame, sys_cost::DataFrame, sys_cost_risk::DataFrame, emissions::DataFrame, label_bool::Bool = false)
+function gather_names(cap::DataFrame, sys_cost::DataFrame, sys_cost_risk::DataFrame, emissions::DataFrame, oper_all::DataFrame, label_bool::Bool = false)
     name_vec = []
     for resource in cap.Resource
         push!(name_vec, resource)
@@ -202,24 +202,28 @@ function gather_names(cap::DataFrame, sys_cost::DataFrame, sys_cost_risk::DataFr
     for col in names(emissions)
         push!(name_vec, col)
     end
+    push!(name_vec, "Investment cost")
+    for col in names(oper_all)
+        push!(name_vec, col)
+    end
     if label_bool
         name_vec = vcat("Iteration Name", name_vec)
     end
     return name_vec
 end
 
-function gather_data(data::AbstractArray,dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_syscost_risk::AbstractVector, dfs_emissions::AbstractVector, labels::AbstractVector)
+function gather_data(data::AbstractArray,dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_syscost_risk::AbstractVector, dfs_emissions::AbstractVector, invcost::AbstractVector, dfs_opcost::AbstractVector, labels::AbstractVector)
     
     for i in 1:length(dfs_cap)
-        row = make_row(dfs_cap[i], dfs_syscost[i], dfs_syscost_risk[i], dfs_emissions[i], length(labels) > 0 ? labels[i] : "")
+        row = make_row(dfs_cap[i], dfs_syscost[i], dfs_syscost_risk[i], dfs_emissions[i], dfs_opcost[i], invcost[i], length(labels) > 0 ? labels[i] : "")
         data[i,:] = row
     end
 
     return data
 end
 
-function make_row(cap::DataFrame, sys_cost::DataFrame, sys_cost_risk::DataFrame, emissions::DataFrame, label::String)
-    row = []
+function make_row(cap::DataFrame, sys_cost::DataFrame, sys_cost_risk::DataFrame, emissions::DataFrame, oper_all::DataFrame, investment_cost::Float64, label::String)
+    row = Any[]
     if label != ""
         push!(row, label)
     end
@@ -235,5 +239,10 @@ function make_row(cap::DataFrame, sys_cost::DataFrame, sys_cost_risk::DataFrame,
     for col in names(emissions)
         push!(row, emissions[1,col])
     end
+    push!(row, investment_cost)
+    for col in names(oper_all)
+        push!(row, oper_all[1,col])
+    end
+
     return row
 end
