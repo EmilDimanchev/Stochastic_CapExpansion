@@ -59,6 +59,8 @@ function run_stochastic_exploration()
     settings["Carbon cap"] = 25e3 # Value used if activated
     settings["Contracts"] = false
     settings["Budget Type"] = "System_Expectation"
+    settings["Vector Type"] = "random"
+    settings["Iterations"] = 6
 
     # Load data
     inputs = load_input_data(inputs_path, settings)
@@ -67,6 +69,7 @@ function run_stochastic_exploration()
     results_syscost_risk = []
     results_emissions = []
     run_labels = []
+    iterations = settings["Iterations"]
 
     # Run model
 
@@ -83,12 +86,9 @@ function run_stochastic_exploration()
 
     @info("Expected value system cost of EV solution: ", output_exp["Expected cost"])
 
-    @info("Expected value objective function: ", objective_function(model))
-
     #model = build_optimization_model(inputs, settings, "CVaR", 0.75)
     set_objective!(model, "Weighted CVaR"; obj_weight=0.75)
 
-    @info("CVaR objective function: ", objective_function(model))
     output_cvar, model = run_optimization_model(model, inputs, settings)
     results_destination = string(results_path,results_folder,"/CVaR")
     df_cap, df_syscost, df_syscost_risk, df_emissions = write_results(output_cvar, inputs, settings, results_destination)
@@ -103,7 +103,7 @@ function run_stochastic_exploration()
     @info("Risk adjusted system cost of CVaR solution: ", output_cvar["Risk adjusted system cost"])
     
     #add_budget_constraint!(model, 0.5*(output_cvar["Risk adjusted system cost"] + output_exp["Risk adjusted system cost"]) , "System_CVaR"; risk_aversion=0.75)
-    add_budget_constraint!(model, (output_exp["Investment cost"] + output_exp["Expected cost"]), "System_Expected")
+    add_budget_constraint!(model, (output_cvar["Investment cost"] + output_cvar["Expected cost"]), "System_Expected")
     output_cvar_w_expbudget, model = run_optimization_model(model, inputs, settings)
     results_destination = string(results_path,results_folder,"/CVaR_w_exp_budget")
     df_cap, df_syscost, df_syscost_risk, df_emissions = write_results(output_cvar_w_expbudget, inputs, settings, results_destination)
@@ -111,18 +111,13 @@ function run_stochastic_exploration()
     push!(results_syscost, df_syscost)
     push!(results_syscost_risk, df_syscost_risk)
     push!(results_emissions, df_emissions)
-    #add_budget_constraint!(model, (output_exp["Risk adjusted system cost"]), "System_CVaR"; risk_aversion=0.75)
-    #add_budget_constraint!(model, output_cvar["Investment cost"], "Investment"; risk_aversion=0.0)
+    add_budget_constraint!(model, (output_cvar["Risk adjusted system cost"]), "System_CVaR"; risk_aversion=0.75)
 
-    # add nse cap constraint
-    @info("Load shedding in CVaR solution: ", sum(output_cvar["Load shedding"][:,:,:]))
-    min_nse = min(sum(output_exp["Load shedding"][:,:,:]), sum(output_cvar["Load shedding"][:,:,:]))
-    #@info("Setting NSE cap at ", min_nse, " and running random exploration.")
-    #add_nse_cap!(model, min_nse)
 
-    for iteration in 1:5
-        set_objective!(model, "Capacity Random")
-        @info("Capacity random objective function: ", objective_function(model))
+    vectors = generate_weights(iterations, length(model[:x]), settings["Vector Type"])
+
+    for iteration in 1:iterations
+        set_objective!(model, "Capacity"; set_coeffs = vectors[iteration])
         output_random, model = run_optimization_model(model, inputs, settings)
         results_destination = string(results_path,results_folder,"/Random_",iteration)
         df_cap, df_syscost, df_syscost_risk, df_emissions = write_results(output_random, inputs, settings, results_destination)

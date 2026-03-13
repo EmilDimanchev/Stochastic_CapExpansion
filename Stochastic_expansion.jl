@@ -3,6 +3,7 @@ using CSV
 using DataFrames
 using Gurobi
 using Random
+using LinearAlgebra
 
 function optimization_model(inputs, settings)
 
@@ -313,8 +314,9 @@ function build_optimization_model(inputs, settings, objective_type::String, obj_
 
     set_optimizer_attribute(gep, "Method", 2)
     set_optimizer_attribute(gep, "Crossover", 0)
-    set_optimizer_attribute(gep, "BarConvTol", 1e-2)
-    set_optimizer_attribute(gep, "NumericFocus", 3)
+    set_optimizer_attribute(gep, "BarConvTol", 1e-5)
+    set_optimizer_attribute(gep, "NumericFocus", 2)
+    set_optimizer_attribute(gep, "FeasibilityTol", 1e-5)
     
     # ~~~~
     # Load inputs
@@ -533,7 +535,7 @@ function build_optimization_model(inputs, settings, objective_type::String, obj_
         @objective(gep, Min, sys_cost)
         
     end
-
+    set_silent(gep)
     gep.ext[:risk_aversion] = obj_weight
     return gep
 
@@ -725,21 +727,55 @@ end
 
 # Set objective
 
-function set_objective!(model, objective_type::String; obj_weight::Float64 = -1.0)
+function set_objective!(model, objective_type::String; obj_weight::Float64 = -1.0, set_coeffs::Vector = [])
     if objective_type == "Expectation"
         @objective(model, Min, model[:investment_cost] + model[:expected_cost])
-    
+        @info("Objective set to minimize expected system cost: ", objective_function(model))
     elseif objective_type == "Weighted CVaR"
         if obj_weight < -0.0001 || obj_weight > 1.001
             error("For Weighted CVaR objective, please provide a valid weight between 0 and 1.")
         end
         @objective(model, Min, model[:investment_cost] + obj_weight*model[:cvar] + (1-obj_weight)*model[:expected_cost])
-    elseif objective_type == "Capacity Random"
-        simple_coeffs = randn(size(model[:x]))*1000
-        @objective(model, Min, simple_coeffs'*model[:x])
+        @info("Objective set to minimize weighted CVaR. Weight is: ", obj_weight, " Objective function: ", objective_function(model))
+    elseif objective_type == "Capacity"
+        if set_coeffs == []
+            error("For Capacity objective, please provide a vector of coefficients for the capacity expression.")
+        end
+        println(set_coeffs)
+        @objective(model, Min, set_coeffs'*model[:x])
+        @info("Objective set to minimize capacity expression: ", objective_function(model))
     else
-        error("Unsupported objective type. Please choose from 'Expectation', 'Weighted CVaR', or 'Capacity_Random'.")
+        error("Unsupported objective type. Please choose from 'Expectation', 'Weighted CVaR', or 'Capacity'.")
     end
+end
+
+function generate_weights(iterations::Int64, num_resources::Int, option::String)
+    weights = Vector{Vector{Float64}}(undef, 0)
+    vector = zeros(num_resources)
+    for i in 1:ceil(Int, iterations/2)
+        if option == "random"
+            vector = randn(num_resources)*1000
+        elseif option == "min/max"
+            vector = rand(-1:1, num_resources)*1000
+        end
+        push!(weights, vector)
+        push!(weights, -1*vector) 
+    end
+
+    weights = sort_weights(weights)
+
+    return weights
+end
+
+function sort_weights(weights::Vector{Vector{Float64}})
+    norms = [norm(weights[i]) for i in 1:length(weights)]
+    dot_product = collect(dot(weights[i], weights[1]) for i in 1:length(weights))./norms
+    dot_product = clamp.(dot_product, -1.0, 1.0)
+    angles = [acos(dot_product[i]) for i in 1:length(weights)]
+    sorted_indices = sortperm(angles)
+    weights = weights[sorted_indices]
+
+    return weights
 end
 
 # Add budget constraint

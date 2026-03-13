@@ -88,9 +88,9 @@ function write_results(model_output, inputs, settings, results_folder)
     
     # Risk-adjusted system cost
     # For now only works when a single scenario is in the CVaR tail
-    cvar = maximum(model_output["Operating cost"])
+    #cvar = maximum(model_output["Operating cost"])
     avg_cvar = maximum(model_output["Operating cost average"])
-    sys_cost_risk = model_output["Investment cost"] + Ω*exp_op_cost + (1-Ω)*cvar
+    sys_cost_risk = model_output["Risk adjusted system cost"] #model_output["Investment cost"] + Ω*exp_op_cost + (1-Ω)*cvar
     avg_sys_cost_risk = model_output["Investment cost"] + Ω*exp_avg_op_cost + (1-Ω)*avg_cvar
     # Save to dataframe
     df_syscost_risk = DataFrame(SystemCostRisk = sys_cost_risk, AverageCostRisk = avg_sys_cost_risk)
