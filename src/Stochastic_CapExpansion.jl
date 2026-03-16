@@ -1,9 +1,9 @@
 module Stochastic_CapExpansion
 
     using JuMP, Gurobi, DataFrames, CSV, Random, LinearAlgebra
-    using Revise, YAML
+    using Revise, YAML, Combinatorics
 
-    import JuMP, Gurobi, DataFrames, CSV, YAML, Random, LinearAlgebra
+    import JuMP, Gurobi, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics
 
     export build_optimization_model, run_optimization_model, add_budget_constraint!, add_nse_cap!, set_objective!, write_results, write_exploration_results!, load_input_data
     export generate_weights, load_settings

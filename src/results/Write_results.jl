@@ -173,7 +173,7 @@ function write_results(model_output, inputs, settings, results_folder)
 end
 
 
-function write_exploration_results!(dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_syscost_risk::AbstractVector, dfs_emissions::AbstractVector, invcost::AbstractVector, dfs_opcost::AbstractVector, results_folder::String, labels::AbstractVector = [])
+function write_exploration_results!(dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_syscost_risk::AbstractVector, dfs_emissions::AbstractVector, invcost::AbstractVector, dfs_opcost::AbstractVector, results_folder::String, labels::AbstractVector = [], scenario::String = "")
 
     if !isdir(results_folder)
         mkpath(results_folder)
@@ -184,7 +184,7 @@ function write_exploration_results!(dfs_cap::AbstractVector, dfs_syscost::Abstra
     data = gather_data(data, dfs_cap, dfs_syscost, dfs_syscost_risk, dfs_emissions, invcost, dfs_opcost, labels)
     df_exploration = DataFrame(data, names)
 
-    CSV.write(joinpath(results_folder,"exploration_results.csv"), df_exploration)
+    CSV.write(joinpath(results_folder,"Summary_"*scenario*".csv"), df_exploration)
 
 end
 
