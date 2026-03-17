@@ -303,6 +303,9 @@ function simple_comp()
     if settings["Seed"] !== nothing
         Random.seed!(settings["Seed"])
     end
+    settings["Demand risk flag"] = false
+    settings["Fuel risk flag"] = false
+    """
     a = [1.0 0.0]
     b = [0.0 1.0]
     probabilities_scenarios = [[a; a], [a; b], [b; a], [b; b]]
@@ -311,14 +314,15 @@ function simple_comp()
     #outputs_cvar, vectors = run_stochastic_exploration_single_type(inputs, settings, results_folder, summary_folder; type ="System_Weighted_CVaR",vector_set = nothing, budget_multiplier=1.10)
     outputs_mixed, vectors = run_stochastic_exploration(inputs, settings, results_folder, summary_folder; budget_multiplier=1.10)
 """
-    for (i, scenario) in enumerate(probabilities_scenarios)
-        println("Testing with demand scenario probabilities: ", scenario[1,:], " and fuel price scenario probabilities: ", scenario[2,:])
-        inputs["Demand scenario probabilities"] = scenario[1,:]
-        inputs["Fuel price scenario probabilities"] = scenario[2, :]
+    #for (i, scenario) in enumerate(probabilities_scenarios)
+     #   println("Testing with demand scenario probabilities: ", scenario[1,:], " and fuel price scenario probabilities: ", scenario[2,:])
+     #   inputs["Demand scenario probabilities"] = scenario[1,:]
+    #    inputs["Fuel price scenario probabilities"] = scenario[2, :]
+        i = 0
         results_path = joinpath(results_folder, "Results_Base_MGA", "Scenario_"*string(i))
-        _ = run_base_mga(inputs, settings, results_path, summary_folder; budget_multiplier=1.10, vector_set=vectors, scenario=i)
-    end
-"""
+        _ = run_base_mga(inputs, settings, results_path, summary_folder; budget_multiplier=1.10, vector_set=nothing, scenario=i)
+    #end
+
 end
 
 simple_comp()
