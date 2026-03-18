@@ -1,0 +1,31 @@
+Results folder path: <results_path>
+# Risk
+Demand risk flag: true
+Fuel risk flag: true
+Risk aversion flag: true
+Risk aversion weight: 0.75
+Value-at-Risk percent: 0.01
+# Policy instruments
+Price cap: 2000
+Investment tax credits flag: false
+Production tax credits flag: false
+Standard flag: false
+Carbon cap flag: false
+Carbon tax flag: false
+# Policy parameters
+# Investment tax credits
+Endogenous tax credits flag: false
+Tax credits: [0, 0, 0, 0, 0]
+# Production tax credit
+Production credits: [0, 0, 0, 0]
+# CES
+Standard mandate: 0.80
+# Carbon tax 
+Carbon tax: 0
+# Cap and trade
+Carbon cap: 25000
+Contracts: false
+Vector Type: random
+Iterations: 2
+Capacity Exploration: true
+Seed: 1234

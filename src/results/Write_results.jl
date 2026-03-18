@@ -6,8 +6,8 @@ function write_results(model_output, inputs, settings, results_folder)
     end
 
     # Parameters
-    P = inputs["Demand scenario probabilities"]
-    P_f = inputs["Fuel price scenario probabilities"]
+    P = inputs["Output Demand scenario probabilities"]
+    P_f = inputs["Output Fuel price scenario probabilities"]
     time_index = inputs["Time index"]
     t_weights = inputs["Period weights"]
     co2_factors = inputs["CO2 emission intensities"]
@@ -82,18 +82,27 @@ function write_results(model_output, inputs, settings, results_folder)
     exp_avg_inv_cost = sum(P[s]*P_f[f]*model_output["Investment cost average"][s] for s in 1:S, f in 1:F)
     # Average system cost in x$/MWh
     avg_syscost = exp_avg_op_cost + exp_avg_inv_cost
+    # Average system cost by scenario
+    avg_sys_cost_scenarios = [model_output["Operating cost average"][s,f] + model_output["Investment cost average"][s] for s in 1:S, f in 1:F]
     # Save to dataframe
     df_syscost = DataFrame(SystemCost = system_cost, AverageCost=avg_syscost)
     # df_avg_syscost = DataFrame(SystemCost = avg_syscost)
     
     # Risk-adjusted system cost
     # For now only works when a single scenario is in the CVaR tail
-    cvar = maximum(model_output["Operating cost"])
+    #cvar = maximum(model_output["Operating cost"])
     avg_cvar = maximum(model_output["Operating cost average"])
-    sys_cost_risk = model_output["Investment cost"] + Ω*exp_op_cost + (1-Ω)*cvar
+    sys_cost_risk = model_output["Risk adjusted system cost"] #model_output["Investment cost"] + Ω*exp_op_cost + (1-Ω)*cvar
+    cvar_op = maximum(model_output["Operating cost"])
+    sys_cost_risk_expost = model_output["Investment cost"] + Ω*exp_op_cost + (1-Ω)*cvar_op
     avg_sys_cost_risk = model_output["Investment cost"] + Ω*exp_avg_op_cost + (1-Ω)*avg_cvar
+    println("Investment cost: ", model_output["Investment cost"])
+    println("Expected operating cost: ", exp_avg_op_cost)
+    println("Average CVaR operating cost: ", avg_cvar)
+    println("Model CVaR: ", model_output["CVaR Value"])
+    println("Worst-case operating cost: ", cvar_op)
     # Save to dataframe
-    df_syscost_risk = DataFrame(SystemCostRisk = sys_cost_risk, AverageCostRisk = avg_sys_cost_risk)
+    df_syscost_risk = DataFrame(SystemCostRisk = sys_cost_risk, SystemCostRisk_ExPost = sys_cost_risk_expost, AverageCostRisk = avg_sys_cost_risk)
 
     # Objective 
     objective_val = model_output["Objective function value"]
@@ -113,6 +122,10 @@ function write_results(model_output, inputs, settings, results_folder)
             # Power price
             col_name = string("Demand-",string(s),"_FuelPrice-",string(f))
             insertcols!(df_price, col_name => price[:,s,f])
+
+            # Average system cost by scenario
+            col_name_syscost = string("Average_System_Cost_", "Demand-",string(s),"_FuelPrice-",string(f))
+            insertcols!(df_syscost, col_name_syscost => avg_sys_cost_scenarios[s,f])
 
             # Collect CO2 emissions
             insertcols!(df_co2_all, col_name => model_output["Emissions"][s,f])
@@ -168,6 +181,82 @@ function write_results(model_output, inputs, settings, results_folder)
     CSV.write(string(results_folder,sep,"system_cost.csv"), df_syscost)
     CSV.write(string(results_folder,sep,"risk_system_cost.csv"), df_syscost_risk)
 
+    return df_cap, df_syscost, df_syscost_risk, df_emissions, df_oper_all
+
 end
 
 
+function write_exploration_results!(dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_syscost_risk::AbstractVector, dfs_emissions::AbstractVector, invcost::AbstractVector, dfs_opcost::AbstractVector, results_folder::String, labels::AbstractVector = [], scenario::String = "")
+
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+
+    names = gather_names(dfs_cap[1], dfs_syscost[1], dfs_syscost_risk[1], dfs_emissions[1], dfs_opcost[1], length(labels) > 0)
+    data = Array{Any,2}(undef, length(dfs_cap), length(names))
+    data = gather_data(data, dfs_cap, dfs_syscost, dfs_syscost_risk, dfs_emissions, invcost, dfs_opcost, labels)
+    println(names)
+    df_exploration = DataFrame(data, names)
+
+    CSV.write(joinpath(results_folder,"Summary_"*scenario*".csv"), df_exploration)
+
+end
+
+function gather_names(cap::DataFrame, sys_cost::DataFrame, sys_cost_risk::DataFrame, emissions::DataFrame, oper_all::DataFrame, label_bool::Bool = false)
+    name_vec = []
+    for resource in cap.Resource
+        push!(name_vec, resource)
+    end
+    for col in names(sys_cost)
+        push!(name_vec, col)
+    end
+    for col in names(sys_cost_risk)
+        push!(name_vec, col)
+    end
+    for col in names(emissions)
+        push!(name_vec, col)
+    end
+    push!(name_vec, "Investment cost")
+    for col in names(oper_all)
+        push!(name_vec, col)
+    end
+    if label_bool
+        name_vec = vcat("Iteration Name", name_vec)
+    end
+    return name_vec
+end
+
+function gather_data(data::AbstractArray,dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_syscost_risk::AbstractVector, dfs_emissions::AbstractVector, invcost::AbstractVector, dfs_opcost::AbstractVector, labels::AbstractVector)
+    
+    for i in 1:length(dfs_cap)
+        row = make_row(dfs_cap[i], dfs_syscost[i], dfs_syscost_risk[i], dfs_emissions[i], dfs_opcost[i], invcost[i], length(labels) > 0 ? labels[i] : "")
+        data[i,:] = row
+    end
+
+    return data
+end
+
+function make_row(cap::DataFrame, sys_cost::DataFrame, sys_cost_risk::DataFrame, emissions::DataFrame, oper_all::DataFrame, investment_cost::Float64, label::String)
+    row = Any[]
+    if label != ""
+        push!(row, label)
+    end
+    for resource in cap.Resource
+        push!(row, cap[cap.Resource .== resource, :Capacity][1])
+    end
+    for col in names(sys_cost)
+        push!(row, sys_cost[1,col])
+    end
+    for col in names(sys_cost_risk)
+        push!(row, sys_cost_risk[1,col])
+    end
+    for col in names(emissions)
+        push!(row, emissions[1,col])
+    end
+    push!(row, investment_cost)
+    for col in names(oper_all)
+        push!(row, oper_all[1,col])
+    end
+
+    return row
+end
