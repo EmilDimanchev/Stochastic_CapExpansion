@@ -26,6 +26,6 @@ Carbon tax: 0
 Carbon cap: 25000
 Contracts: false
 Vector Type: random
-Iterations: 50
+Iterations: 2
 Capacity Exploration: true
 Seed: 1234

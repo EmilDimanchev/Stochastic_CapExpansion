@@ -539,6 +539,14 @@ function build_optimization_model(inputs, settings, objective_type::String)
 
 end
 
+
+function build_operational_models(inputs, settings)
+    gep_op = Array{Model,2}(undef, size(inputs["Demand scenario probabilities"])[2], size(inputs["Fuel price scenario probabilities"])[2])
+
+    return gep_op
+end
+
+
 # Run model
 function run_optimization_model(gep, inputs, settings)
 
@@ -749,7 +757,10 @@ function set_objective!(model, objective_type::String; obj_weight::Float64 = -1.
     end
 end
 
-function generate_weights(iterations::Int64, num_resources::Int, option::String)
+function generate_weights(iterations::Int64, num_resources::Int, option::String, settings::Dict)
+    if settings["Seed"] !== nothing
+        Random.seed!(settings["Seed"])
+    end
     weights = Vector{Vector{Float64}}(undef, 0)
     vector = zeros(num_resources)
     for i in 1:ceil(Int, iterations/2)

@@ -6,8 +6,8 @@ function write_results(model_output, inputs, settings, results_folder)
     end
 
     # Parameters
-    P = inputs["Demand scenario probabilities"]
-    P_f = inputs["Fuel price scenario probabilities"]
+    P = inputs["Output Demand scenario probabilities"]
+    P_f = inputs["Output Fuel price scenario probabilities"]
     time_index = inputs["Time index"]
     t_weights = inputs["Period weights"]
     co2_factors = inputs["CO2 emission intensities"]
@@ -82,6 +82,8 @@ function write_results(model_output, inputs, settings, results_folder)
     exp_avg_inv_cost = sum(P[s]*P_f[f]*model_output["Investment cost average"][s] for s in 1:S, f in 1:F)
     # Average system cost in x$/MWh
     avg_syscost = exp_avg_op_cost + exp_avg_inv_cost
+    # Average system cost by scenario
+    avg_sys_cost_scenarios = [model_output["Operating cost average"][s,f] + model_output["Investment cost average"][s] for s in 1:S, f in 1:F]
     # Save to dataframe
     df_syscost = DataFrame(SystemCost = system_cost, AverageCost=avg_syscost)
     # df_avg_syscost = DataFrame(SystemCost = avg_syscost)
@@ -91,9 +93,16 @@ function write_results(model_output, inputs, settings, results_folder)
     #cvar = maximum(model_output["Operating cost"])
     avg_cvar = maximum(model_output["Operating cost average"])
     sys_cost_risk = model_output["Risk adjusted system cost"] #model_output["Investment cost"] + Ω*exp_op_cost + (1-Ω)*cvar
+    cvar_op = maximum(model_output["Operating cost"])
+    sys_cost_risk_expost = model_output["Investment cost"] + Ω*exp_op_cost + (1-Ω)*cvar_op
     avg_sys_cost_risk = model_output["Investment cost"] + Ω*exp_avg_op_cost + (1-Ω)*avg_cvar
+    println("Investment cost: ", model_output["Investment cost"])
+    println("Expected operating cost: ", exp_avg_op_cost)
+    println("Average CVaR operating cost: ", avg_cvar)
+    println("Model CVaR: ", model_output["CVaR Value"])
+    println("Worst-case operating cost: ", cvar_op)
     # Save to dataframe
-    df_syscost_risk = DataFrame(SystemCostRisk = sys_cost_risk, AverageCostRisk = avg_sys_cost_risk)
+    df_syscost_risk = DataFrame(SystemCostRisk = sys_cost_risk, SystemCostRisk_ExPost = sys_cost_risk_expost, AverageCostRisk = avg_sys_cost_risk)
 
     # Objective 
     objective_val = model_output["Objective function value"]
@@ -113,6 +122,10 @@ function write_results(model_output, inputs, settings, results_folder)
             # Power price
             col_name = string("Demand-",string(s),"_FuelPrice-",string(f))
             insertcols!(df_price, col_name => price[:,s,f])
+
+            # Average system cost by scenario
+            col_name_syscost = string("Average_System_Cost_", "Demand-",string(s),"_FuelPrice-",string(f))
+            insertcols!(df_syscost, col_name_syscost => avg_sys_cost_scenarios[s,f])
 
             # Collect CO2 emissions
             insertcols!(df_co2_all, col_name => model_output["Emissions"][s,f])
@@ -182,6 +195,7 @@ function write_exploration_results!(dfs_cap::AbstractVector, dfs_syscost::Abstra
     names = gather_names(dfs_cap[1], dfs_syscost[1], dfs_syscost_risk[1], dfs_emissions[1], dfs_opcost[1], length(labels) > 0)
     data = Array{Any,2}(undef, length(dfs_cap), length(names))
     data = gather_data(data, dfs_cap, dfs_syscost, dfs_syscost_risk, dfs_emissions, invcost, dfs_opcost, labels)
+    println(names)
     df_exploration = DataFrame(data, names)
 
     CSV.write(joinpath(results_folder,"Summary_"*scenario*".csv"), df_exploration)

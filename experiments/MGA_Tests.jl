@@ -6,7 +6,7 @@ using .Stochastic_CapExpansion
 using JuMP, Gurobi, DataFrames, CSV, Random, LinearAlgebra
 using Revise, YAML
 
-function run_stochastic_exploration(inputs::Dict, settings::Dict, results_path::String, summary_folder::String; budget_multiplier::Float64 = 1.10)
+function run_stochastic_exploration(inputs::Dict, settings::Dict, results_path::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing)
 
     # ~~~
     # Define paths
@@ -78,7 +78,7 @@ function run_stochastic_exploration(inputs::Dict, settings::Dict, results_path::
         add_budget_constraint!(model, (output_exp["Investment cost"] + output_exp["Expected cost"])*budget_multiplier, "System_Expected")
         add_budget_constraint!(model, (output_cvar["Risk adjusted system cost"])*budget_multiplier, "System_Weighted_CVaR"; risk_aversion=risk_aversion_weight)
 
-        vectors = generate_weights(iterations, length(model[:x]), settings["Vector Type"])
+        vectors = vector_set == nothing ? generate_weights(iterations, length(model[:x]), settings["Vector Type"], settings) : vector_set
         for iteration in 1:iterations
             set_objective!(model, "Capacity"; set_coeffs = vectors[iteration])
             output_random, model = run_optimization_model(model, inputs, settings)
@@ -158,7 +158,7 @@ function run_stochastic_exploration_single_type(inputs::Dict, settings::Dict, re
             add_budget_constraint!(model, (output["Risk adjusted system cost"])*budget_multiplier, "System_Weighted_CVaR"; risk_aversion=risk_aversion_weight)
         end
 
-        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(model[:x]), settings["Vector Type"])
+        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(model[:x]), settings["Vector Type"], settings)
         for iteration in 1:iterations
             set_objective!(model, "Capacity"; set_coeffs = vectors[iteration])
             output_random, model = run_optimization_model(model, inputs, settings)
@@ -216,7 +216,7 @@ function run_base_mga(inputs::Dict, settings::Dict, results_path::String, summar
         budget = lc_value * (budget_multiplier)
     end
     
-    vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(model[:x]), settings["Vector Type"])
+    vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(model[:x]), settings["Vector Type"], settings)
     @info("Using budget of ", budget, " for Base MGA test")
     percent_over_lc = round((budget - lc_value)/lc_value * 100, digits=2)
     @info("This budget is ", percent_over_lc, "% over the cost optimal solution")
@@ -289,7 +289,7 @@ end
 
 function simple_comp()
     inputs_folder = joinpath("inputs","Inputs_30days_5techs")
-    test_index = 2
+    test_index = 3
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -300,28 +300,35 @@ function simple_comp()
     end
     settings = load_settings(inputs_folder)
     inputs = load_input_data(inputs_folder, settings)
-    if settings["Seed"] !== nothing
-        Random.seed!(settings["Seed"])
-    end
+    
+    inputs["Output Demand scenario probabilities"] = inputs["Demand scenario probabilities"] #Establish base weights ahead of time
+    inputs["Output Fuel price scenario probabilities"] = inputs["Fuel price scenario probabilities"]
+    
+    #outputs_exp, vectors = run_stochastic_exploration_single_type(inputs, settings, results_folder, summary_folder; type = "System_Expected", vector_set = nothing, budget_multiplier=1.10)
+    #outputs_cvar, vectors = run_stochastic_exploration_single_type(inputs, settings, results_folder, summary_folder; type ="System_Weighted_CVaR",vector_set = vectors, budget_multiplier=1.10)
+    #outputs_mixed, vectors = run_stochastic_exploration(inputs, settings, results_folder, summary_folder; budget_multiplier=1.10, vector_set=vectors)
+    @info("Running base MGA test for mean scenario")
     settings["Demand risk flag"] = false
     settings["Fuel risk flag"] = false
-    """
-    a = [1.0 0.0]
-    b = [0.0 1.0]
-    probabilities_scenarios = [[a; a], [a; b], [b; a], [b; b]]
-    println("Demand and fuel price scenario probabilities: ", probabilities_scenarios)
-    #outputs_exp, vectors = run_stochastic_exploration_single_type(inputs, settings, results_folder, summary_folder; type = "System_Expected", vector_set = nothing, budget_multiplier=1.10)
-    #outputs_cvar, vectors = run_stochastic_exploration_single_type(inputs, settings, results_folder, summary_folder; type ="System_Weighted_CVaR",vector_set = nothing, budget_multiplier=1.10)
-    outputs_mixed, vectors = run_stochastic_exploration(inputs, settings, results_folder, summary_folder; budget_multiplier=1.10)
-"""
+    i = 0
+    results_path = joinpath(results_folder, "Results_Base_MGA", "Scenario_"*string(i))
+    _ = run_base_mga(inputs, settings, results_path, summary_folder; budget_multiplier=1.10, vector_set=vectors, scenario=i)
+
+    #settings["Demand risk flag"] = true
+   # settings["Fuel risk flag"] = true
+    #a = [1.0 0.0]
+    #b = [0.0 1.0]
+   #probabilities_scenarios = [[a; a], [a; b], [b; a], [b; b]]
+   # println("Demand and fuel price scenario probabilities: ", probabilities_scenarios)
     #for (i, scenario) in enumerate(probabilities_scenarios)
      #   println("Testing with demand scenario probabilities: ", scenario[1,:], " and fuel price scenario probabilities: ", scenario[2,:])
      #   inputs["Demand scenario probabilities"] = scenario[1,:]
-    #    inputs["Fuel price scenario probabilities"] = scenario[2, :]
-        i = 0
-        results_path = joinpath(results_folder, "Results_Base_MGA", "Scenario_"*string(i))
-        _ = run_base_mga(inputs, settings, results_path, summary_folder; budget_multiplier=1.10, vector_set=nothing, scenario=i)
+     #   inputs["Fuel price scenario probabilities"] = scenario[2, :]
+    #    results_path = joinpath(results_folder, "Results_Base_MGA", "Scenario_"*string(i))
+    #    _ = run_base_mga(inputs, settings, results_path, summary_folder; budget_multiplier=1.10, vector_set=vectors, scenario=i)
     #end
+    
+    
 
 end
 
