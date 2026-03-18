@@ -10,13 +10,7 @@ include("./utilities/load_inputs.jl")
 
 # Load models
 include("./subproblems_economic_dispatch.jl")
-include("./master_single_investor_opt_problem.jl")
-include("./master_single_investor_eq_problem.jl")
-include("./master_inv_con_eq_ad_contracts.jl")
-include("./master_inv_con_eq_common_contracts.jl")
 include("./master_planning.jl")
-include("./master_mult_inv_con_eq_problem.jl")
-include("./master_mult_inv_opt_problem.jl")
 
 # Set up experiment
 include("./create_case.jl")
