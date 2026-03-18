@@ -139,8 +139,4 @@ elapsed = time() - algorithm_start_time
 @info("Total elapsed time for algorithm: $(elapsed) seconds")
 
 # Report results
-total_ub = [sum(results["Upper bounds"][i]) for i in 1:length(upper_bounds)]
-total_lb = [sum(results["Lower bounds"][i]) for i in 1:length(lower_bounds)]
-total_gap = total_ub .- total_lb
-perc_gap = total_gap ./ total_lb
 results["Capacity per iteration"]
