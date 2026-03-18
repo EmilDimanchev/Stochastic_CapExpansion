@@ -44,7 +44,6 @@ capacity_mix_initial = ones(R).*5e3
 push!(capacity_mix, capacity_mix_initial)
 push!(lower_bounds, zeros(S,F,K).*Inf)
 push!(cvar, 0)
-one_last_iter_flag = false
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # Algorithm
