@@ -164,7 +164,22 @@ function run_economic_dispatch(inputs, settings, capacity, demand_shift_weather_
     return output
 end
 
-function build_subproblems(inputs, settings, scenario_index::AbstractVector)
+function build_all_subproblems(inputs, settings)
+    S = inputs["Number of demand scenarios"]
+    F = inputs["Number of gas price scenarios"]
+    K = inputs["Number of weather scenarios"]
+    SPs = Array{Model,3}(undef, S, F, K)
+    for s in 1:S
+        for f in 1:F
+            for k in 1:K
+                SPs[s,f,k] = build_subproblem(inputs, settings, [s,f,k])
+            end
+        end
+    end
+    return SPs
+end
+
+function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     # Set Scenario index
     s = scenario_index[1]
     f = scenario_index[2]
@@ -182,6 +197,11 @@ function build_subproblems(inputs, settings, scenario_index::AbstractVector)
 
     # Model
     ED = Model(Gurobi.Optimizer)
+    ED.ext[:Demand_shift_weather_scenario] = demand_shift_weather_scenario
+    ED.ext[:Variable_costs_scenario] = variable_costs_scenario
+    ED.ext[:Availability_scenario] = availability_scenario
+    ED.ext[:Period_weights_scenario] = period_weights_scenario
+    ED.ext[:Demand_adder_scenario] = demand_adder_scenario
     set_optimizer_attribute(ED, "OutputFlag", 0)
     set_optimizer_attribute(ED, "Crossover", 1)
     set_optimizer_attribute(ED, "Method", 2)
@@ -237,6 +257,12 @@ function build_subproblems(inputs, settings, scenario_index::AbstractVector)
     demand_add = demand_adder_scenario./scaling_factor_demand
     demand_shift_weather = demand_shift_weather_scenario./scaling_factor_demand
     cost_var = variable_costs_scenario./scaling_factor_cost
+
+    # Demand
+    @expression(ED, demand[t in 1:T], demand_base[t] + demand_shift_weather[t] + demand_add)
+    max_nse = settings["Max nse"] # percentage of demand that can be curtailed in each segments
+    nse_segs = length(max_nse)
+    price_nse = settings["Cost of nonserved energy"]./scaling_factor_cost
 
     # ~~~
     # Model formulation
@@ -308,12 +334,22 @@ function build_subproblems(inputs, settings, scenario_index::AbstractVector)
 end
 
 
-function set_capacity_parameters!(ED::Model, capacity::Vector{Float64})
-    set_parameter_value.(ED[:x], capacity)
+function set_capacity_parameters!(SPs::Array{Model,3}, capacity::Vector{Float64})
+    for SP in SPs
+        set_parameter_value.(SP[:x], capacity)
+    end
 end
 
-function run_subproblem(ED::Model, capacity::Vector{Float64}, inputs, settings)
+function run_subproblem(ED::Model, inputs, settings)
+    demand_shift_weather_scenario = ED.ext[:Demand_shift_weather_scenario]
+    variable_costs_scenario = ED.ext[:Variable_costs_scenario]
+    availability_scenario = ED.ext[:Availability_scenario]
+    period_weights_scenario = ED.ext[:Period_weights_scenario]
+    demand_adder_scenario = ED.ext[:Demand_adder_scenario]
 
+      # Numerical settings
+    scaling_factor_demand = settings["Scaling factor demand"]
+    scaling_factor_cost = settings["Scaling factor cost"] 
 
     # Settings
     storage_flag = inputs["Storage flag"]
@@ -350,20 +386,19 @@ function run_subproblem(ED::Model, capacity::Vector{Float64}, inputs, settings)
     nse_segs = length(max_nse)
     price_nse = settings["Cost of nonserved energy"]./scaling_factor_cost
 
-    set_capacity_parameters!(ED, capacity)
     optimize!(ED)
     output = Dict{String, Any}()
-    output["SP dual"] = dual.(ParameterRef(ED[:x])).*settings["Scaling factor cost"]
+    output["SP dual"] = dual.(ParameterRef.(ED[:x])).*settings["Scaling factor cost"]
     output["SP objective"] = objective_value(ED).*(settings["Scaling factor cost"]*settings["Scaling factor demand"])
-    output["Power price"] = dual.(ED[:power_balance]).*settings["Scaling factor cost"]./ED[:t_weights]
+    output["Power price"] = dual.(ED[:power_balance]).*settings["Scaling factor cost"]./t_weights
     nse_dual = dual.(ED[:max_load_shedding]).*settings["Scaling factor cost"]
-    output["Max NSE dual"] = sum(max_nse[seg]*demand[t]*nse_dual[seg,t] for seg in 1:nse_segs, t in 1:T)
+    output["Max NSE dual"] = sum(max_nse[seg]*ED[:demand][t]*nse_dual[seg,t] for seg in 1:nse_segs, t in 1:T)
     generation = value.(ED[:g])
-    output["Emissions"] = sum(ED[:t_weights][t]*generation[r,t]*co2_factors[r] for r in 1:G, t in 1:T)
+    output["Emissions"] = sum(t_weights[t]*generation[r,t]*co2_factors[r] for r in 1:G, t in 1:T)
     output["Load shedding"] = value.(ED[:total_nse])
     sd = value.(ED[:served_demand]).*settings["Scaling factor demand"]
     tb = value.(ED[:total_benefit]).*(settings["Scaling factor cost"]*settings["Scaling factor demand"])
-    output["Consumer surplus"] = sum(ED[:t_weights][t]*(tb[t] - output["Power price"][t]*sum(sd[seg,t] for seg in 1:nse_segs)) for t in 1:T)
+    output["Consumer surplus"] = sum(t_weights[t]*(tb[t] - output["Power price"][t]*sum(sd[seg,t] for seg in 1:nse_segs)) for t in 1:T)
 
     return output
 end

@@ -106,7 +106,9 @@ function run_benders_algorithm(inputs::Dict, settings::Dict)
         if any(1e-6 .< gaps .< 0)
             @warn("Negative gap detected; check model formulation.")
         end
-        @info("Current gap: $(gaps * 100)%")
+            
+        @info("Iteration: $(j), Maximum percentage gap: $(maximum(abs.(gaps)) * 100)%")
+
 
         if maximum(abs.(gaps)) <= conv_tol
             
@@ -125,12 +127,12 @@ function run_benders_algorithm(inputs::Dict, settings::Dict)
     @info("Total elapsed time for algorithm: $(elapsed) seconds")
 
     # Report results
-    results["Capacity per iteration"]
+    @info("Final capacity mix: $(results["Capacity per iteration"][end])")
     return results
 end
 
 
-function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, inputs, settings)
+function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3})
     # Iterations
     J_max = 150
 
@@ -157,6 +159,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     push!(capacity_mix, capacity_mix_initial)
     push!(lower_bounds, zeros(S,F,K).*Inf)
     push!(cvar, 0)
+    output_mp = Dict{String, Any}()
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # Algorithm
@@ -168,26 +171,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         
         @info(string("*** Iteration: ", j))
         
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # MARK: Master
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        
-        
-        if j >= 2
-        
-            @info("Running investment problem")
-            output_mp = run_planning_model(MP, settings)
 
-            # Update MP solution outputs
-            push!(capacity_mix, output_mp["Capacity"])
-            println("New capacity mix: ", round.(output_mp["Capacity"]; digits=2))
-            push!(MP_obj, output_mp["Planning objective"])
-            push!(alphas, output_mp["Alpha"])
-            
-            # LB
-            push!(lower_bounds, output_mp["Alpha"]./settings["Scaling factor cost"])
-            
-        end
         
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # MARK: Subproblems
@@ -201,9 +185,12 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         consumer_surplus_per_iter = zeros(S, F, K)
         sp_all_results = Array{Any}(undef, S, F, K)
 
-        for s in 1:S, f in 1:F, k in 1:K
 
-            output_sp = run_economic_dispatch(inputs, settings, capacity_mix[j], inputs["Demand shift weather"][:,k], inputs["Variable costs"][:,f], inputs["Generation availability"][:,:,k], inputs["Period weights"][:,k], inputs["Demand adders"][s])
+        set_capacity_parameters!(SPs, capacity_mix[j])
+
+        for s in 1:S, f in 1:F, k in 1:K
+            
+            output_sp = run_subproblem(SPs[s,f,k],inputs, settings)
 
             sp_all_results[s,f,k] = output_sp
 
@@ -231,7 +218,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             @warn("Negative gap detected; check model formulation.")
         end
 
-        @info("Current gap: $(gaps * 100)%")
+            
+        @info("Maximum percentage gap: $(maximum(abs.(gaps)) * 100)%")
+
 
         if maximum(abs.(gaps)) <= conv_tol
             
@@ -244,13 +233,30 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             results["Lower bounds"] = lower_bounds
 
             break
+        else
+            add_optimality_cuts!(MP, SP_obj[j], SP_duals[j], capacity_mix[j], inputs,settings, j)
+            @info("Running investment problem")
+            if !settings["Regularization flag"]
+                output_mp = run_planning_model(MP, settings)
+            else
+                output_mp = regularization(MP, upper_bounds[j], lower_bounds[j])
+            end
+
+            # Update MP solution outputs
+            push!(capacity_mix, output_mp["Capacity"])
+            println("New capacity mix: ", round.(output_mp["Capacity"]; digits=2))
+            push!(MP_obj, output_mp["Planning objective"])
+            push!(alphas, output_mp["Alpha"])
+            
+            # LB
+            push!(lower_bounds, output_mp["Alpha"]./settings["Scaling factor cost"])
         end
     end
     elapsed = time() - algorithm_start_time
     @info("Total elapsed time for algorithm: $(elapsed) seconds")
 
     # Report results
-    results["Capacity per iteration"]
+    @info("Final capacity mix:" * string(results["Capacity per iteration"]))
     return results
 
 end
