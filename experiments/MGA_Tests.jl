@@ -3,9 +3,6 @@ include("../src/Stochastic_CapExpansion.jl")
 
 using .Stochastic_CapExpansion
 
-using JuMP, Gurobi, DataFrames, CSV, Random, LinearAlgebra
-using Revise, YAML
-
 function run_stochastic_exploration(inputs::Dict, settings::Dict, results_path::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing)
 
     # ~~~

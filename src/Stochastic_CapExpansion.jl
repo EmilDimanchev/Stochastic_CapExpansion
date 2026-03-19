@@ -1,12 +1,5 @@
 module Stochastic_CapExpansion
-
-    using JuMP, Gurobi, DataFrames, CSV, Random, LinearAlgebra
-    using Revise, YAML, Combinatorics
-
-    import JuMP, Gurobi, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics
-
-    export build_optimization_model, run_optimization_model, add_budget_constraint!, add_nse_cap!, set_objective!, write_results, write_exploration_results!, load_input_data
-    export generate_weights, load_settings
+    using Revise, JuMP, Gurobi, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates
 
     function include_all_in_folder(folder_path::String)
         files = readdir(folder_path, join=true)
@@ -19,9 +12,16 @@ module Stochastic_CapExpansion
         end
     end
     cd(@__DIR__)
+    println("Loading Stochastic_CapExpansion module from: ", @__DIR__)
     folders = ["inputs", "model", "results", "settings"]
     for folder in folders
         include_all_in_folder(folder)
     end
     cd("..")
+
+    export build_optimization_model, run_optimization_model, add_budget_constraint!, add_nse_cap!, set_objective!, write_results, write_exploration_results!, load_input_data
+    export generate_weights, load_settings
+    export run_benders_algorithm, benders_algorithm
+    export run_planning_model, build_planning_model, add_optimality_cuts!
+    export run_economic_dispatch, build_subproblems, set_capacity_parameters!, run_subproblem
 end
