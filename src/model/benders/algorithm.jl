@@ -154,12 +154,50 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     capacity_mix = []
     cvar = []
     alphas = []
+    inv_cost = []
     results = Dict{String, Any}()
-    capacity_mix_initial = ones(R).*5e3
-    push!(capacity_mix, capacity_mix_initial)
+    #capacity_mix_initial = ones(R).*5e3
+    #push!(capacity_mix, capacity_mix_initial)
     push!(lower_bounds, zeros(S,F,K).*Inf)
     push!(cvar, 0)
     output_mp = Dict{String, Any}()
+
+
+    # Initializing new bound settings
+    LB_hist = []
+    UB_hist = []
+    
+    UB = Inf
+    P = inputs["Demand scenario probabilities"]
+    P_f = inputs["Gas price scenario probabilities"]
+    P_k = inputs["Weather scenario probabilities"]
+    VaR_Percent = settings["Value-at-Risk percent"] 
+    risk_aversion_weight = settings["Risk aversion weight"]
+    risk_aversion_flag = settings["Risk aversion flag"]
+    expected_value_hist = []
+    cvar_hist = []
+    alpha_ev_hist = []
+    u_cvar_hist = []
+    UB_temp = Inf
+    LB_temp = -Inf
+
+    
+    output_mp = run_planning_model(MP, settings)
+    alpha_ev = output_mp["Expected alpha"]/settings["Scaling factor cost"]
+    push!(alpha_ev_hist, alpha_ev)
+    println("Initial expected alpha: $(alpha_ev_hist[end])")
+    push!(inv_cost, output_mp["Inv_cost"])
+    println("Initial investment cost: $(inv_cost[end]/settings["Scaling factor cost"])")
+    if risk_aversion_flag
+        u_cvar = output_mp["CVaR term"]/settings["Scaling factor cost"]
+        push!(u_cvar_hist, u_cvar)
+        risk_adjusted_LB = risk_aversion_weight*alpha_ev + (1-risk_aversion_weight)*u_cvar
+        LB = risk_adjusted_LB + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+    else
+        LB = alpha_ev + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+    end
+    capacity_mix_initial = output_mp["Capacity"]
+    push!(capacity_mix, capacity_mix_initial)
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # Algorithm
@@ -170,7 +208,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     for j in 1:J_max
         
         @info(string("*** Iteration: ", j))
-        
+        push!(LB_hist, LB)
+        push!(UB_hist, UB)
 
         
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -197,40 +236,69 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             sp_obj_per_iter[s,f,k] = output_sp["SP objective"]
             
             duals_sp_per_iter[:,s,f,k] = output_sp["SP dual"]
+
+            if output_sp["coeff"] == 0
+                sp_obj_per_iter[s,f,k] = Inf
+            end
             
         end
         
         # Update SP solution outputs 
         push!(SP_obj, sp_obj_per_iter)
         push!(SP_duals, duals_sp_per_iter)
+
+        push!(expected_value_hist, sum(P[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"]) 
+        println("Actual Expected Cost: $(expected_value_hist[end])")
+        println("SP Inv Cost: $(output_mp["Inv_cost"]/settings["Scaling factor cost"])")
+        if risk_aversion_flag
+            cvar_estimate = compute_cvar(SP_obj[j], P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
+            push!(cvar_hist, cvar_estimate)
+            UB = risk_aversion_weight*expected_value_hist[end] + (1-risk_aversion_weight)*cvar_estimate + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+        else    
+            UB = expected_value_hist[end] + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+        end
+        
         
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # MARK: Convergence check
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
         # UB
-        ub_estimate = SP_obj[j]./settings["Scaling factor cost"]
-        push!(upper_bounds, ub_estimate)
+        #ub_estimate = SP_obj[j]./settings["Scaling factor cost"]
+        #push!(upper_bounds, ub_estimate)
         
-        gaps = (upper_bounds[j].-lower_bounds[j])./lower_bounds[j]  
+        #gaps = (upper_bounds[j].-lower_bounds[j])./lower_bounds[j]  
         
-        if any(1e-6 .< gaps .< 0)
+        #if any(1e-6 .< gaps .< 0)
+        #    @warn("Negative gap detected; check model formulation.")
+        #end
+
+            
+        #@info("Maximum percentage gap: $(maximum(abs.(gaps)) * 100)%")
+
+        gap = (UB - LB)/abs(LB)
+        @info("Gap: $(gap * 100)%")
+        @info("LB: $(LB), UB: $(UB)")
+        if gap < 0 && abs(gap) > 1e-6
             @warn("Negative gap detected; check model formulation.")
         end
 
-            
-        @info("Maximum percentage gap: $(maximum(abs.(gaps)) * 100)%")
 
+        #if maximum(abs.(gaps)) <= conv_tol
+        if gap <= conv_tol    
+            @info("Convergence achieved with maximum percentage gap of $((gap) * 100)%")
 
-        if maximum(abs.(gaps)) <= conv_tol
-            
-            @info("Convergence achieved with maximum percentage gap of $(maximum(abs.(gaps)) * 100)%")
+            #output_mp = run_planning_model(MP, settings)
+            #set_capacity_parameters!(SPs, output_mp["Capacity"])
+            #sp_all_results = run_all_subproblems(SPs, inputs, settings)
 
             results["MP"] = output_mp
             results["SP"] = sp_all_results
             results["Capacity per iteration"] = [round.(row; digits=2) for row in capacity_mix]
-            results["Upper bounds"] = upper_bounds
-            results["Lower bounds"] = lower_bounds
+            #results["Upper bounds"] = upper_bounds
+            #results["Lower bounds"] = lower_bounds
+            results["LB_hist"] = LB_hist
+            results["UB_hist"] = UB_hist
 
             break
         else
@@ -239,7 +307,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             if !settings["Regularization flag"]
                 output_mp = run_planning_model(MP, settings)
             else
-                output_mp = regularization(MP, upper_bounds[j], lower_bounds[j])
+                println("Inputs: $(UB), $(LB), $(output_mp["Inv_cost"]/settings["Scaling factor cost"])")
+                output_mp = regularization(MP, UB, LB, settings)
             end
 
             # Update MP solution outputs
@@ -247,9 +316,24 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             println("New capacity mix: ", round.(output_mp["Capacity"]; digits=2))
             push!(MP_obj, output_mp["Planning objective"])
             push!(alphas, output_mp["Alpha"])
+            push!(inv_cost, output_mp["Inv_cost"])
             
             # LB
             push!(lower_bounds, output_mp["Alpha"]./settings["Scaling factor cost"])
+
+            alpha_ev = output_mp["Expected alpha"]/settings["Scaling factor cost"]
+            push!(alpha_ev_hist, alpha_ev)
+            println("Expected alpha: $(alpha_ev_hist[end])")
+            push!(inv_cost, output_mp["Inv_cost"])
+            println("Investment cost: $(inv_cost[end]/settings["Scaling factor cost"])")
+            if risk_aversion_flag
+                u_cvar = output_mp["CVaR term"]/settings["Scaling factor cost"]
+                push!(u_cvar_hist, u_cvar)
+                risk_adjusted_LB = risk_aversion_weight*alpha_ev + (1-risk_aversion_weight)*u_cvar
+                LB = risk_adjusted_LB + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+            else
+                LB = alpha_ev + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+            end
         end
     end
     elapsed = time() - algorithm_start_time
@@ -259,4 +343,26 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     @info("Final capacity mix:" * string(results["Capacity per iteration"]))
     return results
 
+end
+
+function compute_cvar(SP_obj, P, P_f, P_k, VaR_Percent_Scenarios)
+    # Flatten SP_obj and associated probabilities
+    sp_obj_flat = vec(SP_obj)
+    prob_flat = vec([P[s]*P_f[f]*P_k[k] for s in 1:size(SP_obj,1), f in 1:size(SP_obj,2), k in 1:size(SP_obj,3)])
+    
+    # Sort SP outcomes and probabilities
+    sorted_indices = sortperm(sp_obj_flat)
+    sp_obj_sorted = sp_obj_flat[sorted_indices]
+    prob_sorted = prob_flat[sorted_indices]
+    
+    # Compute cumulative probabilities
+    cum_prob = cumsum(prob_sorted)
+    
+    # Identify VaR threshold
+    var_threshold_index = findfirst(x -> x >= VaR_Percent_Scenarios/length(sp_obj_flat), cum_prob)
+    
+    # Compute CVaR as weighted average of tail outcomes
+    cvar = sum(sp_obj_sorted[i]*prob_sorted[i] for i in var_threshold_index:length(sp_obj_sorted)) / sum(prob_sorted[var_threshold_index:end])
+    
+    return cvar
 end

@@ -3,7 +3,7 @@ Results folder path: <results_path>
 Demand uncertainty: true
 Gas price uncertainty: true
 Weather uncertainty: false
-Risk aversion flag: true
+Risk aversion flag: false
 Risk aversion weight: 0.5
 Value-at-Risk percent: 0.05
 
@@ -37,6 +37,10 @@ Cost of nonserved energy: [9e3,1500,1100,400]
 Max nse: [0.917,0.05,0.03,0.003]
 
 Regularization flag: false
+
+# Distributed Computing Settings
+Distributed: true
+Workers: 5
 #Vector Type: random
 #Iterations: 2
 #Capacity Exploration: true

@@ -179,6 +179,25 @@ function build_all_subproblems(inputs, settings)
     return SPs
 end
 
+function build_all_subproblems_distributed(inputs, settings)
+    S = inputs["Number of demand scenarios"]
+    F = inputs["Number of gas price scenarios"]
+    K = inputs["Number of weather scenarios"]
+    W = settings["Workers"]
+    S_per_W = ceil(Int,S/W)
+    SPs = DistributedArray{Model,4}(undef, W, S_per_W, F, K)
+    @sync for p in P
+         @async for s in 1:S
+                    for f in 1:F
+                        for k in 1:K
+                            SPs[s,f,k] = build_subproblem(inputs, settings, [s,f,k])
+                        end
+                    end
+                end
+    end
+    return SPs
+end
+
 function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     # Set Scenario index
     s = scenario_index[1]
@@ -385,9 +404,16 @@ function run_subproblem(ED::Model, inputs, settings)
     max_nse = settings["Max nse"] # percentage of demand that can be curtailed in each segments
     nse_segs = length(max_nse)
     price_nse = settings["Cost of nonserved energy"]./scaling_factor_cost
+    output = Dict{String, Any}()
 
     optimize!(ED)
-    output = Dict{String, Any}()
+    if termination_status(ED) != MOI.OPTIMAL
+        @warn("Subproblem did not solve to optimality. Status: $(termination_status(ED))")
+        output["coeff"] = 0
+    else
+        output["coeff"] = 1
+    end
+    
     output["SP dual"] = dual.(ParameterRef.(ED[:x])).*settings["Scaling factor cost"]
     output["SP objective"] = objective_value(ED).*(settings["Scaling factor cost"]*settings["Scaling factor demand"])
     output["Power price"] = dual.(ED[:power_balance]).*settings["Scaling factor cost"]./t_weights
@@ -399,6 +425,7 @@ function run_subproblem(ED::Model, inputs, settings)
     sd = value.(ED[:served_demand]).*settings["Scaling factor demand"]
     tb = value.(ED[:total_benefit]).*(settings["Scaling factor cost"]*settings["Scaling factor demand"])
     output["Consumer surplus"] = sum(t_weights[t]*(tb[t] - output["Power price"][t]*sum(sd[seg,t] for seg in 1:nse_segs)) for t in 1:T)
+    
 
     return output
 end
