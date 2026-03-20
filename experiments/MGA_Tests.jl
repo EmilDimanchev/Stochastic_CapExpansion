@@ -285,8 +285,8 @@ function complex_comp()
 end
 
 function simple_comp()
-    inputs_folder = joinpath("inputs","Inputs_30days_5techs")
-    test_index = 3
+    inputs_folder = joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs")
+    test_index = 4
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)

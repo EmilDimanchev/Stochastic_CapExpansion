@@ -161,6 +161,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     push!(lower_bounds, zeros(S,F,K).*Inf)
     push!(cvar, 0)
     output_mp = Dict{String, Any}()
+    output_mp_unst = Dict{String, Any}()
 
 
     # Initializing new bound settings
@@ -179,6 +180,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     alpha_ev_hist = []
     u_cvar_hist = []
     coeffs_hist = []
+    min_UB = Inf
+    unst_LB = -Inf
 
     gaps = []
 
@@ -208,8 +211,6 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     for j in 1:J_max
         println()
         println(string("*** Iteration: ", j))
-        push!(LB_hist, LB)
-        push!(UB_hist, UB)
 
         
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -245,12 +246,16 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
         push!(expected_value_hist, sum(P[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"]) 
         if risk_aversion_flag
-            cvar_estimate = compute_cvar(SP_obj[j], P, P_f, P_k, VaR_Percent, VaR)/settings["Scaling factor cost"]
+            cvar_estimate = compute_cvar(SP_obj[j], P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
             push!(cvar_hist, cvar_estimate)
             UB = risk_aversion_weight*expected_value_hist[end] + (1-risk_aversion_weight)*cvar_estimate + output_mp["Inv_cost"]/settings["Scaling factor cost"]
         else    
             UB = expected_value_hist[end] + output_mp["Inv_cost"]/settings["Scaling factor cost"]
         end
+        if UB < min_UB
+            min_UB = UB
+        end
+        push!(UB_hist, min_UB)
         
         
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -270,10 +275,10 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             
         #@info("Maximum percentage gap: $(maximum(abs.(gaps)) * 100)%")
 
-        gap = (UB - LB)/abs(LB)
+        gap = (min_UB - LB)/abs(LB)
         push!(gaps, gap)
         @info("Gap: $(gap * 100)%")
-        @info("LB: $(LB), UB: $(UB)")
+        @info("LB: $(LB), UB: $(min_UB)")
         if gap < 0 && abs(gap) > 1e-6
             @warn("Negative gap detected; check model formulation.")
         end
@@ -299,11 +304,41 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         else
             add_optimality_cuts!(MP, SP_obj[j], SP_duals[j], capacity_mix[j], coeffs, inputs,settings, j)
             @info("Running investment problem")
-            if !settings["Regularization flag"]
-                output_mp = run_planning_model(MP, settings)
+            output_mp_unst = run_planning_model(MP, settings)
+            alpha_ev = output_mp_unst["Expected alpha"]/settings["Scaling factor cost"]
+            #push!(alpha_ev_hist, alpha_ev)
+            #push!(inv_cost, output_mp["Inv_cost"])
+            if risk_aversion_flag
+                u_cvar = output_mp_unst["CVaR term"]/settings["Scaling factor cost"]
+                #push!(u_cvar_hist, u_cvar)
+                risk_adjusted_LB = risk_aversion_weight*alpha_ev + (1-risk_aversion_weight)*u_cvar
+                LB_unst = risk_adjusted_LB + output_mp_unst["Inv_cost"]/settings["Scaling factor cost"]
             else
-                output_mp = regularization(MP, UB, LB, settings)
+                LB_unst  = alpha_ev + output_mp_unst["Inv_cost"]/settings["Scaling factor cost"]
             end
+            LB = max(LB, LB_unst)
+            push!(LB_hist, LB)
+            
+            if settings["Regularization flag"]
+                @info("Applying regularization to master problem")
+                output_mp = regularization(MP, min_UB, LB, settings)
+                alpha_ev_stb = output_mp["Expected alpha"]/settings["Scaling factor cost"]
+                #push!(alpha_ev_hist, alpha_ev)
+                #push!(inv_cost, output_mp["Inv_cost"])
+                if risk_aversion_flag
+                    u_cvar_stb = output_mp["CVaR term"]/settings["Scaling factor cost"]
+                    #push!(u_cvar_hist, u_cvar)
+                    risk_adjusted_LB_stb = risk_aversion_weight*alpha_ev_stb + (1-risk_aversion_weight)*u_cvar_stb
+                    LB = risk_adjusted_LB_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+                else
+                    LB = alpha_ev_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+                end 
+            else
+                output_mp = output_mp_unst
+            end
+
+            
+        
 
             # Update MP solution outputs
             push!(capacity_mix, output_mp["Capacity"])
@@ -327,6 +362,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             else
                 LB = alpha_ev + output_mp["Inv_cost"]/settings["Scaling factor cost"]
             end
+            
         end
     end
     elapsed = time() - algorithm_start_time

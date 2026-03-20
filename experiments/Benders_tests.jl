@@ -65,13 +65,15 @@ function run_new_benders()
     end
     names = inputs["Resources"]
     names = ["Gap"; names]
-    println("Resource names: ", names)
     
     # Build models
     MP = build_planning_model(inputs, settings)
     SPs = build_all_subproblems(inputs, settings)
     # Run New Benders algorithm
     results_new, gaps = benders_algorithm(inputs, settings, MP, SPs)
+    println(keys(results_new))
+    println(keys(results_new["MP"]))
+    println(keys(results_new["SP"]))
     CSV.write(joinpath(settings["Results folder path"], "capacity_mix_per_iteration_new.csv"), DataFrame(hcat(gaps, stack(results_new["Capacity per iteration"], dims=1)), names))
 end
 
