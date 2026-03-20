@@ -424,7 +424,6 @@ function run_all_subproblems(SPs::Array{Model,3}, inputs, settings)
 
     sp_results = Array{Dict{String, Any},3}(undef, size(SPs)...)
     if settings["Parallel flag"]
-        
         SPs_flat = reshape(SPs, :, 1)
         sp_results_flat = reshape(sp_results, :, 1)
         

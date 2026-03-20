@@ -109,7 +109,7 @@ function run_planning_model(inputs, settings, SP_obj_list, SP_dual_list, x_prev)
     # Record results from the linearization or not
     if risk_aversion_flag
         output["CVaR Loss"] = value.(u).*scaling_factor_cost
-        output["VaR"] = value.(ζ).*scaling_factor_cost
+        output["VaR"] = value(ζ)*scaling_factor_cost
     else
         output["CVaR Loss"] = zeros(S)
         output["VaR"] = 0
@@ -181,8 +181,10 @@ function build_planning_model(inputs, settings)
         # Auxiliary varliables for CVaR
         @variable(MP, u[s in 1:S, f in 1:F, k in 1:K] >= 0) # loss relative to VaR, $/MW
         @variable(MP, ζ) # VaR variable, $/MW
+        
+        @constraint(MP, cvar_tail[s in 1:S, f in 1:F, k in 1:K], MP[:u][s,f,k] >= -MP[:ζ])
     end
-        # @constraint(MP, cvar_tail[s in 1:S, f in 1:F, k in 1:K], u[s,f,k] >= sum(t_weights[t]*g[r,t,s,f,k]*cost_var[r,f] for r in 1:G) + sum(t_weights[t]*eNSE_Cost[t,s,f,k] for t in 1:T) + sum(cost_inv[r]*x[r] for r in 1:R) - ζ)
+        # 
     
 
     # Cost Expressions
@@ -208,7 +210,7 @@ function build_planning_model(inputs, settings)
 
 end
 
-function add_optimality_cuts!(MP, SP_obj, SP_dual, x_prev, inputs,settings, iteration)
+function add_optimality_cuts!(MP, SP_obj, SP_dual, x_prev, coeffs, inputs,settings, iteration)
     scaling_factor_cost = settings["Scaling factor cost"]
     cvar_tail = settings["Risk aversion flag"]
 
@@ -228,16 +230,32 @@ function add_optimality_cuts!(MP, SP_obj, SP_dual, x_prev, inputs,settings, iter
     SP_obj = SP_obj./scaling_factor_cost
     SP_dual = SP_dual./scaling_factor_cost
     if cvar_tail
-        @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], MP[:u][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) - MP[:ζ], base_name = "cvar_tail_cuts_"*string(iteration))
+        @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:u][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) - MP[:ζ], base_name = "cvar_tail_cuts_"*string(iteration))
     end
     
-    @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], MP[:alpha][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R), base_name = "optimality_cut_"*string(iteration))
+    @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:alpha][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R), base_name = "optimality_cut_"*string(iteration))
 end
 # Multiple dispatch run_planning_model with and without SP outputs for cuts
 function run_planning_model(MP, settings)
 
     optimize!(MP)
-    println("Planning model objective: ", objective_value(MP))
+    if termination_status(MP) != MOI.OPTIMAL
+        @warn("Model did not solve to optimality. Status: ", termination_status(MP))
+    end
+    if termination_status(MP) == MOI.INFEASIBLE_OR_UNBOUNDED || termination_status(MP) == MOI.INFEASIBLE
+        @warn("Model did not solve to optimality. Status: ", termination_status(MP))
+        compute_conflict!(MP)
+        list_of_conflicting_constraints = ConstraintRef[];
+        for (F, S) in list_of_constraint_types(MP)
+            for con in all_constraints(MP, F, S)
+                if get_attribute(con, MOI.ConstraintConflictStatus()) == MOI.IN_CONFLICT
+                    push!(list_of_conflicting_constraints, con)
+                end
+            end
+        end
+        display(list_of_conflicting_constraints)
+        error("Model infeasible. See conflicting constraints above.")
+    end
 
     # Write outputs
     output = write_outputs(MP, settings)

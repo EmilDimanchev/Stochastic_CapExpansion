@@ -3,7 +3,7 @@ Results folder path: <results_path>
 Demand uncertainty: true
 Gas price uncertainty: true
 Weather uncertainty: false
-Risk aversion flag: false
+Risk aversion flag: true
 Risk aversion weight: 0.5
 Value-at-Risk percent: 0.05
 

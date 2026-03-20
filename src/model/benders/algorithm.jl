@@ -178,14 +178,16 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     cvar_hist = []
     alpha_ev_hist = []
     u_cvar_hist = []
-    UB_temp = Inf
-    LB_temp = -Inf
+    coeffs_hist = []
+
+    gaps = []
 
     
     output_mp = run_planning_model(MP, settings)
     alpha_ev = output_mp["Expected alpha"]/settings["Scaling factor cost"]
     push!(alpha_ev_hist, alpha_ev)
     push!(inv_cost, output_mp["Inv_cost"])
+
     if risk_aversion_flag
         u_cvar = output_mp["CVaR term"]/settings["Scaling factor cost"]
         push!(u_cvar_hist, u_cvar)
@@ -204,8 +206,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     algorithm_start_time = time()
 
     for j in 1:J_max
-        
-        @info(string("*** Iteration: ", j))
+        println()
+        println(string("*** Iteration: ", j))
         push!(LB_hist, LB)
         push!(UB_hist, UB)
 
@@ -234,7 +236,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         sp_obj_per_iter = reshape([outputs_sp[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K))
         
         duals_sp_per_iter =reshape([outputs_sp[s,f,k]["SP dual"][r] for r in 1:R, s in 1:S, f in 1:F, k in 1:K],(R, S, F, K))
-    
+        coeffs = reshape([outputs_sp[s,f,k]["coeff"] for s in 1:S, f in 1:F, k in 1:K],(S, F, K))
+        push!(coeffs_hist, coeffs)
         
         # Update SP solution outputs 
         push!(SP_obj, sp_obj_per_iter)
@@ -242,7 +245,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
         push!(expected_value_hist, sum(P[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"]) 
         if risk_aversion_flag
-            cvar_estimate = compute_cvar(SP_obj[j], P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
+            cvar_estimate = compute_cvar(SP_obj[j], P, P_f, P_k, VaR_Percent, VaR)/settings["Scaling factor cost"]
             push!(cvar_hist, cvar_estimate)
             UB = risk_aversion_weight*expected_value_hist[end] + (1-risk_aversion_weight)*cvar_estimate + output_mp["Inv_cost"]/settings["Scaling factor cost"]
         else    
@@ -268,6 +271,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         #@info("Maximum percentage gap: $(maximum(abs.(gaps)) * 100)%")
 
         gap = (UB - LB)/abs(LB)
+        push!(gaps, gap)
         @info("Gap: $(gap * 100)%")
         @info("LB: $(LB), UB: $(UB)")
         if gap < 0 && abs(gap) > 1e-6
@@ -293,7 +297,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
             break
         else
-            add_optimality_cuts!(MP, SP_obj[j], SP_duals[j], capacity_mix[j], inputs,settings, j)
+            add_optimality_cuts!(MP, SP_obj[j], SP_duals[j], capacity_mix[j], coeffs, inputs,settings, j)
             @info("Running investment problem")
             if !settings["Regularization flag"]
                 output_mp = run_planning_model(MP, settings)
@@ -307,6 +311,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             push!(MP_obj, output_mp["Planning objective"])
             push!(alphas, output_mp["Alpha"])
             push!(inv_cost, output_mp["Inv_cost"])
+            
             
             # LB
             push!(lower_bounds, output_mp["Alpha"]./settings["Scaling factor cost"])
@@ -329,11 +334,11 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
     # Report results
     @info("Final capacity mix:" * string(results["Capacity per iteration"]))
-    return results
+    return results, gaps
 
 end
 
-function compute_cvar(SP_obj, P, P_f, P_k, VaR_Percent_Scenarios)
+function compute_cvar(SP_obj, P, P_f, P_k, VaR_Percent)
     # Flatten SP_obj and associated probabilities
     sp_obj_flat = vec(SP_obj)
     prob_flat = vec([P[s]*P_f[f]*P_k[k] for s in 1:size(SP_obj,1), f in 1:size(SP_obj,2), k in 1:size(SP_obj,3)])
@@ -347,10 +352,10 @@ function compute_cvar(SP_obj, P, P_f, P_k, VaR_Percent_Scenarios)
     cum_prob = cumsum(prob_sorted)
     
     # Identify VaR threshold
-    var_threshold_index = findfirst(x -> x >= VaR_Percent_Scenarios/length(sp_obj_flat), cum_prob)
-    
+    var_threshold_index = findfirst(x -> x >= (1-VaR_Percent)+.005, cum_prob) # Adding a small tolerance to handle floating-point issues
+
     # Compute CVaR as weighted average of tail outcomes
-    cvar = sum(sp_obj_sorted[i]*prob_sorted[i] for i in var_threshold_index:length(sp_obj_sorted)) / sum(prob_sorted[var_threshold_index:end])
+    cvar = sum(sp_obj_sorted[i]*prob_sorted[i] for i in var_threshold_index:length(sp_obj_sorted))/(VaR_Percent)
     
     return cvar
 end
