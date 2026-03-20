@@ -1,5 +1,5 @@
 export run_economic_dispatch, build_subproblems, set_capacity_parameters!, run_subproblem
-
+using Distributed, DistributedArrays, JuMP, Gurobi
 function run_economic_dispatch(inputs, settings, capacity, demand_shift_weather_scenario, variable_costs_scenario, availability_scenario, period_weights_scenario, demand_adder_scenario)
 
     # Check for negative capacity and set to 0
@@ -169,31 +169,21 @@ function build_all_subproblems(inputs, settings)
     F = inputs["Number of gas price scenarios"]
     K = inputs["Number of weather scenarios"]
     SPs = Array{Model,3}(undef, S, F, K)
-    for s in 1:S
-        for f in 1:F
-            for k in 1:K
-                SPs[s,f,k] = build_subproblem(inputs, settings, [s,f,k])
-            end
+    if settings["Parallel flag"]
+        @info "Building subproblems in parallel using $(Threads.nthreads()) workers..."
+        Tot_scen = S*F*K
+        SPs_flat = reshape(SPs, Tot_scen, 1)
+        P = collect(1:Tot_scen)
+        scenarios = [[div(p-1, F*K) + 1, div(mod(p-1, F*K), K) + 1, mod(p-1, K) + 1] for p in P]
+        mapping = Dict{Int, Vector{Int}}(p => scenarios[p] for p in P)
+        Threads.@threads for p in eachindex(SPs_flat)
+            SPs_flat[p] = build_subproblem(inputs, settings, mapping[p]) 
         end
-    end
-    return SPs
-end
-
-function build_all_subproblems_distributed(inputs, settings)
-    S = inputs["Number of demand scenarios"]
-    F = inputs["Number of gas price scenarios"]
-    K = inputs["Number of weather scenarios"]
-    W = settings["Workers"]
-    S_per_W = ceil(Int,S/W)
-    SPs = DistributedArray{Model,4}(undef, W, S_per_W, F, K)
-    @sync for p in P
-         @async for s in 1:S
-                    for f in 1:F
-                        for k in 1:K
-                            SPs[s,f,k] = build_subproblem(inputs, settings, [s,f,k])
-                        end
-                    end
-                end
+        SPs = reshape(SPs_flat, S, F, K)
+    else
+         for s in 1:S, f in 1:F, k in 1:K
+            SPs[s,f,k] = build_subproblem(inputs, settings, [s,f,k])
+        end
     end
     return SPs
 end
@@ -428,4 +418,24 @@ function run_subproblem(ED::Model, inputs, settings)
     
 
     return output
+end
+
+function run_all_subproblems(SPs::Array{Model,3}, inputs, settings)
+
+    sp_results = Array{Dict{String, Any},3}(undef, size(SPs)...)
+    if settings["Parallel flag"]
+        
+        SPs_flat = reshape(SPs, :, 1)
+        sp_results_flat = reshape(sp_results, :, 1)
+        
+        Threads.@threads for p in eachindex(SPs_flat)
+            sp_results_flat[p] = run_subproblem(SPs_flat[p], inputs, settings)
+        end
+        sp_results = reshape(sp_results_flat, size(SPs))
+    else
+        for s in 1:size(SPs,1), f in 1:size(SPs,2), k in 1:size(SPs,3)
+            sp_results[s,f,k] = run_subproblem(SPs[s,f,k], inputs, settings) 
+        end
+    end
+    return sp_results
 end

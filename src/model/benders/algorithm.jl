@@ -185,9 +185,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     output_mp = run_planning_model(MP, settings)
     alpha_ev = output_mp["Expected alpha"]/settings["Scaling factor cost"]
     push!(alpha_ev_hist, alpha_ev)
-    println("Initial expected alpha: $(alpha_ev_hist[end])")
     push!(inv_cost, output_mp["Inv_cost"])
-    println("Initial investment cost: $(inv_cost[end]/settings["Scaling factor cost"])")
     if risk_aversion_flag
         u_cvar = output_mp["CVaR term"]/settings["Scaling factor cost"]
         push!(u_cvar_hist, u_cvar)
@@ -227,29 +225,22 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
         set_capacity_parameters!(SPs, capacity_mix[j])
 
-        for s in 1:S, f in 1:F, k in 1:K
+    
             
-            output_sp = run_subproblem(SPs[s,f,k],inputs, settings)
+        outputs_sp = run_all_subproblems(SPs, inputs, settings)
 
-            sp_all_results[s,f,k] = output_sp
+        sp_all_results = outputs_sp
 
-            sp_obj_per_iter[s,f,k] = output_sp["SP objective"]
-            
-            duals_sp_per_iter[:,s,f,k] = output_sp["SP dual"]
-
-            if output_sp["coeff"] == 0
-                sp_obj_per_iter[s,f,k] = Inf
-            end
-            
-        end
+        sp_obj_per_iter = reshape([outputs_sp[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K))
+        
+        duals_sp_per_iter =reshape([outputs_sp[s,f,k]["SP dual"][r] for r in 1:R, s in 1:S, f in 1:F, k in 1:K],(R, S, F, K))
+    
         
         # Update SP solution outputs 
         push!(SP_obj, sp_obj_per_iter)
         push!(SP_duals, duals_sp_per_iter)
 
         push!(expected_value_hist, sum(P[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"]) 
-        println("Actual Expected Cost: $(expected_value_hist[end])")
-        println("SP Inv Cost: $(output_mp["Inv_cost"]/settings["Scaling factor cost"])")
         if risk_aversion_flag
             cvar_estimate = compute_cvar(SP_obj[j], P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
             push!(cvar_hist, cvar_estimate)
@@ -288,9 +279,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         if gap <= conv_tol    
             @info("Convergence achieved with maximum percentage gap of $((gap) * 100)%")
 
-            #output_mp = run_planning_model(MP, settings)
-            #set_capacity_parameters!(SPs, output_mp["Capacity"])
-            #sp_all_results = run_all_subproblems(SPs, inputs, settings)
+            output_mp = run_planning_model(MP, settings)
+            set_capacity_parameters!(SPs, output_mp["Capacity"])
+            sp_all_results = run_all_subproblems(SPs, inputs, settings)
 
             results["MP"] = output_mp
             results["SP"] = sp_all_results
@@ -307,13 +298,12 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             if !settings["Regularization flag"]
                 output_mp = run_planning_model(MP, settings)
             else
-                println("Inputs: $(UB), $(LB), $(output_mp["Inv_cost"]/settings["Scaling factor cost"])")
                 output_mp = regularization(MP, UB, LB, settings)
             end
 
             # Update MP solution outputs
             push!(capacity_mix, output_mp["Capacity"])
-            println("New capacity mix: ", round.(output_mp["Capacity"]; digits=2))
+            @info("New capacity mix: $(round.(output_mp["Capacity"]; digits=2))")
             push!(MP_obj, output_mp["Planning objective"])
             push!(alphas, output_mp["Alpha"])
             push!(inv_cost, output_mp["Inv_cost"])
@@ -323,9 +313,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
             alpha_ev = output_mp["Expected alpha"]/settings["Scaling factor cost"]
             push!(alpha_ev_hist, alpha_ev)
-            println("Expected alpha: $(alpha_ev_hist[end])")
             push!(inv_cost, output_mp["Inv_cost"])
-            println("Investment cost: $(inv_cost[end]/settings["Scaling factor cost"])")
             if risk_aversion_flag
                 u_cvar = output_mp["CVaR term"]/settings["Scaling factor cost"]
                 push!(u_cvar_hist, u_cvar)

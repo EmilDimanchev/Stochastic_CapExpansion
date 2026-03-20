@@ -38,9 +38,9 @@ Max nse: [0.917,0.05,0.03,0.003]
 
 Regularization flag: false
 
-# Distributed Computing Settings
-Distributed: true
-Workers: 5
+# Shared Memory Parallelization
+Parallel flag: true
+
 #Vector Type: random
 #Iterations: 2
 #Capacity Exploration: true

@@ -23,5 +23,5 @@ module Stochastic_CapExpansion
     export generate_weights, load_settings
     export run_benders_algorithm, benders_algorithm
     export run_planning_model, build_planning_model, add_optimality_cuts!
-    export run_economic_dispatch, build_all_subproblems, set_capacity_parameters!, run_subproblem
+    export run_economic_dispatch, run_all_subproblems, build_all_subproblems, set_capacity_parameters!, run_subproblem
 end

@@ -8,8 +8,9 @@ Always cd into this directory. <cd Stochastic_CapExpansion>
 3. instantiate - `instantiate`
 
 # Run case:
-1. open julia - `julia --project=.`
+1. open julia with set number of threads for shared memory parallelism- `julia --project=. -t8`
 2. include test-file - `include("experiments/test-file.jl")`
+
 
 Please note that all test files must have their first lines as:
 
