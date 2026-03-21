@@ -1,11 +1,15 @@
 Results folder path: <results_path>
+
+Write all scenarios flag: false # If true, writes results for all scenarios. If false, only writes results for the expected value scenario (if demand uncertainty is true) or the base scenario (if demand uncertainty is false)
 # Risk
 Demand uncertainty: true
 Gas price uncertainty: true
 Weather uncertainty: false
-Risk aversion flag: true
+Risk aversion flag: false
 Risk aversion weight: 0.5
 Value-at-Risk percent: 0.05
+Risk sharing flag: false
+
 
 # Policy instruments
 Price cap: 2000

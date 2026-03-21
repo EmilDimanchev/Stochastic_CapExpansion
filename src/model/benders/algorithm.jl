@@ -245,8 +245,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         push!(SP_duals, duals_sp_per_iter)
 
         push!(expected_value_hist, sum(P[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"]) 
+        cvar_estimate = compute_cvar(SP_obj[j], P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
         if risk_aversion_flag
-            cvar_estimate = compute_cvar(SP_obj[j], P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
             push!(cvar_hist, cvar_estimate)
             UB = risk_aversion_weight*expected_value_hist[end] + (1-risk_aversion_weight)*cvar_estimate + output_mp["Inv_cost"]/settings["Scaling factor cost"]
         else    
@@ -293,7 +293,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             sp_all_results = run_all_subproblems(SPs, inputs, settings)
 
             results["MP"] = output_mp
-            results["SP"] = sp_all_results
+            results["SPs"] = sp_all_results
+            results["CVaR"] = cvar_estimate*settings["Scaling factor cost"]
+            results["Expected Value"] = expected_value_hist[end]*settings["Scaling factor cost"]
             results["Capacity per iteration"] = [round.(row; digits=2) for row in capacity_mix]
             #results["Upper bounds"] = upper_bounds
             #results["Lower bounds"] = lower_bounds

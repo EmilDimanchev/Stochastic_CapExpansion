@@ -192,7 +192,15 @@ function build_planning_model(inputs, settings)
     @expression(MP, expected_alpha, sum(P[s]*P_f[f]*P_k[k]*alpha[s,f,k] for s in 1:S, f in 1:F, k in 1:K))
     if risk_aversion_flag
         @expression(MP, cvar_term, ζ + 1/Ψ*sum(P[s]*P_f[f]*P_k[k]*u[s,f,k] for s in 1:S, f in 1:F, k in 1:K))
+        @expression(MP, risk_adjusted_sys_cost, inv_cost + Ω*expected_alpha + (1-Ω)*cvar_term)
     end
+    @expression(MP, exp_sys_cost, expected_alpha + inv_cost)
+    
+
+
+
+
+
     # ~~~
     # Objective function
     # ~~~ 
@@ -312,12 +320,14 @@ function write_outputs(MP, settings)
     output["Contract price"] = 0
     output["Inv_cost"] = value(MP[:inv_cost])*scaling_factor_cost
     output["Expected alpha"] = value(MP[:expected_alpha])*scaling_factor_cost
-    
+    output["Expected System Cost"] = value.(MP[:exp_sys_cost])*scaling_factor_cost
+
     # Record results from the linearization or not
     if settings["Risk aversion flag"]
         output["CVaR Loss"] = value.(MP[:u]).*scaling_factor_cost
         output["VaR"] = value.(MP[:ζ]).*scaling_factor_cost
         output["CVaR term"] = value(MP[:cvar_term])*scaling_factor_cost
+        output["Risk adjusted system cost"] = value(MP[:risk_adjusted_sys_cost])*scaling_factor_cost
     else
         output["CVaR Loss"] = 0
         output["VaR"] = 0
