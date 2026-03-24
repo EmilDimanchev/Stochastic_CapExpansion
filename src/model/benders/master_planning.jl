@@ -129,7 +129,6 @@ function build_planning_model(inputs, settings)
 
     # Sets and flags
     risk_aversion_flag = settings["Risk aversion flag"]
-    risk_aversion_weight = settings["Risk aversion weight"]
 
     cost_inv = inputs["Investment costs"]
     P = inputs["Demand scenario probabilities"]
@@ -155,18 +154,6 @@ function build_planning_model(inputs, settings)
     x_ub = 1e6
 
     # ~~~
-    # Parameters
-    # ~~~
-
-    if risk_aversion_flag
-        # CVaR parameters
-        Ψ = settings["Value-at-Risk percent"] 
-        Ω = risk_aversion_weight
-    else
-        Ω = 1
-    end
-
-    # ~~~
     # Model formulation
     # ~~~
 
@@ -176,45 +163,53 @@ function build_planning_model(inputs, settings)
 
     # Cuts
     @variable(MP, alpha[s in 1:S, f in 1:F, k in 1:K] >= 0)
-
-    if risk_aversion_flag
-        # Auxiliary varliables for CVaR
-        @variable(MP, u[s in 1:S, f in 1:F, k in 1:K] >= 0) # loss relative to VaR, $/MW
-        @variable(MP, ζ) # VaR variable, $/MW
-        
-        @constraint(MP, cvar_tail[s in 1:S, f in 1:F, k in 1:K], MP[:u][s,f,k] >= -MP[:ζ])
-    end
-        # 
     
 
     # Cost Expressions
     @expression(MP, inv_cost, sum(x[r]*cost_inv[r] for r in 1:R))
     @expression(MP, expected_alpha, sum(P[s]*P_f[f]*P_k[k]*alpha[s,f,k] for s in 1:S, f in 1:F, k in 1:K))
-    if risk_aversion_flag
-        @expression(MP, cvar_term, ζ + 1/Ψ*sum(P[s]*P_f[f]*P_k[k]*u[s,f,k] for s in 1:S, f in 1:F, k in 1:K))
-        @expression(MP, risk_adjusted_sys_cost, inv_cost + Ω*expected_alpha + (1-Ω)*cvar_term)
-    end
     @expression(MP, exp_sys_cost, expected_alpha + inv_cost)
-    
-
-
-
-
+    if risk_aversion_flag
+        add_risk_terms!(MP, inputs, settings)
+    end
 
     # ~~~
     # Objective function
     # ~~~ 
 
     if risk_aversion_flag
-        @expression(MP, eObj, inv_cost + Ω*expected_alpha + (1-Ω)*cvar_term)
-        @expression(MP, eOpObj,Ω*expected_alpha + (1-Ω)*cvar_term) 
+        @expression(MP, eObj, inv_cost + Ω*expected_alpha + (1-Ω)*MP[:cvar_term])
         @objective(MP, Min, eObj)
     else
         @expression(MP, eObj, inv_cost + expected_alpha)
-        @expression(MP, eOpObj, expected_alpha)
         @objective(MP, Min, eObj)
     end
     return MP
+
+end
+
+function add_risk_terms!(MP::Model, inputs, settings)
+    # Sets and flags
+    risk_aversion_weight = settings["Risk aversion weight"]
+
+    P = inputs["Demand scenario probabilities"]
+    P_f = inputs["Gas price scenario probabilities"]
+    P_k = inputs["Weather scenario probabilities"]
+
+    # CVaR parameters
+    Ψ = settings["Value-at-Risk percent"] 
+    Ω = risk_aversion_weight
+
+    # Auxiliary varliables for CVaR
+    @variable(MP, u[s in 1:S, f in 1:F, k in 1:K] >= 0) # loss relative to VaR, $/MW
+    @variable(MP, ζ) # VaR variable, $/MW
+    
+    # CVaR definition constraint
+    @constraint(MP, cvar_tail[s in 1:S, f in 1:F, k in 1:K], MP[:u][s,f,k] >= -MP[:ζ])
+    
+    # Accounting for risk in the objective function
+    @expression(MP, cvar_term, ζ + 1/Ψ*sum(P[s]*P_f[f]*P_k[k]*u[s,f,k] for s in 1:S, f in 1:F, k in 1:K))
+    @expression(MP, risk_adjusted_sys_cost, MP[:inv_cost] + Ω*MP[:expected_alpha] + (1-Ω)*MP[:cvar_term])
 
 end
 
@@ -337,3 +332,83 @@ function write_outputs(MP, settings)
     return output
 
 end
+#=====================================
+
+MGA Functions for Benders Implementation
+
+======================================#
+
+function set_objective_bendersMP!(model, objective_type::String, inputs, settings; obj_weight::Float64 = -1.0, set_coeffs::Vector = [])
+    if objective_type == "System_Expected"
+        @objective(model, Min, model[:exp_sys_cost])
+        @info("Objective set to minimize expected system cost: ", objective_function(model))
+    elseif objective_type == "System_Weighted_CVaR"
+        if obj_weight < -0.0001 || obj_weight > 1.001
+            error("For Weighted CVaR objective, please provide a valid weight between 0 and 1.")
+        end
+        # Check if model is initialized with risk terms?
+        if !haskey(model, :u) || !haskey(model, :cvar_term)
+            @info("Initializing risk terms for Weighted CVaR objective.")
+            add_risk_terms!(model, inputs, settings)
+            settings["risk aversion flag"] = true
+        end
+        @objective(model, Min, model[:inv_cost] + obj_weight*model[:expected_alpha] + (1-obj_weight)*model[:cvar_term])
+        @info("Objective set to minimize weighted CVaR. Weight is: ", obj_weight, " Objective function: ", objective_function(model))
+    elseif objective_type == "Capacity"
+        if set_coeffs == []
+            error("For Capacity objective, please provide a vector of coefficients for the capacity expression.")
+        end
+        @objective(model, Min, set_coeffs'*model[:x])
+        @info("Objective set to minimize capacity expression: ", objective_function(model))
+    else
+        error("Unsupported objective type. Please choose from 'Expectation', 'Weighted CVaR', or 'Capacity'.")
+    end
+end
+
+
+
+
+function add_budget_constraint_bendersMP(model::Model, budget::Float64, budget_type::String, existing_budgets::Dict; risk_aversion::Float64 = -1.0)
+    budget_added = Symbol[]
+    if budget_type == "Investment"
+        @constraint(model, c_budget_inv, model[:inv_cost] <= budget)
+        push!(budget_added, :c_budget_inv)
+        existing_budgets[budget_type] = budget
+    elseif budget_type == "Expected"
+        @constraint(model, c_budget_exp, model[:expected_alpha] <= budget)
+        push!(budget_added, :c_budget_exp)
+        existing_budgets[budget_type] = budget
+    elseif budget_type == "CVaR"
+        if !haskey(model, :u) || !haskey(model, :cvar_term)
+            @info("Initializing risk terms for Weighted CVaR objective.")
+            add_risk_terms!(model, inputs, settings)
+            settings["risk aversion flag"] = true
+        end
+        @constraint(model, c_budget_cvar, model[:cvar_term] <= budget)
+        push!(budget_added, :c_budget_cvar)
+        existing_budgets[budget_type] = budget
+
+    elseif budget_type == "System_Expected"
+        @constraint(model, c_budget_sys_exp, model[:exp_sys_cost] <= budget)
+        push!(budget_added, :c_budget_sys_exp)
+        existing_budgets[budget_type] = budget
+    elseif budget_type == "System_Weighted_CVaR"
+        if risk_aversion < 0 || risk_aversion > 1
+            error("For System_CVaR budget constraint, please provide a valid risk aversion weight between 0 and 1.")
+        end
+        if !haskey(model, :u) || !haskey(model, :cvar_term)
+            @info("Initializing risk terms for Weighted CVaR objective.")
+            add_risk_terms!(model, inputs, settings)
+            settings["risk aversion flag"] = true
+        end
+        @constraint(model, c_budget_sys_cvar, model[:inv_cost] + (risk_aversion)*model[:expected_alpha] + (1-risk_aversion)*model[:cvar_term]<= budget)
+        push!(budget_added, :c_budget_sys_cvar)
+        existing_budgets[budget_type] = budget
+    else
+        error("Unsupported budget type. Please choose from 'Investment', 'Expected', 'CVaR', 'System_Expected', or 'System_CVaR'.")
+    end
+
+    @info("Added budget constraint: ", model[budget_added[1]])
+    return existing_budgets
+end
+

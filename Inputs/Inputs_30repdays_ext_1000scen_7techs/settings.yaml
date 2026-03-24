@@ -45,7 +45,8 @@ Regularization flag: true
 # Shared Memory Parallelization
 Parallel flag: true
 
-#Vector Type: random
-#Iterations: 2
-#Capacity Exploration: true
-#Seed: 1234
+Vector Type: random
+Iterations: 2
+Capacity Exploration: true
+Seed: 1234
+Budget convergence tolerance: 0.005
