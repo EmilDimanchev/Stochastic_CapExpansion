@@ -71,7 +71,7 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
             output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration))
-            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             gap = output_random["Gaps"]
             push!(outputs, output_random)
             push!(run_labels, "Random_"*string(iteration))
@@ -153,7 +153,7 @@ function run_stochastic_exploration_single_type(SPs::Array{Model, 3}, inputs::Di
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
             output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration))
-            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             gap = output_random["Gaps"]
             push!(outputs, output_random)
             push!(run_labels, "Random_"*string(iteration))
@@ -218,7 +218,7 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
     for iteration in 1:iterations
         set_objective_bendersMP!(MP, "Capacity", new_inputs, settings; set_coeffs = vectors[iteration])
         output_random = mga_benders(new_inputs, settings, MP, SP_one_scen, budgets, "Base_MGA_"*string(iteration); Eval_SPs = SPs)
-        cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+        #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
         gap = output_random["Gaps"]
         results_destination = joinpath(results_path,"Base_MGA_"*string(iteration))
         df_cap, df_syscost, df_emissions = write_results_benders(output_random, new_inputs, settings, results_destination; budgets = budgets)
