@@ -375,12 +375,12 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
     names = inputs["Resources"]
     gaps = results["Gaps"]
     if (typeof(gaps[1]) == Vector{Float64}) && !isnothing(budgets)
-        names = [keys(budgets); names]
+        k = collect(key for key in keys(budgets))
+        names = vcat(k, names)
     else
         names = ["Gap"; names]
     end
-
-    CSV.write(joinpath(results_folder, "Convergence.csv"), DataFrame(hcat(gaps, stack(results["Capacity per iteration"], dims=1)), names))
+    CSV.write(joinpath(results_folder, "Convergence.csv"), DataFrame(hcat(stack(gaps, dims=1), stack(results["Capacity per iteration"], dims=1)), names))
 
     if settings["Write all scenarios flag"]
         # Write output files
@@ -411,7 +411,7 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
 
 end
 
-function write_gaps!(gaps::Vector{Vector{Float64}}, labels::Vector{String},results_folder::String)
+function write_gaps!(gaps::AbstractVector, labels::AbstractVector,results_folder::String)
     if !isdir(results_folder)
         mkpath(results_folder)
     end
@@ -429,7 +429,6 @@ function write_exploration_results!(dfs_cap::AbstractVector, dfs_syscost::Abstra
     names = gather_names(dfs_cap[1], dfs_syscost[1], dfs_emissions[1], length(labels) > 0)
     data = Array{Any,2}(undef, length(dfs_cap), length(names))
     data = gather_data(data, dfs_cap, dfs_syscost, dfs_emissions, labels)
-    println(names)
     df_exploration = DataFrame(data, names)
 
     CSV.write(joinpath(results_folder,"Summary_"*scenario*".csv"), df_exploration)

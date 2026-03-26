@@ -151,6 +151,7 @@ function build_planning_model(inputs, settings)
     O =  inputs["Number of storage resources"]
     R = G + O
 
+    Ω = settings["Risk aversion weight"]
     x_ub = 1e6
 
     # ~~~
@@ -196,6 +197,10 @@ function add_risk_terms!(MP::Model, inputs, settings)
     P_f = inputs["Gas price scenario probabilities"]
     P_k = inputs["Weather scenario probabilities"]
 
+    S = size(P)[1] # number of demand scenarios
+    F = size(P_f)[1] # number of gas price scenarios
+    K = size(P_k)[1] # number of weather scenarios
+
     # CVaR parameters
     Ψ = settings["Value-at-Risk percent"] 
     Ω = risk_aversion_weight
@@ -213,7 +218,7 @@ function add_risk_terms!(MP::Model, inputs, settings)
 
 end
 
-function add_optimality_cuts!(MP, SP_obj, SP_dual, x_prev, coeffs, inputs,settings, iteration)
+function add_optimality_cuts!(MP, SP_obj, SP_dual, x_prev, coeffs, inputs,settings, iteration, case)
     scaling_factor_cost = settings["Scaling factor cost"]
     cvar_tail = settings["Risk aversion flag"]
 
@@ -233,10 +238,10 @@ function add_optimality_cuts!(MP, SP_obj, SP_dual, x_prev, coeffs, inputs,settin
     SP_obj = SP_obj./scaling_factor_cost
     SP_dual = SP_dual./scaling_factor_cost
     if cvar_tail
-        @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:u][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) - MP[:ζ], base_name = "cvar_tail_cuts_"*string(iteration))
+        @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:u][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) - MP[:ζ], base_name = "cvar_tail_cuts_"*case*string(iteration))
     end
     
-    @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:alpha][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R), base_name = "optimality_cut_"*string(iteration))
+    @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:alpha][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R), base_name = "optimality_cut_"*case*string(iteration))
 end
 # Multiple dispatch run_planning_model with and without SP outputs for cuts
 function run_planning_model(MP, settings)
@@ -340,7 +345,9 @@ MGA Functions for Benders Implementation
 
 function set_objective_bendersMP!(model, objective_type::String, inputs, settings; obj_weight::Float64 = -1.0, set_coeffs::Vector = [])
     if objective_type == "System_Expected"
-        @objective(model, Min, model[:exp_sys_cost])
+        unregister(model, :eObj)
+        @expression(model, eObj, model[:exp_sys_cost])
+        @objective(model, Min, model[:eObj])
         @info("Objective set to minimize expected system cost: ", objective_function(model))
     elseif objective_type == "System_Weighted_CVaR"
         if obj_weight < -0.0001 || obj_weight > 1.001
@@ -352,7 +359,9 @@ function set_objective_bendersMP!(model, objective_type::String, inputs, setting
             add_risk_terms!(model, inputs, settings)
             settings["risk aversion flag"] = true
         end
-        @objective(model, Min, model[:inv_cost] + obj_weight*model[:expected_alpha] + (1-obj_weight)*model[:cvar_term])
+        unregister(model, :eObj)
+        @expression(model, eObj, model[:risk_adjusted_sys_cost])
+        @objective(model, Min, model[:eObj])
         @info("Objective set to minimize weighted CVaR. Weight is: ", obj_weight, " Objective function: ", objective_function(model))
     elseif objective_type == "Capacity"
         if set_coeffs == []
@@ -412,3 +421,14 @@ function add_budget_constraint_bendersMP(model::Model, budget::Float64, budget_t
     return existing_budgets
 end
 
+function manage_cuts(MP::Model, cuts_to_keep::Vector{String})
+    # Get all cut constraints in the model
+    all_cuts = [con for con in all_constraints(MP, include_variable_in_set_constraints = false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+    
+    for cut in all_cuts
+        if !(name(cut) in cuts_to_keep)
+            delete(MP, cut)
+        end
+    end
+    return cuts_to_keep
+end

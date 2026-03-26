@@ -46,7 +46,7 @@ Regularization flag: true
 Parallel flag: true
 
 Vector Type: random
-Iterations: 2
+Iterations: 50
 Capacity Exploration: true
 Seed: 1234
 Budget convergence tolerance: 0.005

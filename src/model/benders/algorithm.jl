@@ -132,7 +132,7 @@ function run_benders_algorithm(inputs::Dict, settings::Dict)
 end
 
 
-function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}; Eval_SPs = nothing)
+function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing)
     # Iterations
     J_max = 150
 
@@ -257,7 +257,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         push!(expected_value_hist, sum(P[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"]) 
         cvar_estimate = 0.0
     
-        if isnothing(Eval_SPs) || all(size(SPs) .> (1,1,1))
+        if isnothing(Eval_SPs) || all(size(SPs) .>= (1,1,1))
             cvar_estimate = compute_cvar(SP_obj[j], P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
         end
         if risk_aversion_flag
@@ -329,7 +329,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
             break
         else
-            add_optimality_cuts!(MP, SP_obj[j], SP_duals[j], capacity_mix[j], coeffs, inputs,settings, j)
+            add_optimality_cuts!(MP, SP_obj[j], SP_duals[j], capacity_mix[j], coeffs, inputs,settings, j, case_name)
             @info("Running investment problem")
             output_mp_unst = run_planning_model(MP, settings)
             alpha_ev = output_mp_unst["Expected alpha"]/settings["Scaling factor cost"]
@@ -374,22 +374,6 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             push!(alphas, output_mp["Alpha"])
             push!(inv_cost, output_mp["Inv_cost"])
             
-            
-            # LB
-            push!(lower_bounds, output_mp["Alpha"]./settings["Scaling factor cost"])
-
-            alpha_ev = output_mp["Expected alpha"]/settings["Scaling factor cost"]
-            push!(alpha_ev_hist, alpha_ev)
-            push!(inv_cost, output_mp["Inv_cost"])
-            if risk_aversion_flag
-                u_cvar = output_mp["CVaR term"]/settings["Scaling factor cost"]
-                push!(u_cvar_hist, u_cvar)
-                risk_adjusted_LB = risk_aversion_weight*alpha_ev + (1-risk_aversion_weight)*u_cvar
-                LB = risk_adjusted_LB + output_mp["Inv_cost"]/settings["Scaling factor cost"]
-            else
-                LB = alpha_ev + output_mp["Inv_cost"]/settings["Scaling factor cost"]
-            end
-            
         end
     end
     elapsed = time() - algorithm_start_time
@@ -415,7 +399,7 @@ function compute_cvar(SP_obj, P, P_f, P_k, VaR_Percent)
     cum_prob = cumsum(prob_sorted)
     
     # Identify VaR threshold
-    var_threshold_index = findfirst(x -> x >= (1-VaR_Percent)+.005, cum_prob) # Adding a small tolerance to handle floating-point issues
+    var_threshold_index = findfirst(x -> x >= (1-VaR_Percent) + .00005, cum_prob) # Adding a small tolerance to handle floating-point issue
 
     # Compute CVaR as weighted average of tail outcomes
     cvar = sum(sp_obj_sorted[i]*prob_sorted[i] for i in var_threshold_index:length(sp_obj_sorted))/(VaR_Percent)
@@ -423,7 +407,7 @@ function compute_cvar(SP_obj, P, P_f, P_k, VaR_Percent)
     return cvar
 end
 
-function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing)
+function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing)
     # Iterations 
     J_max = 150
 
@@ -474,7 +458,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     UBs = [Inf for _ in budget_types]
     min_UBs = [Inf for _ in budget_types]
     gaps = [Inf for _ in budget_types]
-    LBs = [budgets[type] for type in budget_types]./settings["Scaling factor cost"]
+    LBs = [budgets[type] for type in budget_types]
     
     P = inputs["Demand scenario probabilities"]
     P_f = inputs["Gas price scenario probabilities"]
@@ -487,6 +471,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     alpha_ev_hist = []
     u_cvar_hist = []
     coeffs_hist = []
+    gap_hist = []
     
 
     
@@ -547,10 +532,10 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
         # Make UB cost estimates based on current SP solutions
         push!(expected_value_hist, sum(P[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"]) 
         cvar_estimate = 0.0
-        if ("System_Weighted_CVaR" in budget_types || risk_aversion_flag)
+        if isnothing(Eval_SPs) || all(size(SPs) .>= (1,1,1))
             cvar_estimate = compute_cvar(SP_obj[j], P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
         end
-        
+
         # Build actual UBs based on risk aversion settings and budget types ---- supports multiple budget types at once, but will track the minimum UB across iterations for each type separately
         for (i, budget_type) in enumerate(budget_types)
             if budget_type == "System_Expected"
@@ -576,9 +561,9 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             gaps[i] = (min_UBs[i] - LBs[i])/abs(LBs[i])
             @info("Budget type: $(type), Gap: $(gaps[i] * 100)%, LB: $(LBs[i]), UB: $(min_UBs[i])")
         end
-
+        push!(gap_hist, deepcopy(gaps))
         #if maximum(abs.(gaps)) <= conv_tol
-        if isapprox(maximum(gaps), conv_tol; rtol = settings["Budget convergence tolerance"]) || all(gaps .<= conv_tol)    
+        if isapprox(maximum(gaps), 0; atol = settings["Budget convergence tolerance"]) || all(gaps .<= conv_tol)    
             @info("Convergence achieved with maximum percentage gap of $((maximum(gaps)) * 100)%")
 
             output_mp = run_planning_model(MP, settings)
@@ -593,7 +578,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             #results["Upper bounds"] = upper_bounds
             #results["Lower bounds"] = lower_bounds
             results["UB_hist"] = UB_hist
-            results["Gaps"] = gaps
+            results["Gaps"] = gap_hist
+            println("Gaps at convergence: ", gap_hist[end])
 
             # Evaluate MP sol on Eval SPs if needed
             if Eval_SPs !== nothing
@@ -602,10 +588,11 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings)
                 results["SPs_eval"] = outputs_sp_eval
                 results["CVaR"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)*settings["Scaling factor cost"]
+                results["Expected Value"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)*settings["Scaling factor cost"]
             end
             break
         else
-            add_optimality_cuts!(MP, SP_obj[j], SP_duals[j], capacity_mix[j], coeffs, inputs,settings, j)
+            add_optimality_cuts!(MP, SP_obj[j], SP_duals[j], capacity_mix[j], coeffs, inputs,settings, j, case_name)
             @info("Running investment problem")
             output_mp = run_planning_model(MP, settings)
 

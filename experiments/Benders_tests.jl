@@ -71,7 +71,7 @@ function run_new_benders()
     MP = build_planning_model(inputs, settings)
     SPs = build_all_subproblems(inputs, settings)
     # Run New Benders algorithm
-    results_new = benders_algorithm(inputs, settings, MP, SPs)
+    results_new = benders_algorithm(inputs, settings, MP, SPs, "Benders_test_new")
     
     df_cap, df_syscost, df_emissions = write_results_benders(results_new, inputs, settings, settings["Results folder path"])
     write_exploration_results!([df_cap], [df_syscost], [df_emissions], settings["Results folder path"], ["Benders test new"], scenario = "Benders_test_new")
@@ -107,7 +107,7 @@ function run_single_scenario_benders()
     new_inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
 
     # Run New Benders algorithm
-    results_new, gaps = benders_algorithm(new_inputs, settings, MP, SPs; Eval_SPs=eval_SPs)
+    results_new, gaps = benders_algorithm(new_inputs, settings, MP, SPs, "Benders_test_single_scenario"; Eval_SPs=eval_SPs)
     CSV.write(joinpath(settings["Results folder path"], "capacity_mix_per_iteration_single_scenario.csv"), DataFrame(stack(results_new["Capacity per iteration"], dims=1), names))
     return results_new
 end
