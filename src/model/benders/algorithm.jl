@@ -257,7 +257,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         push!(expected_value_hist, sum(P[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"]) 
         cvar_estimate = 0.0
     
-        if isnothing(Eval_SPs) || all(size(SPs) .>= (1,1,1))
+        if all(size(SPs) .>= (1,1,1))
             cvar_estimate = compute_cvar(SP_obj[j], P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
         end
         if risk_aversion_flag
@@ -323,8 +323,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 set_capacity_parameters!(Eval_SPs, output_mp["Capacity"])
                 outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings)
                 results["SPs_eval"] = outputs_sp_eval
-                results["CVaR"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)*settings["Scaling factor cost"]
-                results["Expected Value"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)*settings["Scaling factor cost"]
+                results["CVaR"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)
+                results["Expected Value"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)
+            
             end
 
             break
@@ -587,8 +588,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 set_capacity_parameters!(Eval_SPs, output_mp["Capacity"])
                 outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings)
                 results["SPs_eval"] = outputs_sp_eval
-                results["CVaR"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)*settings["Scaling factor cost"]
-                results["Expected Value"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)*settings["Scaling factor cost"]
+                results["CVaR"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)
+                results["Expected Value"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)
             end
             break
         else

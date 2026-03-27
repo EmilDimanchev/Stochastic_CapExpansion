@@ -1,5 +1,6 @@
 
 include("../src/Stochastic_CapExpansion.jl")
+include("MGA_Tests.jl")
 
 using .Stochastic_CapExpansion
 using Revise, JuMP, Gurobi, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates
@@ -110,6 +111,41 @@ function run_single_scenario_benders()
     results_new, gaps = benders_algorithm(new_inputs, settings, MP, SPs, "Benders_test_single_scenario"; Eval_SPs=eval_SPs)
     CSV.write(joinpath(settings["Results folder path"], "capacity_mix_per_iteration_single_scenario.csv"), DataFrame(stack(results_new["Capacity per iteration"], dims=1), names))
     return results_new
+end
+
+function run_eval_SP_validation()
+    inputs_folder = joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs")
+    test_index = 5
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+    
+    inputs["Output Demand scenario probabilities"] = inputs["Demand scenario probabilities"] #Establish base weights ahead of time
+    inputs["Output Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
+    inputs["Output Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
+    inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
+    inputs["Full Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
+    inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
+
+    if settings["Parallel flag"]
+        settings["Threads"] = Threads.nthreads()
+        @info("Running with parallelization using $(Threads.nthreads()) threads")
+    else
+        @info("Running without parallelization")
+    end
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+
+    outputs_exp, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "Expected"), summary_folder; type = "System_Expected", vector_set = nothing, budget_multiplier=1.10, Eval_SPs = SPs)
+
 end
 
 #benders_test_compare()

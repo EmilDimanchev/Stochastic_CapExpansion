@@ -64,8 +64,10 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
     if settings["Capacity Exploration"]
         budgets = Dict()
         # Set budgets? ------- budget set = set with budgets same percent greater than least cost solution for each metric
-        budgets = add_budget_constraint_bendersMP(MP, ((output_exp["MP"]["Inv_cost"] + output_exp["Expected Value"])/settings["Scaling factor cost"])*budget_multiplier, "System_Expected", budgets)
-        budgets = add_budget_constraint_bendersMP(MP, (((1-risk_aversion_weight)*output_cvar["CVaR"] + (risk_aversion_weight)*output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/settings["Scaling factor cost"])*budget_multiplier, "System_Weighted_CVaR", budgets; risk_aversion=risk_aversion_weight)
+        #budgets = add_budget_constraint_bendersMP(MP, ((output_exp["MP"]["Inv_cost"] + output_exp["Expected Value"])/settings["Scaling factor cost"])*budget_multiplier, "System_Expected", budgets)
+        #budgets = add_budget_constraint_bendersMP(MP, (((1-risk_aversion_weight)*output_cvar["CVaR"] + (risk_aversion_weight)*output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/settings["Scaling factor cost"])*budget_multiplier, "System_Weighted_CVaR", budgets; risk_aversion=risk_aversion_weight) *budget_multiplier
+        budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["MP"]["Inv_cost"] + output_cvar["Expected Value"])/settings["Scaling factor cost"]), "System_Expected", budgets)
+        budgets = add_budget_constraint_bendersMP(MP, (((1-risk_aversion_weight)*output_exp["CVaR"] + (risk_aversion_weight)*output_exp["Expected Value"] + output_exp["MP"]["Inv_cost"])/settings["Scaling factor cost"]), "System_Weighted_CVaR", budgets; risk_aversion=risk_aversion_weight)
         cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
         vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x]), settings["Vector Type"], settings)
         for iteration in 1:iterations
@@ -83,13 +85,13 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
             push!(results_emissions, df_emissions)
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
-        write_exploration_results!(results_cap, results_syscost, results_emissions, joinpath(summary_folder), run_labels, "Two_Budgets")
+        write_exploration_results!(results_cap, results_syscost, results_emissions, joinpath(summary_folder), run_labels, "CVaR_Expected+CVaR")
     end
     return outputs, vectors
 end
 
 
-function run_stochastic_exploration_single_type(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_path::String, summary_folder::String; type::String = "System_Expected", vector_set::Union{AbstractVector, Nothing} = nothing, budget_multiplier::Float64 = 1.10)
+function run_stochastic_exploration_single_type(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_path::String, summary_folder::String; type::String = "System_Expected", vector_set::Union{AbstractVector, Nothing} = nothing, budget_multiplier::Float64 = 1.10, Eval_SPs=nothing)
 
     # ~~~
     # Define paths
@@ -124,7 +126,7 @@ function run_stochastic_exploration_single_type(SPs::Array{Model, 3}, inputs::Di
         settings["Risk aversion flag"] = true
     end
     MP = build_planning_model(inputs, settings)
-    output = benders_algorithm(inputs, settings, MP, SPs, type)
+    output = benders_algorithm(inputs, settings, MP, SPs, type;  Eval_SPs = Eval_SPs)
     gap = output["Gaps"]
     push!(outputs, output)
     push!(run_labels, type)
@@ -152,7 +154,7 @@ function run_stochastic_exploration_single_type(SPs::Array{Model, 3}, inputs::Di
         vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x]), settings["Vector Type"], settings)
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
-            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration))
+            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs)
             #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             gap = output_random["Gaps"]
             push!(outputs, output_random)
@@ -261,9 +263,9 @@ function simple_comp()
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
 
-    outputs_mixed, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both"), summary_folder; budget_multiplier=1.10, vector_set=nothing)#vectors
-    outputs_exp, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "Expected"), summary_folder; type = "System_Expected", vector_set = vectors, budget_multiplier=1.10)
-    outputs_cvar, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "CVaR"), summary_folder; type ="System_Weighted_CVaR",vector_set = vectors, budget_multiplier=1.10)
+    outputs_mixed, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Swapped_Optimal_Budget"), summary_folder; budget_multiplier=1.10, vector_set=nothing)#vectors
+    #outputs_exp, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "Expected"), summary_folder; type = "System_Expected", vector_set = nothing, budget_multiplier=1.10)
+    #outputs_cvar, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "CVaR"), summary_folder; type ="System_Weighted_CVaR",vector_set = vectors, budget_multiplier=1.10)
     
     @info("Running base MGA test for mean scenario")
     
@@ -279,6 +281,6 @@ function simple_comp()
 
     i = 0
     results_path = joinpath(results_folder, "Results_Base_MGA", "Scenario_"*string(i))
-    _ = run_base_mga(SPs, new_inputs, settings, results_path, summary_folder; budget_multiplier=1.10, vector_set=nothing, scenario=i)
+    #_ = run_base_mga(SPs, new_inputs, settings, results_path, summary_folder; budget_multiplier=1.10, vector_set=nothing, scenario=i)
 
 end
