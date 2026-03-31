@@ -148,6 +148,64 @@ function run_eval_SP_validation()
 
 end
 
+function run_risk_pareto_frontier()
+    inputs_folder = joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs")
+    test_index = 7
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+
+    inputs["Output Demand scenario probabilities"] = inputs["Demand scenario probabilities"] #Establish base weights ahead of time
+    inputs["Output Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
+    inputs["Output Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
+
+     if settings["Parallel flag"]
+        settings["Threads"] = Threads.nthreads()
+        @info("Running with parallelization using $(Threads.nthreads()) threads")
+    else
+        @info("Running without parallelization")
+    end
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+   
+
+    risk_aversion_weights = [0.0, 0.01, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.99, 1.0]
+
+    results_cap = []
+    results_syscost = []
+    results_emissions = []
+    outputs = []
+    run_labels = []
+    gaps = []
+    settings["Risk aversion flag"] = true
+    MP = build_planning_model(inputs, settings)
+    for risk_aversion_weight in risk_aversion_weights
+        settings["Risk aversion weight"] = risk_aversion_weight
+        set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight=risk_aversion_weight)
+        output = benders_algorithm(inputs, settings, MP, SPs, "Benders_test_risk_aversion_weight_"*string(risk_aversion_weight))
+        gap = output["Gaps"]
+        df_cap, df_syscost, df_emissions = write_results_benders(output, inputs, settings, joinpath(results_folder, "Benders_risk_aversion_weight_"*string(risk_aversion_weight)))
+        push!(results_cap, df_cap)
+        push!(results_syscost, df_syscost)
+        push!(results_emissions, df_emissions)
+        push!(outputs, output)
+        push!(run_labels, "Risk aversion weight "*string(risk_aversion_weight))
+        push!(gaps, gap)
+    end
+
+    write_exploration_results!(results_cap, results_syscost, results_emissions, joinpath(results_folder, "Summary"), run_labels,"Risk aversion weights")
+
+
+end
+
 #benders_test_compare()
 #run_new_benders()
 #run_old_benders()

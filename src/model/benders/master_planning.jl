@@ -360,7 +360,7 @@ function set_objective_bendersMP!(model, objective_type::String, inputs, setting
             settings["risk aversion flag"] = true
         end
         unregister(model, :eObj)
-        @expression(model, eObj, model[:risk_adjusted_sys_cost])
+        @expression(model, eObj, model[:inv_cost] + (obj_weight)*model[:expected_alpha] + (1-obj_weight)*model[:cvar_term])
         @objective(model, Min, model[:eObj])
         @info("Objective set to minimize weighted CVaR. Weight is: ", obj_weight, " Objective function: ", objective_function(model))
     elseif objective_type == "Capacity"

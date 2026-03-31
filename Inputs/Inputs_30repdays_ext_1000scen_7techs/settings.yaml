@@ -4,9 +4,9 @@ Write all scenarios flag: false # If true, writes results for all scenarios. If 
 # Risk
 Demand uncertainty: true
 Gas price uncertainty: true
-Weather uncertainty: false
+Weather uncertainty: true
 Risk aversion flag: false
-Risk aversion weight: 0.5
+Risk aversion weight: 0.01
 Value-at-Risk percent: 0.05
 Risk sharing flag: false
 
