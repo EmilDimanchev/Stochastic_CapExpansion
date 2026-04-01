@@ -1,11 +1,10 @@
-
 include("../src/Stochastic_CapExpansion.jl")
 include("MGA_Tests.jl")
 
 using .Stochastic_CapExpansion
 using Revise, JuMP, Gurobi, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates
 
-INPUTS_PATH = "/Users/mike_/Documents/Code/Stochastic_CapExpansion/inputs/Inputs_30repdays_ext_1000scen_7techs"
+INPUTS_PATH = "../Inputs/Inputs_30repdays_ext_1000scen_7techs"
 
 function benders_test_compare()
     # Load inputs and settings
@@ -148,9 +147,9 @@ function run_eval_SP_validation()
 
 end
 
-function run_risk_pareto_frontier()
-    inputs_folder = joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs")
-    test_index = 7
+function run_risk_pareto_frontier(test_index)
+    inputs_folder = joinpath("Inputs","Inputs_30repdays_ext_1000scen_7techs")
+
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
