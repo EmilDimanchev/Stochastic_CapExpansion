@@ -132,6 +132,8 @@ function run_benders_algorithm(inputs::Dict, settings::Dict)
 end
 
 
+####TODO - modify containers to be preallocated sizes to avoid memory over runs from push! and append!
+
 function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing)
     # Iterations
     J_max = 150
@@ -249,7 +251,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         duals_sp_per_iter =reshape([outputs_sp[s,f,k]["SP dual"][r] for r in 1:R, s in 1:S, f in 1:F, k in 1:K],(R, S, F, K))
         coeffs = reshape([outputs_sp[s,f,k]["coeff"] for s in 1:S, f in 1:F, k in 1:K],(S, F, K))
         push!(coeffs_hist, coeffs)
-        
+        #### Are these the issue?
         # Update SP solution outputs 
         push!(SP_obj, sp_obj_per_iter)
         push!(SP_duals, duals_sp_per_iter)

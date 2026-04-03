@@ -227,15 +227,17 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
     scaling_factor_demand = settings["Scaling factor demand"]
 
     # Variables
-    cap = MP_output["Capacity"] 
-    shed = collect(SPs_output[s,f,k]["Load shedding"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])#model_output["Load shedding"]
+    cap = MP_output["Capacity"]
+ 
+    shed = eval_SPs == [] ? collect(SPs_output[s,f,k]["Load shedding"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Load shedding"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])#model_output["Load shedding"]
 
-    gen = collect(SPs_output[s,f,k]["Generation"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])#model_output["Generation"]
+    gen = eval_SPs == [] ? collect(SPs_output[s,f,k]["Generation"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Generation"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])#model_output["Generation"]
+    
     #m = model_output["Capacity dual"]
     #theta = model_output["Risk adjusted probabilities"]
     Ω = settings["Risk aversion weight"]
-    price = collect(SPs_output[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) #model_output["Power balance dual"]
-    
+    price = eval_SPs == [] ? collect(SPs_output[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) #model_output["Power balance dual"]
+    println(size(shed[1,1,1]))
     # Settings
     resources = inputs["Generation resources"]
     all_resources = inputs["Resources"]
@@ -251,11 +253,11 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
     R = G + O 
 
 
-    if storage_flag
-        charge = collect(SPs_output[s,f,k]["Storage charging"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])
-        discharge = collect(SPs_output[s,f,k]["Storage discharging"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])
-        net_battery = charge - discharge
-    end
+    #if storage_flag
+     #   charge = collect(SPs_output[s,f,k]["Storage charging"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])
+     #   discharge = collect(SPs_output[s,f,k]["Storage discharging"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])
+     #   net_battery = charge - discharge
+    #end
 
     # Collect results
     df_cap = DataFrame(Resource = all_resources, Capacity = cap)
@@ -303,10 +305,25 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
         cvar_op = results["CVaR"]
         co2 = collect(eval_SPs[s,f,k]["Emissions"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1]) #model_output["Emissions"]
         co2_exp = sum(P_s_eval[s]*P_f_eval[f]*P_k_eval[k]*co2[s,f,k] for s in 1:S, f in 1:F, k in 1:K) #model_output["Emissions expected"]
+        
 
         # Make dfs
         df_syscost = DataFrame(Investment_Cost = MP_output["Inv_cost"], SingleScenario_SystemCost = system_cost_base, EV_SystemCost = system_cost, CVaR_SystemCost= sys_cost_risk, CVaR_OpCost = cvar_op, EV_OpCost = exp_op_cost)
         df_emissions = DataFrame(Single_Scenario_Emissions = emissions_base, Expected_emissions = co2_exp)
+        if settings["Write all scenarios flag"]
+            for s in 1:size(P_s_eval)[1]
+                for f in 1:size(P_f_eval)[1]
+                    for k in 1:size(P_k_eval)[1]
+                        # Collect CO2 emissions
+                        col_name_Emissions = string("EmissionsD",string(s),"F",string(f),"W",string(k))
+                        insertcols!(df_co2_all, col_name_Emissions => eval_SPs[s,f,k]["Emissions"])
+                        # Collect operating cost
+                        col_name_OpCost = string("OperatingCostD",string(s),"F",string(f),"W",string(k))
+                        insertcols!(df_syscost, col_name_OpCost => eval_SPs[s,f,k]["SP objective"])
+                    end
+                end
+            end
+        end
 
     else #### Proceed as normal
          # Total system cost in x$
@@ -315,52 +332,68 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
         exp_op_cost = results["Expected Value"]
         sys_cost_risk = MP_output["Inv_cost"] + Ω*exp_op_cost + (1-Ω)*results["CVaR"] #model_output["Investment cost"] + Ω*exp_op_cost + (1-Ω)*cvar
         cvar_op = results["CVaR"]
-        df_syscost = DataFrame(Investment_Cost = MP_output["Inv_cost"], EV_SystemCost = system_cost, CVaR_SystemCost= sys_cost_risk, CVaR_OpCost = cvar_op, EV_OpCost = exp_op_cost)
+        
+       
         co2 = collect(SPs_output[s,f,k]["Emissions"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) #model_output["Emissions"]
         co2_exp = sum(P_s[s]*P_f[f]*P_k[k]*co2[s,f,k] for s in 1:S, f in 1:F, k in 1:K) #model_output["Emissions expected"]
+        df_syscost = DataFrame(Investment_Cost = MP_output["Inv_cost"], EV_SystemCost = system_cost, CVaR_SystemCost= sys_cost_risk, CVaR_OpCost = cvar_op, EV_OpCost = exp_op_cost)
         df_emissions = DataFrame(Expected_emissions = co2_exp)
+        if settings["Write all scenarios flag"]
+            for s in 1:size(P_s)[1]
+                for f in 1:size(P_f)[1]
+                    for k in 1:size(P_k)[1]
+                        # Collect CO2 emissions
+                        col_name_Emissions = string("EmissionsD",string(s),"F",string(f),"W",string(k))
+                        insertcols!(df_co2_all, col_name_Emissions => SPs_output[s,f,k]["Emissions"])
+                        # Collect operating cost
+                        col_name_OpCost = string("OperatingCostD",string(s),"F",string(f),"W",string(k))
+                        insertcols!(df_syscost, col_name_OpCost => SPs_output[s,f,k]["SP objective"])
+                    end
+                end
+            end
+        end
     end
    
 
     # Collect scenario results
-    if false #settings["Write all scenarios flag"]
+    if settings["Write all scenarios flag"]
         for s in 1:S
             for f in 1:F
                 for k in 1:K
                     # Generation
-                    col_names = [string(i,"_Demand-",string(s),"_FuelPrice-",string(f),"_Weather-",string(k)) for i in resources]
-                    df_gen = hcat(df_gen, DataFrame(transpose(gen[:,:,s,f]), col_names))
+                    col_names = [string(i,"_D",string(s),"F",string(f),"W",string(k)) for i in resources]
+                    df_gen = hcat(df_gen, DataFrame(transpose(gen[s,f,k]), col_names))
                     # Power price
-                    col_name = string("Demand-",string(s),"_FuelPrice-",string(f),"_Weather-",string(k))
-                    insertcols!(df_price, col_name => price[:,s,f])
+                    col_name = string("D",string(s),"F",string(f),"W",string(k))
+                    insertcols!(df_price, col_name => price[s,f,k])
 
                     # Average system cost by scenario
-                    col_name_syscost = string("Average_System_Cost_", "Demand-",string(s),"_FuelPrice-",string(f),"_Weather-",string(k))
-                    insertcols!(df_syscost, col_name_syscost => avg_sys_cost_scenarios[s,f])
+                    #col_name_syscost = string("Average_System_Cost_", "Demand-",string(s),"_FuelPrice-",string(f),"_Weather-",string(k))
+                    #insertcols!(df_syscost, col_name_syscost => avg_sys_cost_scenarios[s,f,k])
 
                     # Collect CO2 emissions
-                    insertcols!(df_co2_all, col_name => model_output["Emissions"][s,f])
+                    #insertcols!(df_co2_all, col_name => model_output["Emissions"][s,f,k])
                     # Collect operating cost
-                    insertcols!(df_oper_all, col_name => model_output["Operating cost"][s,f])
+                    #insertcols!(df_oper_all, col_name => model_output["Operating cost"][s,f,k])
                     
-                    if !model_output["Risk sharing flag"]
-                        insertcols!(df_theta, col_name => theta[:,s,f])
-                    else
-                        insertcols!(df_theta, col_name => theta[s,f])
-                    end
+                    #if !model_output["Risk sharing flag"]
+                    #   insertcols!(df_theta, col_name => theta[:,s,f,k])
+                    #else
+                    #    insertcols!(df_theta, col_name => theta[s,f,k])
+                    #end
                     
                     # Battery operation
-                    if storage_flag
-                        insertcols!(df_bat, col_name => net_battery[:,s,f])
-                    end
+                    #if storage_flag
+                    #    insertcols!(df_bat, col_name => net_battery[:,s,f,k])
+                    #end
                     # Load shedding
-                    insertcols!(df_nse, col_name => shed[:,s,f])
+                    insertcols!(df_nse, col_name => shed[s,f,k])
                     
-                    if !model_output["Risk sharing flag"]
-                        insertcols!(df_u, col_name => model_output["CVaR Loss"][:,s,f])
-                    else
-                        insertcols!(df_u, col_name => model_output["CVaR Loss"][s,f])
-                    end
+                    #if !model_output["Risk sharing flag"]
+                    #    insertcols!(df_u, col_name => model_output["CVaR Loss"][:,s,f,k])
+                    #else
+                    #    insertcols!(df_u, col_name => model_output["CVaR Loss"][s,f,k])
+                    #end
                 end
             end
         end
@@ -384,26 +417,26 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
 
     if settings["Write all scenarios flag"]
         # Write output files
-        CSV.write(string(results_folder,sep,"capacity.csv"), df_cap)
+        #CSV.write(string(results_folder,sep,"capacity.csv"), df_cap)
         CSV.write(string(results_folder,sep,"generation.csv"), df_gen)
-        if storage_flag
-            CSV.write(string(results_folder,sep,"battery.csv"), df_bat)
-        end
+        #if storage_flag
+        #    CSV.write(string(results_folder,sep,"battery.csv"), df_bat)
+        #end
 
         CSV.write(string(results_folder,sep,"price.csv"), df_price)
-        CSV.write(string(results_folder,sep,"weights.csv"), df_weights)
+       # CSV.write(string(results_folder,sep,"weights.csv"), df_weights)
         CSV.write(string(results_folder,sep,"nse.csv"), df_nse)
-        CSV.write(string(results_folder,sep,"objective.csv"), df_obj)
-        CSV.write(string(results_folder,sep,"emissions.csv"), df_emissions)
-        CSV.write(string(results_folder,sep,"emissions_all.csv"), df_co2_all)
-        CSV.write(string(results_folder,sep,"oper_cost_all.csv"), df_oper_all)
-        if settings["Risk aversion flag"] == true
-            CSV.write(string(results_folder,sep,"VaR.csv"), df_var)
-            CSV.write(string(results_folder,sep,"loss_cvar.csv"), df_u)
-            CSV.write(string(results_folder,sep,"risk-adj_probs.csv"), df_theta)
-        end
-        CSV.write(string(results_folder,sep,"system_cost.csv"), df_syscost)
-        CSV.write(string(results_folder,sep,"risk_system_cost.csv"), df_syscost_risk)
+        #CSV.write(string(results_folder,sep,"objective.csv"), df_obj)
+        #CSV.write(string(results_folder,sep,"emissions.csv"), df_emissions)
+        #CSV.write(string(results_folder,sep,"emissions_all.csv"), df_co2_all)
+        #CSV.write(string(results_folder,sep,"oper_cost_all.csv"), df_oper_all)
+        #if settings["Risk aversion flag"] == true
+          #  CSV.write(string(results_folder,sep,"VaR.csv"), df_var)
+          #  CSV.write(string(results_folder,sep,"loss_cvar.csv"), df_u)
+          #  CSV.write(string(results_folder,sep,"risk-adj_probs.csv"), df_theta)
+        #end
+        #CSV.write(string(results_folder,sep,"system_cost.csv"), df_syscost)
+        #CSV.write(string(results_folder,sep,"risk_system_cost.csv"), df_syscost_risk)
 
     end
 

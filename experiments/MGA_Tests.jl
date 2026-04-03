@@ -237,7 +237,7 @@ end
 
 function simple_comp()
     inputs_folder = joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs")
-    test_index = 5
+    test_index = 9
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -263,9 +263,9 @@ function simple_comp()
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
 
-    outputs_mixed, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Swapped_Optimal_Budget"), summary_folder; budget_multiplier=1.10, vector_set=nothing)#vectors
-    outputs_exp, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "Expected"), summary_folder; type = "System_Expected", vector_set = nothing, budget_multiplier=1.10)
-    outputs_cvar, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "CVaR"), summary_folder; type ="System_Weighted_CVaR",vector_set = vectors, budget_multiplier=1.10)
+    outputs_mixed, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_10"), summary_folder; budget_multiplier=1.10, vector_set=nothing)#vectors
+    #outputs_exp, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "Expected"), summary_folder; type = "System_Expected", vector_set = nothing, budget_multiplier=1.10)
+    #outputs_cvar, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "CVaR"), summary_folder; type ="System_Weighted_CVaR",vector_set = vectors, budget_multiplier=1.10)
     
     @info("Running base MGA test for mean scenario")
     
@@ -281,6 +281,6 @@ function simple_comp()
 
     i = 0
     results_path = joinpath(results_folder, "Results_Base_MGA", "Scenario_"*string(i))
-    _ = run_base_mga(SPs, new_inputs, settings, results_path, summary_folder; budget_multiplier=1.10, vector_set=nothing, scenario=i)
+    #_ = run_base_mga(SPs, new_inputs, settings, results_path, summary_folder; budget_multiplier=1.10, vector_set=nothing, scenario=i)
 
 end
