@@ -1,8 +1,7 @@
+@everywhere include("../src/Stochastic_CapExpansion.jl")
 
-include("../src/Stochastic_CapExpansion.jl")
-
-using .Stochastic_CapExpansion
-using Revise, JuMP, HiGHS, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions
+@everywhere using .Stochastic_CapExpansion
+@everywhere using Revise, JuMP, HiGHS, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions
 
 function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing)
 
@@ -286,10 +285,9 @@ function simple_comp()
 end
 
 
-function test_stability()
-    inputs_folder = joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs")
-    test_index = 10
-    results_folder = joinpath("outputs", "Test_"*string(test_index))
+function test_stability(test_index)
+    inputs_folder = "/home/ml6802/Stochastic_CapExpansion/inputs/Inputs_30repdays_ext_1000scen_7techs"#joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs")
+    results_folder = "/home/ml6802/Stochastic_CapExpansion/outputs/Test_"*string(test_index) #joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
         mkpath(results_folder)

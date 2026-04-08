@@ -1,7 +1,7 @@
 module Stochastic_CapExpansion
     using Revise, JuMP, Gurobi, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributed, DistributedArrays, Distributions
 
-    function include_all_in_folder(folder_path::String)
+   function include_all_in_folder(folder_path::String)
         files = readdir(folder_path, join=true)
         for file in files
             if isdir(file)
