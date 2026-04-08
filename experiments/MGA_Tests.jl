@@ -2,7 +2,7 @@
 include("../src/Stochastic_CapExpansion.jl")
 
 using .Stochastic_CapExpansion
-using Revise, JuMP, Gurobi, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates
+using Revise, JuMP, HiGHS, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions
 
 function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing)
 
@@ -237,7 +237,7 @@ end
 
 function simple_comp()
     inputs_folder = joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs")
-    test_index = 9
+    test_index = 10
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -263,9 +263,9 @@ function simple_comp()
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
 
-    outputs_mixed, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped"), summary_folder; budget_multiplier=1.10, vector_set=nothing)#vectors
+    #outputs_mixed, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped"), summary_folder; budget_multiplier=1.10, vector_set=nothing)#vectors
     #outputs_exp, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "Expected"), summary_folder; type = "System_Expected", vector_set = nothing, budget_multiplier=1.10)
-    #outputs_cvar, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "CVaR"), summary_folder; type ="System_Weighted_CVaR",vector_set = vectors, budget_multiplier=1.10)
+    outputs_cvar, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "CVaR"), summary_folder; type ="System_Weighted_CVaR",vector_set = nothing, budget_multiplier=1.10)
     
     @info("Running base MGA test for mean scenario")
     
@@ -283,4 +283,83 @@ function simple_comp()
     results_path = joinpath(results_folder, "Results_Base_MGA", "Scenario_"*string(i))
     #_ = run_base_mga(SPs, new_inputs, settings, results_path, summary_folder; budget_multiplier=1.10, vector_set=nothing, scenario=i)
 
+end
+
+
+function test_stability()
+    inputs_folder = joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs")
+    test_index = 10
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+    probabilities = [inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]]
+    
+    distribution_types = ["Gaussian", "Gaussian", "Gaussian"]
+    new_probabilities = generate_probabilities(probabilities, distribution_types)
+    
+
+
+    # Base Run
+
+     if settings["Parallel flag"]
+        settings["Threads"] = Threads.nthreads()
+        @info("Running with parallelization using $(Threads.nthreads()) threads")
+    else
+        @info("Running without parallelization")
+    end
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+
+    outputs_mixed, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped_Base"), summary_folder; budget_multiplier=1.10, vector_set=nothing)
+
+    # Set new probabilities in inputs and run again
+
+    inputs["Demand scenario probabilities"] = new_probabilities[1]
+    inputs["Gas price scenario probabilities"] = new_probabilities[2]
+    #inputs["Weather scenario probabilities"] = new_probabilities[3]
+
+    outputs_mixed_new, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped_NewProbs"), summary_folder; budget_multiplier=1.10, vector_set=vectors)
+
+
+end
+
+function generate_probabilities(Probablities::AbstractVector, Distribution_Type::AbstractVector)
+    result = Vector{Any}(undef, length(Distribution_Type))
+    parameters_normal = Dict("mean" => 5.5, "std" => 2.0)
+    parameters_LogNormal = Dict("mean" => 2, "std" => 1)
+    for (i, dist) in enumerate(Distribution_Type)
+        if dist == "Gaussian"
+            result[i] = generate_normalized_distribution(length(Probablities[i]), dist, parameters_normal)
+        elseif dist == "LogNormal"
+            result[i] = generate_normalized_distribution(length(Probablities[i]), dist, parameters_LogNormal)
+        else
+            error("Distribution type not supported")
+        end
+    end
+
+    return result
+end
+
+function generate_normalized_distribution(num_scenarios::Int, distribution_type::String, parameters::Dict)
+    if distribution_type == "Gaussian"
+        dist = Normal(parameters["mean"], parameters["std"]) # Example parameters, can be adjusted
+        samples = pdf.(dist, collect(1:num_scenarios))
+        normalized_samples = samples ./ sum(samples)
+        return normalized_samples
+    elseif distribution_type == "LogNormal"
+        dist = LogNormal(parameters["mean"], parameters["std"]) # Example parameters, can be adjusted
+        samples = pdf.(dist, collect(1:num_scenarios))
+        normalized_samples = samples ./ sum(samples)
+        return normalized_samples
+    else
+        error("Distribution type not supported")
+    end
 end
