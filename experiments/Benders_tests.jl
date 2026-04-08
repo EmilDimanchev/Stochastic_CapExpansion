@@ -11,6 +11,7 @@ function benders_test_compare()
     
     settings = load_settings(INPUTS_PATH)
     inputs = load_input_data(INPUTS_PATH, settings)
+    configure_parallel_workers!(settings)
     settings["Results folder path"] = "/Users/mike_/Documents/Code/Stochastic_CapExpansion/outputs/Benders_test_base"
     if !isdir(settings["Results folder path"])
         mkdir(settings["Results folder path"])
@@ -35,6 +36,7 @@ function run_old_benders()
     
     settings = load_settings(INPUTS_PATH)
     inputs = load_input_data(INPUTS_PATH, settings)
+    configure_parallel_workers!(settings)
     settings["Results folder path"] = "/Users/mike_/Documents/Code/Stochastic_CapExpansion/outputs/Benders_test_base"
     if !isdir(settings["Results folder path"])
         mkdir(settings["Results folder path"])
@@ -52,15 +54,10 @@ function run_new_benders()
     
     settings = load_settings(INPUTS_PATH)
     inputs = load_input_data(INPUTS_PATH, settings)
+    configure_parallel_workers!(settings)
     inputs["Output Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
     inputs["Output Fuel price scenario probabilities"] = inputs["Gas price scenario probabilities"]
     inputs["Output Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
-    if settings["Parallel flag"]
-        settings["Threads"] = Threads.nthreads()
-        @info("Running with parallelization using $(Threads.nthreads()) threads")
-    else
-        @info("Running without parallelization")
-    end
     
     settings["Results folder path"] = "/Users/mike_/Documents/Code/Stochastic_CapExpansion/outputs/Benders_test_base"
     if !isdir(settings["Results folder path"])
@@ -83,6 +80,7 @@ function run_single_scenario_benders()
     
     settings = load_settings(INPUTS_PATH)
     inputs = load_input_data(INPUTS_PATH, settings)
+    configure_parallel_workers!(settings)
     settings["Results folder path"] = "/Users/mike_/Documents/Code/Stochastic_CapExpansion/outputs/Benders_test_base"
     if !isdir(settings["Results folder path"])
         mkdir(settings["Results folder path"])
@@ -125,6 +123,7 @@ function run_eval_SP_validation()
     end
     settings = load_settings(inputs_folder)
     inputs = load_input_data(inputs_folder, settings)
+    configure_parallel_workers!(settings)
     
     inputs["Output Demand scenario probabilities"] = inputs["Demand scenario probabilities"] #Establish base weights ahead of time
     inputs["Output Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
@@ -132,13 +131,6 @@ function run_eval_SP_validation()
     inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
     inputs["Full Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
     inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
-
-    if settings["Parallel flag"]
-        settings["Threads"] = Threads.nthreads()
-        @info("Running with parallelization using $(Threads.nthreads()) threads")
-    else
-        @info("Running without parallelization")
-    end
 
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
@@ -160,17 +152,11 @@ function run_risk_pareto_frontier(test_index)
     end
     settings = load_settings(inputs_folder)
     inputs = load_input_data(inputs_folder, settings)
+    configure_parallel_workers!(settings)
 
     inputs["Output Demand scenario probabilities"] = inputs["Demand scenario probabilities"] #Establish base weights ahead of time
     inputs["Output Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
     inputs["Output Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
-
-     if settings["Parallel flag"]
-        settings["Threads"] = Threads.nthreads()
-        @info("Running with parallelization using $(Threads.nthreads()) threads")
-    else
-        @info("Running without parallelization")
-    end
 
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)

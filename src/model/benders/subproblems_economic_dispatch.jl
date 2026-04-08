@@ -169,18 +169,17 @@ function build_all_subproblems(inputs, settings)
     F = inputs["Number of gas price scenarios"]
     K = inputs["Number of weather scenarios"]
     SPs = Array{Model,3}(undef, S, F, K)
-    if settings["Parallel flag"]
-        @info "Building subproblems in parallel using $(Threads.nthreads()) workers..."
-        Tot_scen = S*F*K
-        SPs_flat = reshape(SPs, Tot_scen, 1)
-        P = collect(1:Tot_scen)
-        scenarios = [[div(p-1, F*K) + 1, div(mod(p-1, F*K), K) + 1, mod(p-1, K) + 1] for p in P]
-        mapping = Dict{Int, Vector{Int}}(p => scenarios[p] for p in P)
-        Threads.@threads for p in eachindex(SPs_flat)
-            SPs_flat[p] = build_subproblem(inputs, settings, mapping[p]) 
+    if settings["Parallel flag"] && nworkers() > 0
+        @info "Building subproblems in parallel using $(nworkers()) distributed workers..."
+        scenario_indices = [(s, f, k) for s in 1:S, f in 1:F, k in 1:K]
+        SPs_flat = pmap(scenario_indices) do (s, f, k)
+            build_subproblem(inputs, settings, [s, f, k])
         end
-        SPs = reshape(SPs_flat, S, F, K)
+        SPs = reshape(collect(SPs_flat), S, F, K)
     else
+        if settings["Parallel flag"] && nworkers() == 0
+            @warn("Parallel flag is true but no distributed workers are available. Falling back to serial subproblem build.")
+        end
          for s in 1:S, f in 1:F, k in 1:K
             SPs[s,f,k] = build_subproblem(inputs, settings, [s,f,k])
         end
@@ -369,15 +368,16 @@ end
 function run_all_subproblems(SPs::Array{Model,3}, inputs, settings)
 
     sp_results = Array{Dict{String, Any},3}(undef, size(SPs)...)
-    if settings["Parallel flag"]
-        SPs_flat = reshape(SPs, :, 1)
-        sp_results_flat = reshape(sp_results, :, 1)
-        
-        Threads.@threads for p in eachindex(SPs_flat)
-            sp_results_flat[p] = run_subproblem(SPs_flat[p], inputs, settings)
+    if settings["Parallel flag"] && nworkers() > 0
+        SPs_flat = vec(SPs)
+        sp_results_flat = pmap(SPs_flat) do SP
+            run_subproblem(SP, inputs, settings)
         end
-        sp_results = reshape(sp_results_flat, size(SPs))
+        sp_results = reshape(collect(sp_results_flat), size(SPs))
     else
+        if settings["Parallel flag"] && nworkers() == 0
+            @warn("Parallel flag is true but no distributed workers are available. Falling back to serial subproblem solves.")
+        end
         for s in 1:size(SPs,1), f in 1:size(SPs,2), k in 1:size(SPs,3)
             sp_results[s,f,k] = run_subproblem(SPs[s,f,k], inputs, settings) 
         end

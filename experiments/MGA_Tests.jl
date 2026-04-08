@@ -1,9 +1,40 @@
+using Distributed
+
 @everywhere include("../src/Stochastic_CapExpansion.jl")
 
 @everywhere using .Stochastic_CapExpansion
-@everywhere using Revise, JuMP, HiGHS, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions
+@everywhere using Revise, JuMP, Gurobi, HiGHS, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions
+
+function configure_parallel_workers!(settings::Dict)
+    if settings["Parallel flag"]
+        desired_workers = haskey(settings, "Workers") ? settings["Workers"] : max(Sys.CPU_THREADS - 1, 1)
+        if nworkers() < desired_workers
+            addprocs(desired_workers - nworkers())
+        end
+
+        project_root = abspath(joinpath(@__DIR__, ".."))
+        init_expr = quote
+            if !isdefined(Main, :Stochastic_CapExpansion)
+                include(joinpath($project_root, "src", "Stochastic_CapExpansion.jl"))
+            end
+            using .Stochastic_CapExpansion
+            using Revise, JuMP, Gurobi, HiGHS, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions
+            nothing
+        end
+        for pid in workers()
+            remotecall_wait(Core.eval, pid, Main, init_expr)
+        end
+
+        settings["Workers"] = nworkers()
+        @info("Running with parallelization using $(nworkers()) distributed workers")
+    else
+        @info("Running without parallelization")
+    end
+end
 
 function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing)
+
+    configure_parallel_workers!(settings)
 
       # Result containers
     results_cap = []
@@ -92,6 +123,8 @@ end
 
 function run_stochastic_exploration_single_type(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_path::String, summary_folder::String; type::String = "System_Expected", vector_set::Union{AbstractVector, Nothing} = nothing, budget_multiplier::Float64 = 1.10, Eval_SPs=nothing)
 
+    configure_parallel_workers!(settings)
+
     # ~~~
     # Define paths
     # ~~~
@@ -176,6 +209,8 @@ end
 
 #### Base MGA test - run base model with one scenario selected
 function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::String, summary_folder::String; budget_multiplier::Float64 = 1.1, vector_set::Union{AbstractVector, Nothing} = nothing, scenario::Int = -1)
+    configure_parallel_workers!(settings)
+
     # Result containers
     outputs = []
     labels = [] 
@@ -252,12 +287,7 @@ function simple_comp()
     inputs["Output Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
     inputs["Output Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
 
-    if settings["Parallel flag"]
-        settings["Threads"] = Threads.nthreads()
-        @info("Running with parallelization using $(Threads.nthreads()) threads")
-    else
-        @info("Running without parallelization")
-    end
+    configure_parallel_workers!(settings)
 
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
@@ -286,8 +316,8 @@ end
 
 
 function test_stability(test_index)
-    inputs_folder = "/home/ml6802/Stochastic_CapExpansion/inputs/Inputs_30repdays_ext_1000scen_7techs"#joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs")
-    results_folder = "/home/ml6802/Stochastic_CapExpansion/outputs/Test_"*string(test_index) #joinpath("outputs", "Test_"*string(test_index))
+    inputs_folder = joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs") #"/home/ml6802/Stochastic_CapExpansion/inputs/Inputs_30repdays_ext_1000scen_7techs"#
+    results_folder = joinpath("outputs", "Test_"*string(test_index)) #"/home/ml6802/Stochastic_CapExpansion/outputs/Test_"*string(test_index) #
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
         mkpath(results_folder)
@@ -306,12 +336,7 @@ function test_stability(test_index)
 
     # Base Run
 
-     if settings["Parallel flag"]
-        settings["Threads"] = Threads.nthreads()
-        @info("Running with parallelization using $(Threads.nthreads()) threads")
-    else
-        @info("Running without parallelization")
-    end
+    configure_parallel_workers!(settings)
 
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)

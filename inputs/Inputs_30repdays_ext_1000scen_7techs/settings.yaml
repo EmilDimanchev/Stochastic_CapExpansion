@@ -44,6 +44,7 @@ Regularization flag: true
 
 # Shared Memory Parallelization
 Parallel flag: true
+Workers: 8
 
 Vector Type: random
 Iterations: 50
