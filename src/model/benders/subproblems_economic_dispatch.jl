@@ -4,6 +4,7 @@ using Distributed, DistributedArrays, JuMP, Gurobi
 const WORKER_SP_CACHE = Dict{Tuple{Int, Int, Int}, Model}()
 const WORKER_DATA_CACHE = Dict{Symbol, Any}()
 const MASTER_WORKER_SP_KEYS = Dict{Int, Set{Tuple{Int, Int, Int}}}()
+const MASTER_SCENARIO_TO_WORKER = Dict{Tuple{Int, Int, Int}, Int}()
 
 function _set_worker_problem_data!(inputs, settings)
     WORKER_DATA_CACHE[:inputs] = inputs
@@ -11,7 +12,8 @@ function _set_worker_problem_data!(inputs, settings)
     return nothing
 end
 
-function _cache_subproblem!(scenario_key::Tuple{Int, Int, Int}, SP::Model)
+function _build_and_cache_subproblem!(scenario_key::Tuple{Int, Int, Int})
+    SP = build_subproblem(WORKER_DATA_CACHE[:inputs], WORKER_DATA_CACHE[:settings], collect(scenario_key))
     WORKER_SP_CACHE[scenario_key] = SP
     return nothing
 end
@@ -193,11 +195,22 @@ function build_all_subproblems(inputs, settings)
     SPs = Array{Model,3}(undef, S, F, K)
     if settings["Parallel flag"] && nworkers() > 0
         @info "Building subproblems in parallel using $(nworkers()) distributed workers..."
-        scenario_indices = [(s, f, k) for s in 1:S, f in 1:F, k in 1:K]
-        SPs_flat = pmap(scenario_indices) do (s, f, k)
-            build_subproblem(inputs, settings, [s, f, k])
+        pids = workers()
+        empty!(MASTER_SCENARIO_TO_WORKER)
+        for pid in pids
+            remotecall_wait(_set_worker_problem_data!, pid, inputs, settings)
+            worker_set = get!(MASTER_WORKER_SP_KEYS, pid, Set{Tuple{Int, Int, Int}}())
+            empty!(worker_set)
         end
-        SPs = reshape(collect(SPs_flat), S, F, K)
+        scenario_keys = [(s, f, k) for s in 1:S, f in 1:F, k in 1:K]
+        for (idx, scenario_key) in enumerate(scenario_keys)
+            s, f, k = scenario_key
+            SPs[s,f,k] = build_subproblem(inputs, settings, [s, f, k])
+            pid = pids[mod1(idx, length(pids))]
+            remotecall_wait(_build_and_cache_subproblem!, pid, scenario_key)
+            push!(MASTER_WORKER_SP_KEYS[pid], scenario_key)
+            MASTER_SCENARIO_TO_WORKER[scenario_key] = pid
+        end
     else
         if settings["Parallel flag"] && nworkers() == 0
             @warn("Parallel flag is true but no distributed workers are available. Falling back to serial subproblem build.")
@@ -392,20 +405,24 @@ function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Ve
     sp_results = Array{Dict{String, Any},3}(undef, size(SPs)...)
     if settings["Parallel flag"] && nworkers() > 0
         pids = workers()
-        for pid in pids
-            remotecall_wait(_set_worker_problem_data!, pid, inputs, settings)
-            get!(MASTER_WORKER_SP_KEYS, pid, Set{Tuple{Int, Int, Int}}())
-        end
-
         scenario_keys = [(s, f, k) for s in 1:size(SPs,1), f in 1:size(SPs,2), k in 1:size(SPs,3)]
         futures = Vector{Future}(undef, length(scenario_keys))
 
+        for pid in pids
+            remotecall_wait(_set_worker_problem_data!, pid, inputs, settings)
+        end
+
         for (idx, scenario_key) in enumerate(scenario_keys)
-            pid = pids[mod1(idx, length(pids))]
-            worker_keys = MASTER_WORKER_SP_KEYS[pid]
+            if !haskey(MASTER_SCENARIO_TO_WORKER, scenario_key)
+                error("Subproblem $(scenario_key) has no worker assignment. Call build_all_subproblems() before run_all_subproblems().")
+            end
+            pid = MASTER_SCENARIO_TO_WORKER[scenario_key]
+            if !(pid in pids)
+                error("Assigned worker $(pid) for subproblem $(scenario_key) is not active. Rebuild subproblems with build_all_subproblems().")
+            end
+            worker_keys = get(MASTER_WORKER_SP_KEYS, pid, Set{Tuple{Int, Int, Int}}())
             if !(scenario_key in worker_keys)
-                remotecall_wait(_cache_subproblem!, pid, scenario_key, SPs[scenario_key...])
-                push!(worker_keys, scenario_key)
+                error("Subproblem $(scenario_key) is not cached on worker $(pid). Call build_all_subproblems() before run_all_subproblems().")
             end
             futures[idx] = remotecall(_run_cached_subproblem!, pid, scenario_key, capacity)
         end
