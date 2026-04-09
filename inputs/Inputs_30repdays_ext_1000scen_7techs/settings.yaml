@@ -1,4 +1,5 @@
 Results folder path: <results_path>
+Solver: HiGHS
 
 Write all scenarios flag: true # If true, writes results for all scenarios. If false, only writes results for the expected value scenario (if demand uncertainty is true) or the base scenario (if demand uncertainty is false)
 # Risk
@@ -44,7 +45,7 @@ Regularization flag: true
 
 # Distributed Memory Parallelization
 Parallel flag: true
-Workers: 32
+Workers: 8
 
 Vector Type: random
 Iterations: 50

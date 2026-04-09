@@ -21,8 +21,8 @@ function configure_parallel_workers!(settings::Dict)
             using Revise, JuMP, Gurobi, HiGHS, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions
             nothing
         end
-        for pid in workers()
-            remotecall_wait(Core.eval, pid, Main, init_expr)
+        @sync for pid in workers()
+            @async remotecall_wait(Core.eval, pid, Main, init_expr)
         end
 
         settings["Workers"] = nworkers()
@@ -315,7 +315,48 @@ function simple_comp()
 end
 
 
-function test_stability(test_index)
+function test_stability_laptop(test_index)
+    inputs_folder = joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+    probabilities = [inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]]
+    
+    distribution_types = ["Gaussian", "Gaussian", "Gaussian"]
+    new_probabilities = generate_probabilities(probabilities, distribution_types)
+    
+
+
+    # Base Run
+
+    configure_parallel_workers!(settings)
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+
+    #outputs_mixed, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped_Base"), summary_folder; budget_multiplier=1.10, vector_set=nothing)
+
+    # Set new probabilities in inputs and run again
+
+    inputs["Demand scenario probabilities"] = new_probabilities[1]
+    inputs["Gas price scenario probabilities"] = new_probabilities[2]
+    #inputs["Weather scenario probabilities"] = new_probabilities[3]
+
+    println("************* Beginning run with new probabilities **************")
+    #outputs_cvar, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "CVaR"), summary_folder; type ="System_Weighted_CVaR",vector_set = nothing, budget_multiplier=1.10)
+    outputs_mixed_new, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped_NewProbs"), summary_folder; budget_multiplier=1.10, vector_set=vectors)
+
+
+end
+
+function test_stability_della(test_index)
     inputs_folder = "/home/ml6802/Stochastic_CapExpansion/inputs/Inputs_30repdays_ext_1000scen_7techs"#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
     results_folder = "/home/ml6802/Stochastic_CapExpansion/outputs/Test_"*string(test_index) #joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")

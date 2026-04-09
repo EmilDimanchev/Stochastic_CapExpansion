@@ -121,11 +121,17 @@ end
 
 function build_planning_model(inputs, settings)
     # Model
-    MP = Model(Gurobi.Optimizer)
+    MP = Model()
     set_silent(MP)
-    set_optimizer_attribute(MP, "OptimalityTol", 1e-5)
-    set_optimizer_attribute(MP, "FeasibilityTol", 1e-5)
-    set_optimizer_attribute(MP, "Crossover", 0)
+
+    if settings["Solver"] == "HiGHS"
+        set_optimizer(MP, HiGHS.Optimizer)
+    elseif settings["Solver"] == "Gurobi"
+        set_optimizer(MP, Gurobi.Optimizer)
+        set_optimizer_attribute(MP, "OptimalityTol", 1e-5)
+        set_optimizer_attribute(MP, "FeasibilityTol", 1e-5)
+        set_optimizer_attribute(MP, "Crossover", 0)
+    end
 
     # Sets and flags
     risk_aversion_flag = settings["Risk aversion flag"]

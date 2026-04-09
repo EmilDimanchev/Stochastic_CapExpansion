@@ -235,6 +235,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         if all(size(SPs) .>= (1,1,1))
             cvar_estimate = compute_cvar(sp_obj_per_iter, P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
         end
+   
+        println("CVaR estimate: ", cvar_estimate)
+        println("CVaR Master problem term: ", output_mp["CVaR term"]/settings["Scaling factor cost"])
         if risk_aversion_flag
             UB = risk_aversion_weight*expected_value + (1-risk_aversion_weight)*cvar_estimate + output_mp["Inv_cost"]/settings["Scaling factor cost"]
         else    
@@ -352,25 +355,49 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 end
 
 function compute_cvar(SP_obj, P, P_f, P_k, VaR_Percent)
+    alpha = VaR_Percent
+    if !(0.0 < alpha <= 1.0)
+        throw(ArgumentError("VaR_Percent must be in (0, 1]. Got $(alpha)."))
+    end
+
     # Flatten SP_obj and associated probabilities
     sp_obj_flat = vec(SP_obj)
-    prob_flat = vec([P[s]*P_f[f]*P_k[k] for s in 1:size(SP_obj,1), f in 1:size(SP_obj,2), k in 1:size(SP_obj,3)])
-    
-    # Sort SP outcomes and probabilities
-    sorted_indices = sortperm(sp_obj_flat)
+    prob_flat = vec([
+        P[s] * P_f[f] * P_k[k]
+        for s in 1:size(SP_obj, 1), f in 1:size(SP_obj, 2), k in 1:size(SP_obj, 3)
+    ])
+
+    if length(sp_obj_flat) != length(prob_flat)
+        throw(ArgumentError("SP_obj and probability vectors have inconsistent sizes."))
+    end
+
+    total_prob = sum(prob_flat)
+    if total_prob <= 0.0
+        throw(ArgumentError("Total probability mass must be positive."))
+    end
+
+    # Normalize probabilities to avoid floating-point drift from 1.0.
+    prob_flat = prob_flat ./ total_prob
+
+    # Sort outcomes descending so we integrate directly over the worst alpha tail.
+    sorted_indices = sortperm(sp_obj_flat; rev = true)
     sp_obj_sorted = sp_obj_flat[sorted_indices]
     prob_sorted = prob_flat[sorted_indices]
-    
-    # Compute cumulative probabilities
-    cum_prob = cumsum(prob_sorted)
-    
-    # Identify VaR threshold
-    var_threshold_index = findfirst(x -> x >= (1-VaR_Percent) + .00005, cum_prob) # Adding a small tolerance to handle floating-point issue
 
-    # Compute CVaR as weighted average of tail outcomes
-    cvar = sum(sp_obj_sorted[i]*prob_sorted[i] for i in var_threshold_index:length(sp_obj_sorted))/(VaR_Percent)
-    
-    return cvar
+    remaining_tail_mass = alpha
+    tail_weighted_sum = 0.0
+
+    for i in eachindex(sp_obj_sorted)
+        if remaining_tail_mass <= 1e-14
+            break
+        end
+
+        weight = min(prob_sorted[i], remaining_tail_mass)
+        tail_weighted_sum += sp_obj_sorted[i] * weight
+        remaining_tail_mass -= weight
+    end
+
+    return tail_weighted_sum / alpha
 end
 
 function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing)

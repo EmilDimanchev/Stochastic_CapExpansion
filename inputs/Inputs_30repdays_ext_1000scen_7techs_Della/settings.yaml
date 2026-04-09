@@ -1,4 +1,5 @@
 Results folder path: <results_path>
+Solver: Gurobi
 
 Write all scenarios flag: true # If true, writes results for all scenarios. If false, only writes results for the expected value scenario (if demand uncertainty is true) or the base scenario (if demand uncertainty is false)
 # Risk
@@ -42,8 +43,9 @@ Max nse: [0.917,0.05,0.03,0.003]
 
 Regularization flag: true
 
-# Shared Memory Parallelization
+# Distributed Memory Parallelization
 Parallel flag: true
+Workers: 32
 
 Vector Type: random
 Iterations: 50

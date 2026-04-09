@@ -197,19 +197,23 @@ function build_all_subproblems(inputs, settings)
         @info "Building subproblems in parallel using $(nworkers()) distributed workers..."
         pids = workers()
         empty!(MASTER_SCENARIO_TO_WORKER)
-        for pid in pids
-            remotecall_wait(_set_worker_problem_data!, pid, inputs, settings)
-            worker_set = get!(MASTER_WORKER_SP_KEYS, pid, Set{Tuple{Int, Int, Int}}())
-            empty!(worker_set)
+        @sync for pid in pids
+            @async begin
+                remotecall_wait(_set_worker_problem_data!, pid, inputs, settings)
+                worker_set = get!(MASTER_WORKER_SP_KEYS, pid, Set{Tuple{Int, Int, Int}}())
+                empty!(worker_set)
+            end
         end
         scenario_keys = [(s, f, k) for s in 1:S, f in 1:F, k in 1:K]
-        for (idx, scenario_key) in enumerate(scenario_keys)
-            s, f, k = scenario_key
-            SPs[s,f,k] = build_subproblem(inputs, settings, [s, f, k])
-            pid = pids[mod1(idx, length(pids))]
-            remotecall_wait(_build_and_cache_subproblem!, pid, scenario_key)
-            push!(MASTER_WORKER_SP_KEYS[pid], scenario_key)
-            MASTER_SCENARIO_TO_WORKER[scenario_key] = pid
+        @sync for (idx, scenario_key) in enumerate(scenario_keys)
+            @async begin
+                s, f, k = scenario_key
+                SPs[s,f,k] = build_subproblem(inputs, settings, [s, f, k])
+                pid = pids[mod1(idx, length(pids))]
+                remotecall_wait(_build_and_cache_subproblem!, pid, scenario_key)
+                push!(MASTER_WORKER_SP_KEYS[pid], scenario_key)
+                MASTER_SCENARIO_TO_WORKER[scenario_key] = pid
+            end
         end
     else
         if settings["Parallel flag"] && nworkers() == 0
@@ -239,18 +243,23 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     scaling_factor_cost = settings["Scaling factor cost"] 
 
     # Model
-    ED = Model(Gurobi.Optimizer)
+    ED = Model()
     ED.ext[:Demand_shift_weather_scenario] = demand_shift_weather_scenario
     ED.ext[:Variable_costs_scenario] = variable_costs_scenario
     ED.ext[:Availability_scenario] = availability_scenario
     ED.ext[:Period_weights_scenario] = period_weights_scenario
     ED.ext[:Demand_adder_scenario] = demand_adder_scenario
-    set_optimizer_attribute(ED, "OutputFlag", 0)
-    set_optimizer_attribute(ED, "Crossover", 1)
-    set_optimizer_attribute(ED, "Method", 2)
-    set_optimizer_attribute(ED, "BarConvTol", 1e-5)
-    set_optimizer_attribute(ED, "OptimalityTol", 1e-5)
-    set_optimizer_attribute(ED, "FeasibilityTol", 1e-5)
+    if settings["Solver"] == "HiGHS"
+        set_optimizer(ED, HiGHS.Optimizer)
+    elseif settings["Solver"] == "Gurobi"
+        set_optimizer(ED, Gurobi.Optimizer)
+        set_optimizer_attribute(ED, "OutputFlag", 0)
+        set_optimizer_attribute(ED, "Crossover", 1)
+        set_optimizer_attribute(ED, "Method", 2)
+        set_optimizer_attribute(ED, "BarConvTol", 1e-5)
+        set_optimizer_attribute(ED, "OptimalityTol", 1e-5)
+        set_optimizer_attribute(ED, "FeasibilityTol", 1e-5)
+    end
     set_silent(ED)
 
      # ~~~~
@@ -408,27 +417,29 @@ function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Ve
         scenario_keys = [(s, f, k) for s in 1:size(SPs,1), f in 1:size(SPs,2), k in 1:size(SPs,3)]
         futures = Vector{Future}(undef, length(scenario_keys))
 
-        for pid in pids
-            remotecall_wait(_set_worker_problem_data!, pid, inputs, settings)
+        @sync for pid in pids
+            @async remotecall_wait(_set_worker_problem_data!, pid, inputs, settings)
         end
 
-        for (idx, scenario_key) in enumerate(scenario_keys)
-            if !haskey(MASTER_SCENARIO_TO_WORKER, scenario_key)
-                error("Subproblem $(scenario_key) has no worker assignment. Call build_all_subproblems() before run_all_subproblems().")
+        @sync for (idx, scenario_key) in enumerate(scenario_keys)
+            @async begin
+                if !haskey(MASTER_SCENARIO_TO_WORKER, scenario_key)
+                    error("Subproblem $(scenario_key) has no worker assignment. Call build_all_subproblems() before run_all_subproblems().")
+                end
+                pid = MASTER_SCENARIO_TO_WORKER[scenario_key]
+                if !(pid in pids)
+                    error("Assigned worker $(pid) for subproblem $(scenario_key) is not active. Rebuild subproblems with build_all_subproblems().")
+                end
+                worker_keys = get(MASTER_WORKER_SP_KEYS, pid, Set{Tuple{Int, Int, Int}}())
+                if !(scenario_key in worker_keys)
+                    error("Subproblem $(scenario_key) is not cached on worker $(pid). Call build_all_subproblems() before run_all_subproblems().")
+                end
+                futures[idx] = remotecall(_run_cached_subproblem!, pid, scenario_key, capacity)
             end
-            pid = MASTER_SCENARIO_TO_WORKER[scenario_key]
-            if !(pid in pids)
-                error("Assigned worker $(pid) for subproblem $(scenario_key) is not active. Rebuild subproblems with build_all_subproblems().")
-            end
-            worker_keys = get(MASTER_WORKER_SP_KEYS, pid, Set{Tuple{Int, Int, Int}}())
-            if !(scenario_key in worker_keys)
-                error("Subproblem $(scenario_key) is not cached on worker $(pid). Call build_all_subproblems() before run_all_subproblems().")
-            end
-            futures[idx] = remotecall(_run_cached_subproblem!, pid, scenario_key, capacity)
         end
 
-        for (idx, scenario_key) in enumerate(scenario_keys)
-            sp_results[scenario_key...] = fetch(futures[idx])
+        @sync for (idx, scenario_key) in enumerate(scenario_keys)
+            @async sp_results[scenario_key...] = fetch(futures[idx])
         end
     else
         if settings["Parallel flag"] && nworkers() == 0

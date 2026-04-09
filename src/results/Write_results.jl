@@ -237,7 +237,6 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
     #theta = model_output["Risk adjusted probabilities"]
     Ω = settings["Risk aversion weight"]
     price = eval_SPs == [] ? collect(SPs_output[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) #model_output["Power balance dual"]
-    println(size(shed[1,1,1]))
     # Settings
     resources = inputs["Generation resources"]
     all_resources = inputs["Resources"]
