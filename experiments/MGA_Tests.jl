@@ -316,8 +316,8 @@ end
 
 
 function test_stability(test_index)
-    inputs_folder = joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs") #"/home/ml6802/Stochastic_CapExpansion/inputs/Inputs_30repdays_ext_1000scen_7techs"#
-    results_folder = joinpath("outputs", "Test_"*string(test_index)) #"/home/ml6802/Stochastic_CapExpansion/outputs/Test_"*string(test_index) #
+    inputs_folder = "/home/ml6802/Stochastic_CapExpansion/inputs/Inputs_30repdays_ext_1000scen_7techs"#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    results_folder = "/home/ml6802/Stochastic_CapExpansion/outputs/Test_"*string(test_index) #joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
         mkpath(results_folder)
@@ -349,6 +349,7 @@ function test_stability(test_index)
     inputs["Gas price scenario probabilities"] = new_probabilities[2]
     #inputs["Weather scenario probabilities"] = new_probabilities[3]
 
+    println("************* Beginning run with new probabilities **************")
     outputs_mixed_new, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped_NewProbs"), summary_folder; budget_multiplier=1.10, vector_set=vectors)
 
 

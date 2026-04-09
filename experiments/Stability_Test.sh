@@ -5,7 +5,6 @@
 #SBATCH --cpus-per-task=32                   # cpu-cores per task (>1 if multi-threaded tasks)
 #SBATCH --mem-per-cpu=8G                    # memory per cpu-core
 #SBATCH --time=4:00:00                     # total run time limit (HH:MM:SS)
-#SBATCH --open-mode=append
 #SBATCH --output="test.out"
 #SBATCH --error="test.out"
 #SBATCH --mail-type=end                    # notifications for job done & fail

@@ -239,18 +239,18 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     scaling_factor_cost = settings["Scaling factor cost"] 
 
     # Model
-    ED = Model(HiGHS.Optimizer)
+    ED = Model(Gurobi.Optimizer)
     ED.ext[:Demand_shift_weather_scenario] = demand_shift_weather_scenario
     ED.ext[:Variable_costs_scenario] = variable_costs_scenario
     ED.ext[:Availability_scenario] = availability_scenario
     ED.ext[:Period_weights_scenario] = period_weights_scenario
     ED.ext[:Demand_adder_scenario] = demand_adder_scenario
-    #set_optimizer_attribute(ED, "OutputFlag", 0)
-    #set_optimizer_attribute(ED, "Crossover", 1)
-    #set_optimizer_attribute(ED, "Method", 2)
-    #set_optimizer_attribute(ED, "BarConvTol", 1e-5)
-    #set_optimizer_attribute(ED, "OptimalityTol", 1e-5)
-    #set_optimizer_attribute(ED, "FeasibilityTol", 1e-5)
+    set_optimizer_attribute(ED, "OutputFlag", 0)
+    set_optimizer_attribute(ED, "Crossover", 1)
+    set_optimizer_attribute(ED, "Method", 2)
+    set_optimizer_attribute(ED, "BarConvTol", 1e-5)
+    set_optimizer_attribute(ED, "OptimalityTol", 1e-5)
+    set_optimizer_attribute(ED, "FeasibilityTol", 1e-5)
     set_silent(ED)
 
      # ~~~~
