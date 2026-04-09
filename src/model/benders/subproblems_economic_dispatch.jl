@@ -1,5 +1,27 @@
 export run_economic_dispatch, build_subproblems, set_capacity_parameters!, run_subproblem
 using Distributed, DistributedArrays, JuMP, Gurobi
+
+const WORKER_SP_CACHE = Dict{Tuple{Int, Int, Int}, Model}()
+const WORKER_DATA_CACHE = Dict{Symbol, Any}()
+const MASTER_WORKER_SP_KEYS = Dict{Int, Set{Tuple{Int, Int, Int}}}()
+
+function _set_worker_problem_data!(inputs, settings)
+    WORKER_DATA_CACHE[:inputs] = inputs
+    WORKER_DATA_CACHE[:settings] = settings
+    return nothing
+end
+
+function _cache_subproblem!(scenario_key::Tuple{Int, Int, Int}, SP::Model)
+    WORKER_SP_CACHE[scenario_key] = SP
+    return nothing
+end
+
+function _run_cached_subproblem!(scenario_key::Tuple{Int, Int, Int}, capacity::Vector{Float64})
+    SP = WORKER_SP_CACHE[scenario_key]
+    set_parameter_value.(SP[:x], capacity)
+    return run_subproblem(SP, WORKER_DATA_CACHE[:inputs], WORKER_DATA_CACHE[:settings])
+end
+
 function run_economic_dispatch(inputs, settings, capacity, demand_shift_weather_scenario, variable_costs_scenario, availability_scenario, period_weights_scenario, demand_adder_scenario)
 
     # Check for negative capacity and set to 0
@@ -204,18 +226,18 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     scaling_factor_cost = settings["Scaling factor cost"] 
 
     # Model
-    ED = Model(Gurobi.Optimizer)
+    ED = Model(HiGHS.Optimizer)
     ED.ext[:Demand_shift_weather_scenario] = demand_shift_weather_scenario
     ED.ext[:Variable_costs_scenario] = variable_costs_scenario
     ED.ext[:Availability_scenario] = availability_scenario
     ED.ext[:Period_weights_scenario] = period_weights_scenario
     ED.ext[:Demand_adder_scenario] = demand_adder_scenario
-    set_optimizer_attribute(ED, "OutputFlag", 0)
-    set_optimizer_attribute(ED, "Crossover", 1)
-    set_optimizer_attribute(ED, "Method", 2)
-    set_optimizer_attribute(ED, "BarConvTol", 1e-5)
-    set_optimizer_attribute(ED, "OptimalityTol", 1e-5)
-    set_optimizer_attribute(ED, "FeasibilityTol", 1e-5)
+    #set_optimizer_attribute(ED, "OutputFlag", 0)
+    #set_optimizer_attribute(ED, "Crossover", 1)
+    #set_optimizer_attribute(ED, "Method", 2)
+    #set_optimizer_attribute(ED, "BarConvTol", 1e-5)
+    #set_optimizer_attribute(ED, "OptimalityTol", 1e-5)
+    #set_optimizer_attribute(ED, "FeasibilityTol", 1e-5)
     set_silent(ED)
 
      # ~~~~
@@ -365,19 +387,37 @@ function run_subproblem(ED::Model, inputs, settings)
     return output
 end
 
-function run_all_subproblems(SPs::Array{Model,3}, inputs, settings)
+function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Vector{Float64})
 
     sp_results = Array{Dict{String, Any},3}(undef, size(SPs)...)
     if settings["Parallel flag"] && nworkers() > 0
-        SPs_flat = vec(SPs)
-        sp_results_flat = pmap(SPs_flat) do SP
-            run_subproblem(SP, inputs, settings)
+        pids = workers()
+        for pid in pids
+            remotecall_wait(_set_worker_problem_data!, pid, inputs, settings)
+            get!(MASTER_WORKER_SP_KEYS, pid, Set{Tuple{Int, Int, Int}}())
         end
-        sp_results = reshape(collect(sp_results_flat), size(SPs))
+
+        scenario_keys = [(s, f, k) for s in 1:size(SPs,1), f in 1:size(SPs,2), k in 1:size(SPs,3)]
+        futures = Vector{Future}(undef, length(scenario_keys))
+
+        for (idx, scenario_key) in enumerate(scenario_keys)
+            pid = pids[mod1(idx, length(pids))]
+            worker_keys = MASTER_WORKER_SP_KEYS[pid]
+            if !(scenario_key in worker_keys)
+                remotecall_wait(_cache_subproblem!, pid, scenario_key, SPs[scenario_key...])
+                push!(worker_keys, scenario_key)
+            end
+            futures[idx] = remotecall(_run_cached_subproblem!, pid, scenario_key, capacity)
+        end
+
+        for (idx, scenario_key) in enumerate(scenario_keys)
+            sp_results[scenario_key...] = fetch(futures[idx])
+        end
     else
         if settings["Parallel flag"] && nworkers() == 0
             @warn("Parallel flag is true but no distributed workers are available. Falling back to serial subproblem solves.")
         end
+        set_capacity_parameters!(SPs, capacity)
         for s in 1:size(SPs,1), f in 1:size(SPs,2), k in 1:size(SPs,3)
             sp_results[s,f,k] = run_subproblem(SPs[s,f,k], inputs, settings) 
         end
