@@ -32,7 +32,7 @@ function configure_parallel_workers!(settings::Dict)
     end
 end
 
-function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "dual_constraint")
+function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "dual_constraint", Eval_SPs = nothing)
 
     configure_parallel_workers!(settings)
 
@@ -55,9 +55,8 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
 
     
     
-    output_exp = benders_algorithm(inputs, settings, MP, SPs, "System_Expected")
+    output_exp = benders_algorithm(inputs, settings, MP, SPs, "System_Expected"; Eval_SPs = Eval_SPs)
     gap_exp = output_exp["Gaps"]
-    push!(outputs, output_exp)
     push!(gaps, gap_exp)
     push!(run_labels, "System_Expected")
     # Write results
@@ -74,9 +73,8 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
     # Base Runs
     settings["Risk aversion flag"] = true
     set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk_aversion_weight)
-    output_cvar = benders_algorithm(inputs, settings, MP, SPs, "System_Weighted_CVaR")
+    output_cvar = benders_algorithm(inputs, settings, MP, SPs, "System_Weighted_CVaR"; Eval_SPs = Eval_SPs)
     gap_cvar = output_cvar["Gaps"]
-    push!(outputs, output_cvar)
     push!(run_labels, "System_Weighted_CVaR")
     push!(gaps, gap_cvar)
      # Write results
@@ -100,12 +98,12 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
         budgets = add_budget_constraint_bendersMP(MP, (((1-risk_aversion_weight)*output_exp["CVaR"] + (risk_aversion_weight)*output_exp["Expected Value"] + output_exp["MP"]["Inv_cost"])/settings["Scaling factor cost"]), "System_Weighted_CVaR", budgets; risk_aversion=risk_aversion_weight)
         cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
         vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x]), settings["Vector Type"], settings)
+        @info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
-            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration))
-            #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs)
+            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             gap = output_random["Gaps"]
-            push!(outputs, output_random)
             push!(run_labels, "Random_"*string(iteration))
             push!(gaps, gap)
             results_destination = joinpath(results_folder,"Random_"*string(iteration))
@@ -331,6 +329,12 @@ function test_stability_laptop(test_index)
     
     distribution_types = [["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
     names = ["Gaussian", "LogNormal", "Gaussian-LogNormal", "LogNormal-Gaussian"]
+
+    # Set evaluation probabilities
+    inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
+    inputs["Full Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
+    inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
+
     # Base Run
 
     configure_parallel_workers!(settings)
@@ -338,7 +342,7 @@ function test_stability_laptop(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
 
-    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat")
+    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat", Eval_SPs = SPs)
 
     # Set new probabilities in inputs and run again
     for (i, probs) in enumerate(distribution_types)
@@ -348,7 +352,7 @@ function test_stability_laptop(test_index)
         inputs["Gas price scenario probabilities"] = new_probabilities[2]
         #inputs["Weather scenario probabilities"] = new_probabilities[3]
 
-        _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = names[i])
+        _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = names[i], Eval_SPs = SPs)
     end
 
 end
@@ -369,6 +373,12 @@ function test_stability_della(test_index)
     
     distribution_types = [["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
     names = ["Gaussian", "LogNormal", "Gaussian-LogNormal", "LogNormal-Gaussian"]
+
+    # Set evaluation probabilities
+    inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
+    inputs["Full Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
+    inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
+
     # Base Run
 
     configure_parallel_workers!(settings)
@@ -386,7 +396,7 @@ function test_stability_della(test_index)
         inputs["Gas price scenario probabilities"] = new_probabilities[2]
         #inputs["Weather scenario probabilities"] = new_probabilities[3]
 
-        _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = names[i])
+        _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = names[i], Eval_SPs = SPs)
     end
 
 end

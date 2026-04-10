@@ -197,7 +197,7 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
     # Should only have all uncertainties set to false if SPs eval are provided
     eval_SPs = []
     try 
-        eval_SPs = (size(results["SPs"]) == (1,1,1) && haskey(results, "SPs_eval")) ? results["SPs_eval"] : []
+        eval_SPs = (haskey(results, "SPs_eval")) ? results["SPs_eval"] : []
     catch
         error("SPs_eval not found in results. Make sure to include SPs_eval in the output of the Benders algorithm when running with all uncertainties set to false.")
     end 
@@ -213,12 +213,16 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
     P_s_eval = [0.0]
     P_f_eval = [0.0]
     P_k_eval = [0.0]
+    
 
     if haskey(results, "SPs_eval")
         P_s_eval = inputs["Full Demand scenario probabilities"]
         P_f_eval = inputs["Full Gas price scenario probabilities"]
         P_k_eval = inputs["Full Weather scenario probabilities"]
     end
+    S_eval = size(P_s_eval)[1] # number of demand scenarios
+    F_eval = size(P_f_eval)[1] # number of fuel cost scenarios
+    K_eval = size(P_k_eval)[1] # number of weather scenarios
 
     time_index = inputs["Time index"]
     t_weights = inputs["Period weights"]
@@ -292,23 +296,27 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
 
     if eval_SPs != [] #### Condition means all uncertainties off and we have Eval SPs
         # Base expressions
-        system_cost_base = MP_output["Inv_cost"] + SPs_output[1,1,1]["SP objective"] # model_output["System cost"] Base system cost for single scenario
-        emissions_base = SPs_output[1,1,1]["Emissions"] # model_output["Emissions"] Base emissions for single scenario
+        system_cost_ev_base = MP_output["Inv_cost"] + results["Expected Value"] # model_output["System cost"] Base system cost for single scenario
+        system_cost_cvar_base = MP_output["Inv_cost"] + Ω*results["Expected Value"] + (1-Ω)*results["CVaR"] # model_output["Risk adjusted system cost"] Base risk-adjusted system cost for single scenario
+        cvar_op_base = results["CVaR"] # model_output["CVaR Value"] Base CVaR for single scenario
+        ev_op_base = results["Expected Value"] # model_output["Expected operating cost"] Base expected operating cost for single scenario
+        co2 = collect(SPs_output[s,f,k]["Emissions"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) #model_output["Emissions"]
+        co2_exp = sum(P_s[s]*P_f[f]*P_k[k]*co2[s,f,k] for s in 1:S, f in 1:F, k in 1:K)
 
         # Eval SP expressions
          # Total system cost in x$
-        system_cost = results["Expected Value"] + MP_output["Inv_cost"]
+        system_cost_eval = results["Expected Value Eval"] + MP_output["Inv_cost"]
         # Operating cost expected in x$
-        exp_op_cost = results["Expected Value"]
-        sys_cost_risk = MP_output["Inv_cost"] + Ω*exp_op_cost + (1-Ω)*results["CVaR"] #model_output["Investment cost"] + Ω*exp_op_cost + (1-Ω)*cvar
-        cvar_op = results["CVaR"]
-        co2 = collect(eval_SPs[s,f,k]["Emissions"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1]) #model_output["Emissions"]
-        co2_exp = sum(P_s_eval[s]*P_f_eval[f]*P_k_eval[k]*co2[s,f,k] for s in 1:S, f in 1:F, k in 1:K) #model_output["Emissions expected"]
+        exp_op_cost_eval = results["Expected Value Eval"]
+        sys_cost_risk_eval = MP_output["Inv_cost"] + Ω*results["Expected Value Eval"] + (1-Ω)*results["CVaR_Eval"] #model_output["Investment cost"] + Ω*exp_op_cost + (1-Ω)*cvar
+        cvar_op_eval = results["CVaR_Eval"]
+        co2_eval = collect(eval_SPs[s,f,k]["Emissions"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1]) #model_output["Emissions"]
+        co2_exp_eval = sum(P_s_eval[s]*P_f_eval[f]*P_k_eval[k]*co2_eval[s,f,k] for s in 1:S, f in 1:F, k in 1:K) #model_output["Emissions expected"]
         
 
         # Make dfs
-        df_syscost = DataFrame(Investment_Cost = MP_output["Inv_cost"], SingleScenario_SystemCost = system_cost_base, EV_SystemCost = system_cost, CVaR_SystemCost= sys_cost_risk, CVaR_OpCost = cvar_op, EV_OpCost = exp_op_cost)
-        df_emissions = DataFrame(Single_Scenario_Emissions = emissions_base, Expected_emissions = co2_exp)
+        df_syscost = DataFrame(Investment_Cost = MP_output["Inv_cost"], System_Cost_EV_Base = system_cost_ev_base, System_Cost_CVaR_Base = system_cost_cvar_base, CVaR_OpCost_Base = cvar_op_base, EV_OpCost_Base = ev_op_base, System_Cost_EV_Eval = system_cost_eval, System_Cost_CVaR_Eval = sys_cost_risk_eval, CVaR_OpCost_Eval = cvar_op_eval, EV_OpCost_Eval = exp_op_cost_eval)
+        df_emissions = DataFrame(Expected_CO2_Base = co2_exp, Expected_CO2_Eval = co2_exp_eval)
         if settings["Write all scenarios flag"]
             for s in 1:size(P_s_eval)[1]
                 for f in 1:size(P_f_eval)[1]

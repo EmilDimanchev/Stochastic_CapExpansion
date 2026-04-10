@@ -298,8 +298,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 set_capacity_parameters!(Eval_SPs, output_mp["Capacity"])
                 outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings, output_mp["Capacity"])
                 results["SPs_eval"] = outputs_sp_eval
-                results["CVaR"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)
-                results["Expected Value"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)
+                results["CVaR_Eval"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)
+                results["Expected Value Eval"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)
             
             end
 
@@ -558,8 +558,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 set_capacity_parameters!(Eval_SPs, output_mp["Capacity"])
                 outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings, output_mp["Capacity"])
                 results["SPs_eval"] = outputs_sp_eval
-                results["CVaR"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)
-                results["Expected Value"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)
+                results["CVaR_Eval"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)
+                results["Expected Value Eval"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)
             end
             break
         else
