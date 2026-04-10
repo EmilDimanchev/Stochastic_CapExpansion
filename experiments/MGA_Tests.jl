@@ -329,11 +329,8 @@ function test_stability_laptop(test_index)
     inputs = load_input_data(inputs_folder, settings)
     probabilities = [inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]]
     
-    distribution_types = ["Gaussian", "Gaussian", "Gaussian"]
-    new_probabilities = generate_probabilities(probabilities, distribution_types)
-    
-
-
+    distribution_types = [["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
+    names = ["Gaussian", "LogNormal", "Gaussian-LogNormal", "LogNormal-Gaussian"]
     # Base Run
 
     configure_parallel_workers!(settings)
@@ -341,18 +338,18 @@ function test_stability_laptop(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
 
-    #outputs_mixed, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped_Base"), summary_folder; budget_multiplier=1.10, vector_set=nothing)
+    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat")
 
     # Set new probabilities in inputs and run again
+    for (i, probs) in enumerate(distribution_types)
+        println("************* Beginning run with new probabilities - ", names[i], " **************")
+        new_probabilities = generate_probabilities(probabilities, probs)
+        inputs["Demand scenario probabilities"] = new_probabilities[1]
+        inputs["Gas price scenario probabilities"] = new_probabilities[2]
+        #inputs["Weather scenario probabilities"] = new_probabilities[3]
 
-    inputs["Demand scenario probabilities"] = new_probabilities[1]
-    inputs["Gas price scenario probabilities"] = new_probabilities[2]
-    #inputs["Weather scenario probabilities"] = new_probabilities[3]
-
-    println("************* Beginning run with new probabilities **************")
-    #outputs_cvar, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "CVaR"), summary_folder; type ="System_Weighted_CVaR",vector_set = nothing, budget_multiplier=1.10)
-    outputs_mixed_new, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped_NewProbs"), summary_folder; budget_multiplier=1.10, vector_set=vectors)
-
+        _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = names[i])
+    end
 
 end
 
@@ -370,11 +367,8 @@ function test_stability_della(test_index)
     inputs = load_input_data(inputs_folder, settings)
     probabilities = [inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]]
     
-    distribution_types = ["Gaussian", "Gaussian", "Gaussian"]
-    new_probabilities = generate_probabilities(probabilities, distribution_types)
-    
-
-
+    distribution_types = [["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
+    names = ["Gaussian", "LogNormal", "Gaussian-LogNormal", "LogNormal-Gaussian"]
     # Base Run
 
     configure_parallel_workers!(settings)
@@ -382,17 +376,18 @@ function test_stability_della(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
 
-    outputs_mixed, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped_Base"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flipped_Base")
+    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat")
 
     # Set new probabilities in inputs and run again
+    for (i, probs) in enumerate(distribution_types)
+        println("************* Beginning run with new probabilities - ", names[i], " **************")
+        new_probabilities = generate_probabilities(probabilities, probs)
+        inputs["Demand scenario probabilities"] = new_probabilities[1]
+        inputs["Gas price scenario probabilities"] = new_probabilities[2]
+        #inputs["Weather scenario probabilities"] = new_probabilities[3]
 
-    inputs["Demand scenario probabilities"] = new_probabilities[1]
-    inputs["Gas price scenario probabilities"] = new_probabilities[2]
-    #inputs["Weather scenario probabilities"] = new_probabilities[3]
-
-    println("************* Beginning run with new probabilities **************")
-    outputs_mixed_new, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped_NewProbs"), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = "Flipped_NewProbs")
-
+        _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = names[i])
+    end
 
 end
 

@@ -236,8 +236,6 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             cvar_estimate = compute_cvar(sp_obj_per_iter, P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
         end
    
-        println("CVaR estimate: ", cvar_estimate)
-        println("CVaR Master problem term: ", output_mp["CVaR term"]/settings["Scaling factor cost"])
         if risk_aversion_flag
             UB = risk_aversion_weight*expected_value + (1-risk_aversion_weight)*cvar_estimate + output_mp["Inv_cost"]/settings["Scaling factor cost"]
         else    

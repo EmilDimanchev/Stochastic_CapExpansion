@@ -48,7 +48,7 @@ Parallel flag: true
 Workers: 8
 
 Vector Type: random
-Iterations: 50
+Iterations: 2
 Capacity Exploration: true
 Seed: 1234
 Budget convergence tolerance: 0.005
