@@ -136,7 +136,6 @@ function run_stochastic_exploration_single_type(SPs::Array{Model, 3}, inputs::Di
     results_cap = []
     results_syscost = []
     results_emissions = []
-    outputs = []
     run_labels = []
     gaps = []
 
@@ -158,7 +157,6 @@ function run_stochastic_exploration_single_type(SPs::Array{Model, 3}, inputs::Di
     MP = build_planning_model(inputs, settings)
     output = benders_algorithm(inputs, settings, MP, SPs, type;  Eval_SPs = Eval_SPs)
     gap = output["Gaps"]
-    push!(outputs, output)
     push!(run_labels, type)
     push!(gaps, gap)
     # Write results
@@ -187,7 +185,6 @@ function run_stochastic_exploration_single_type(SPs::Array{Model, 3}, inputs::Di
             output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs)
             #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             gap = output_random["Gaps"]
-            push!(outputs, output_random)
             push!(run_labels, "Random_"*string(iteration))
             push!(gaps, gap)
             results_destination = joinpath(results_path,"Random_"*string(iteration))
@@ -228,7 +225,6 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
     SP_one_scen = build_all_subproblems(new_inputs, settings)
     output = benders_algorithm(new_inputs, settings, MP, SP_one_scen, "OneScenarioLC"; Eval_SPs = SPs)
     gap = output["Gaps"]
-    push!(outputs, output)
     push!(labels, "OneScenarioLC")
     push!(gaps, gap)
     results_destination = joinpath(results_path,"CostOptimal")
@@ -259,7 +255,6 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
         push!(results_cap, df_cap)
         push!(results_syscost, df_syscost)
         push!(results_emissions, df_emissions)
-        push!(outputs, output_random)
         push!(labels, "Random_"*string(iteration))
         push!(gaps, gap)
     end
