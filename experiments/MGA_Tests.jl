@@ -32,7 +32,7 @@ function configure_parallel_workers!(settings::Dict)
     end
 end
 
-function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing)
+function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "dual_constraint")
 
     configure_parallel_workers!(settings)
 
@@ -115,7 +115,7 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
             push!(results_emissions, df_emissions)
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
-        write_exploration_results!(results_cap, results_syscost, results_emissions, joinpath(summary_folder), run_labels, "Both_Flipped")
+        write_exploration_results!(results_cap, results_syscost, results_emissions, joinpath(summary_folder), run_labels, summary_name)
     end
     return outputs, vectors
 end
@@ -357,7 +357,7 @@ function test_stability_laptop(test_index)
 end
 
 function test_stability_della(test_index)
-    inputs_folder = "/home/ml6802/Stochastic_CapExpansion/inputs/Inputs_30repdays_ext_1000scen_7techs"#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    inputs_folder = "/home/ml6802/Stochastic_CapExpansion/inputs/Inputs_30repdays_ext_1000scen_7techs_Della"#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
     results_folder = "/home/ml6802/Stochastic_CapExpansion/outputs/Test_"*string(test_index) #joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -382,7 +382,7 @@ function test_stability_della(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
 
-    outputs_mixed, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped_Base"), summary_folder; budget_multiplier=1.10, vector_set=nothing)
+    outputs_mixed, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped_Base"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flipped_Base")
 
     # Set new probabilities in inputs and run again
 
@@ -391,7 +391,7 @@ function test_stability_della(test_index)
     #inputs["Weather scenario probabilities"] = new_probabilities[3]
 
     println("************* Beginning run with new probabilities **************")
-    outputs_mixed_new, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped_NewProbs"), summary_folder; budget_multiplier=1.10, vector_set=vectors)
+    outputs_mixed_new, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped_NewProbs"), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = "Flipped_NewProbs")
 
 
 end

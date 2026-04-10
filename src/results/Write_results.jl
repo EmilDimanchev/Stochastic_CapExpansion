@@ -6,8 +6,8 @@ function write_results(model_output, inputs, settings, results_folder)
     end
 
     # Parameters
-    P = inputs["Output Demand scenario probabilities"]
-    P_f = inputs["Output Fuel price scenario probabilities"]
+    P = inputs["Demand scenario probabilities"]
+    P_f = inputs["Gas price scenario probabilities"]
     time_index = inputs["Time index"]
     t_weights = inputs["Period weights"]
     co2_factors = inputs["CO2 emission intensities"]
@@ -229,14 +229,14 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
     # Variables
     cap = MP_output["Capacity"]
  
-    shed = eval_SPs == [] ? collect(SPs_output[s,f,k]["Load shedding"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Load shedding"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])#model_output["Load shedding"]
+    shed = eval_SPs == [] ? collect(SPs_output[s,f,k]["Load shedding"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Load shedding"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1])#model_output["Load shedding"]
 
-    gen = eval_SPs == [] ? collect(SPs_output[s,f,k]["Generation"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Generation"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])#model_output["Generation"]
+    gen = eval_SPs == [] ? collect(SPs_output[s,f,k]["Generation"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Generation"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1])#model_output["Generation"]
     
     #m = model_output["Capacity dual"]
     #theta = model_output["Risk adjusted probabilities"]
     Ω = settings["Risk aversion weight"]
-    price = eval_SPs == [] ? collect(SPs_output[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) #model_output["Power balance dual"]
+    price = eval_SPs == [] ? collect(SPs_output[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Power price"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1]) #model_output["Power balance dual"]
     # Settings
     resources = inputs["Generation resources"]
     all_resources = inputs["Resources"]

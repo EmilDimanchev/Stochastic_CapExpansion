@@ -6,13 +6,12 @@
 #SBATCH --mem-per-cpu=8G                    # memory per cpu-core
 #SBATCH --time=4:00:00                     # total run time limit (HH:MM:SS)
 #SBATCH --output="test.out"
-#SBATCH --error="test.out"
 #SBATCH --mail-type=end                    # notifications for job done & fail
 #SBATCH --mail-user=ml6802@princeton.edu  # send-to address
 
 
 module add julia/1.9.1
 module add gurobi/12.0.0
-julia --project="/home/ml6802/Stochastic_CapExpansion" -t32 stability_test.jl
+julia --project="/home/ml6802/Stochastic_CapExpansion" -p32 stability_test.jl
 
 date

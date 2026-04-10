@@ -1,3 +1,3 @@
 include("MGA_Tests.jl")
 index = 10
-@time test_stability(index)
+@time test_stability_della(index)
