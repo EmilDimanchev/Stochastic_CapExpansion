@@ -5,10 +5,45 @@ const WORKER_SP_CACHE = Dict{Tuple{Int, Int, Int}, Model}()
 const WORKER_DATA_CACHE = Dict{Symbol, Any}()
 const MASTER_WORKER_SP_KEYS = Dict{Int, Set{Tuple{Int, Int, Int}}}()
 const MASTER_SCENARIO_TO_WORKER = Dict{Tuple{Int, Int, Int}, Int}()
+const WORKER_SOLVE_COUNTER = Ref(0)
+
+function _worker_memory_debug_enabled()
+    settings = get(WORKER_DATA_CACHE, :settings, nothing)
+    return settings isa Dict && get(settings, "Memory debug flag", false)
+end
+
+function _worker_memory_log_frequency()
+    settings = get(WORKER_DATA_CACHE, :settings, nothing)
+    if !(settings isa Dict)
+        return 1
+    end
+    raw = get(settings, "Worker memory log frequency", 1)
+    return max(1, Int(raw))
+end
+
+function _worker_log_memory!(label::String, scenario_key::Tuple{Int, Int, Int}; payload_size_mb::Union{Nothing, Float64}=nothing)
+    if !_worker_memory_debug_enabled()
+        return nothing
+    end
+    free_mem_mb = round(Sys.free_memory() / 1024^2; digits = 2)
+    cache_size = length(WORKER_SP_CACHE)
+    if isnothing(payload_size_mb)
+        @info("[worker $(myid())] $(label) scenario=$(scenario_key) cache=$(cache_size) free=$(free_mem_mb) MiB")
+    else
+        @info("[worker $(myid())] $(label) scenario=$(scenario_key) cache=$(cache_size) free=$(free_mem_mb) MiB payload=$(payload_size_mb) MiB")
+    end
+    return nothing
+end
 
 function _set_worker_problem_data!(inputs, settings)
     WORKER_DATA_CACHE[:inputs] = inputs
     WORKER_DATA_CACHE[:settings] = settings
+    return nothing
+end
+
+function _clear_worker_subproblem_cache!()
+    empty!(WORKER_SP_CACHE)
+    GC.gc(false)
     return nothing
 end
 
@@ -18,10 +53,11 @@ function _build_and_cache_subproblem!(scenario_key::Tuple{Int, Int, Int})
     return nothing
 end
 
-function _run_cached_subproblem!(scenario_key::Tuple{Int, Int, Int}, capacity::Vector{Float64})
+function _run_cached_subproblem!(scenario_key::Tuple{Int, Int, Int}, capacity::Vector{Float64}, minimal_payload::Bool)
     SP = WORKER_SP_CACHE[scenario_key]
     set_parameter_value.(SP[:x], capacity)
-    return run_subproblem(SP, WORKER_DATA_CACHE[:inputs], WORKER_DATA_CACHE[:settings])
+    result = run_subproblem(SP, WORKER_DATA_CACHE[:inputs], WORKER_DATA_CACHE[:settings]; minimal_payload=minimal_payload)
+    return result
 end
 
 function run_economic_dispatch(inputs, settings, capacity, demand_shift_weather_scenario, variable_costs_scenario, availability_scenario, period_weights_scenario, demand_adder_scenario)
@@ -199,6 +235,7 @@ function build_all_subproblems(inputs, settings)
         empty!(MASTER_SCENARIO_TO_WORKER)
         @sync for pid in pids
             @async begin
+                remotecall_wait(_clear_worker_subproblem_cache!, pid)
                 remotecall_wait(_set_worker_problem_data!, pid, inputs, settings)
                 worker_set = get!(MASTER_WORKER_SP_KEYS, pid, Set{Tuple{Int, Int, Int}}())
                 empty!(worker_set)
@@ -392,7 +429,7 @@ function set_capacity_parameters!(SPs::Array{Model,3}, capacity::Vector{Float64}
     end
 end
 
-function run_subproblem(ED::Model, inputs, settings)
+function run_subproblem(ED::Model, inputs, settings; minimal_payload::Bool=false)
     output = Dict{String, Any}()
 
     optimize!(ED)
@@ -403,23 +440,18 @@ function run_subproblem(ED::Model, inputs, settings)
         output["coeff"] = 1
     end
     
-    output_full = write_subproblem_results(ED,inputs, settings)
+    output_full = write_subproblem_results(ED,inputs, settings; minimal_payload=minimal_payload)
     output = merge(output, output_full)
 
     return output
 end
 
-function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Vector{Float64})
+function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Vector{Float64}; minimal_payload::Bool=get(settings, "Minimal worker payload flag", true))
 
     sp_results = Array{Dict{String, Any},3}(undef, size(SPs)...)
     if settings["Parallel flag"] && nworkers() > 0
         pids = workers()
         scenario_keys = [(s, f, k) for s in 1:size(SPs,1), f in 1:size(SPs,2), k in 1:size(SPs,3)]
-        futures = Vector{Future}(undef, length(scenario_keys))
-
-        @sync for pid in pids
-            @async remotecall_wait(_set_worker_problem_data!, pid, inputs, settings)
-        end
 
         @sync for (idx, scenario_key) in enumerate(scenario_keys)
             @async begin
@@ -434,26 +466,24 @@ function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Ve
                 if !(scenario_key in worker_keys)
                     error("Subproblem $(scenario_key) is not cached on worker $(pid). Call build_all_subproblems() before run_all_subproblems().")
                 end
-                futures[idx] = remotecall(_run_cached_subproblem!, pid, scenario_key, capacity)
+                @time sp_results[scenario_key...] = @fetchfrom pid _run_cached_subproblem!(scenario_key, capacity, minimal_payload)
+                
             end
         end
-
-        @sync for (idx, scenario_key) in enumerate(scenario_keys)
-            @async sp_results[scenario_key...] = fetch(futures[idx])
-        end
+        @everywhere GC.gc()
     else
         if settings["Parallel flag"] && nworkers() == 0
             @warn("Parallel flag is true but no distributed workers are available. Falling back to serial subproblem solves.")
         end
         set_capacity_parameters!(SPs, capacity)
         for s in 1:size(SPs,1), f in 1:size(SPs,2), k in 1:size(SPs,3)
-            sp_results[s,f,k] = run_subproblem(SPs[s,f,k], inputs, settings) 
+            sp_results[s,f,k] = run_subproblem(SPs[s,f,k], inputs, settings; minimal_payload=minimal_payload) 
         end
     end
     return sp_results
 end
 
-function write_subproblem_results(ED::Model, inputs, settings)
+function write_subproblem_results(ED::Model, inputs, settings; minimal_payload::Bool=false)
     output = Dict{String, Any}()
 
     
@@ -483,6 +513,10 @@ function write_subproblem_results(ED::Model, inputs, settings)
     
     output["SP dual"] = dual.(ParameterRef.(ED[:x])).*settings["Scaling factor cost"]
     output["SP objective"] = objective_value(ED).*(settings["Scaling factor cost"]*settings["Scaling factor demand"])
+    if minimal_payload
+        return output
+    end
+
     output["Power price"] = dual.(ED[:power_balance]).*settings["Scaling factor cost"]./t_weights
     nse_dual = dual.(ED[:max_load_shedding]).*settings["Scaling factor cost"]
     output["Max NSE dual"] = sum(max_nse[seg]*ED[:demand][t]*nse_dual[seg,t] for seg in 1:nse_segs, t in 1:T)

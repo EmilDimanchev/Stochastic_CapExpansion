@@ -49,7 +49,7 @@ end
 
 function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "dual_constraint", Eval_SPs = nothing)
 
-    configure_parallel_workers!(settings)
+    #configure_parallel_workers!(settings)
 
       # Result containers
     results_cap = []
@@ -303,6 +303,7 @@ function simple_comp()
         mkpath(summary_folder)
     end
     settings = load_settings(inputs_folder)
+    settings["Memory debug flag"] = true
     inputs = load_input_data(inputs_folder, settings)
     
     inputs["Output Demand scenario probabilities"] = inputs["Demand scenario probabilities"] #Establish base weights ahead of time
@@ -348,6 +349,7 @@ function test_stability_laptop(test_index)
         mkpath(summary_folder)
     end
     settings = load_settings(inputs_folder)
+    settings["Memory debug flag"] = true
     inputs = load_input_data(inputs_folder, settings)
     probabilities = [inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]]
     
@@ -394,6 +396,7 @@ function test_stability_della(test_index)
         mkpath(summary_folder)
     end
     settings = load_settings(inputs_folder)
+    settings["Memory debug flag"] = true
     inputs = load_input_data(inputs_folder, settings)
     probabilities = [inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]]
     

@@ -5,6 +5,30 @@
 
 export run_benders_algorithm, benders_algorithm
 
+function _memory_debug_enabled(settings::Dict)
+    return get(settings, "Memory debug flag", false)
+end
+
+function _log_iteration_memory!(settings::Dict, label::String, iteration::Int, MP::Model, payloads::AbstractVector)
+    if !_memory_debug_enabled(settings)
+        return nothing
+    end
+
+    payload_report = join([
+        "$(name)=$(round(Base.summarysize(obj) / 1024^2; digits=2)) MiB"
+        for (name, obj) in payloads
+    ], ", ")
+
+    n_cuts = count(
+        con -> startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"),
+        all_constraints(MP, include_variable_in_set_constraints = false),
+    )
+    free_mem_mb = round(Sys.free_memory() / 1024^2; digits = 2)
+
+    @info("[$(label) iter $(iteration)] $(payload_report), MP_cuts=$(n_cuts), system_free=$(free_mem_mb) MiB")
+    return nothing
+end
+
 function run_benders_algorithm(inputs::Dict, settings::Dict)
 
     # Iterations
@@ -221,7 +245,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
     
             
-        outputs_sp = run_all_subproblems(SPs, inputs, settings, capacity_mix[j])
+        @time outputs_sp = run_all_subproblems(SPs, inputs, settings, capacity_mix[j])
 
         sp_all_results = outputs_sp
 
@@ -229,6 +253,11 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         
         duals_sp_per_iter =reshape([outputs_sp[s,f,k]["SP dual"][r] for r in 1:R, s in 1:S, f in 1:F, k in 1:K],(R, S, F, K))
         coeffs = reshape([outputs_sp[s,f,k]["coeff"] for s in 1:S, f in 1:F, k in 1:K],(S, F, K))
+        _log_iteration_memory!(settings, "benders-subproblem", j, MP, [
+            "outputs_sp" => outputs_sp,
+            "sp_obj_per_iter" => sp_obj_per_iter,
+            "duals_sp_per_iter" => duals_sp_per_iter,
+        ])
         expected_value = sum(P[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"] 
         cvar_estimate = 0.0
     
@@ -279,7 +308,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
             output_mp = run_planning_model(MP, settings)
             set_capacity_parameters!(SPs, output_mp["Capacity"])
-            sp_all_results = run_all_subproblems(SPs, inputs, settings, output_mp["Capacity"])
+            sp_all_results = run_all_subproblems(SPs, inputs, settings, output_mp["Capacity"]; minimal_payload=false)
 
             results["MP"] = output_mp
             results["SPs"] = sp_all_results
@@ -296,7 +325,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             if Eval_SPs !== nothing
                 @info("Evaluating current MP solution on evaluation SPs to track performance on these scenarios.")
                 set_capacity_parameters!(Eval_SPs, output_mp["Capacity"])
-                outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings, output_mp["Capacity"])
+                outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings, output_mp["Capacity"]; minimal_payload=false)
                 results["SPs_eval"] = outputs_sp_eval
                 results["CVaR_Eval"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)
                 results["Expected Value Eval"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)
@@ -340,6 +369,11 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             # Update MP solution outputs
             push!(capacity_mix, output_mp["Capacity"])
             @info("New capacity mix: $(round.(output_mp["Capacity"]; digits=2))")
+            _log_iteration_memory!(settings, "benders-master", j, MP, [
+                "capacity_mix" => capacity_mix,
+                "LB_hist" => LB_hist,
+                "UB_hist" => UB_hist,
+            ])
             
         end
     end
@@ -491,6 +525,11 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
         
         duals_sp_per_iter =reshape([outputs_sp[s,f,k]["SP dual"][r] for r in 1:R, s in 1:S, f in 1:F, k in 1:K],(R, S, F, K))
         coeffs = reshape([outputs_sp[s,f,k]["coeff"] for s in 1:S, f in 1:F, k in 1:K],(S, F, K))
+        _log_iteration_memory!(settings, "mga-subproblem", j, MP, [
+            "outputs_sp" => outputs_sp,
+            "sp_obj_per_iter" => sp_obj_per_iter,
+            "duals_sp_per_iter" => duals_sp_per_iter,
+        ])
 
         
 
@@ -539,7 +578,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
 
             output_mp = run_planning_model(MP, settings)
             set_capacity_parameters!(SPs, output_mp["Capacity"])
-            sp_all_results = run_all_subproblems(SPs, inputs, settings, output_mp["Capacity"])
+            sp_all_results = run_all_subproblems(SPs, inputs, settings, output_mp["Capacity"]; minimal_payload=false)
 
             results["MP"] = output_mp
             results["SPs"] = sp_all_results
@@ -556,7 +595,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             if Eval_SPs !== nothing
                 @info("Evaluating current MP solution on evaluation SPs to track performance on these scenarios.")
                 set_capacity_parameters!(Eval_SPs, output_mp["Capacity"])
-                outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings, output_mp["Capacity"])
+                outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings, output_mp["Capacity"]; minimal_payload=false)
                 results["SPs_eval"] = outputs_sp_eval
                 results["CVaR_Eval"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)
                 results["Expected Value Eval"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)
@@ -570,6 +609,11 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             # Update MP solution outputs
             push!(capacity_mix, output_mp["Capacity"])
             @info("New capacity mix: $(round.(output_mp["Capacity"]; digits=2))")
+            _log_iteration_memory!(settings, "mga-master", j, MP, [
+                "capacity_mix" => capacity_mix,
+                "UB_hist" => UB_hist,
+                "gap_hist" => gap_hist,
+            ])
         end
     end
     elapsed = time() - algorithm_start_time
