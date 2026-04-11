@@ -492,10 +492,13 @@ function write_subproblem_results(ED::Model, inputs, settings)
     sd = value.(ED[:served_demand]).*settings["Scaling factor demand"]
     tb = value.(ED[:total_benefit]).*(settings["Scaling factor cost"]*settings["Scaling factor demand"])
     output["Consumer surplus"] = sum(t_weights[t]*(tb[t] - output["Power price"][t]*sum(sd[seg,t] for seg in 1:nse_segs)) for t in 1:T)
-    output["Generation"] = generation
-    if storage_flag
-        output["Storage charging"] = value.(ED[:z_ch])
-        output["Storage discharging"] = value.(ED[:z_dch])
+    # Time-series outputs are large; only materialize when full scenario writes are requested.
+    if settings["Write all scenarios flag"]
+        output["Generation"] = generation
+        if storage_flag
+            output["Storage charging"] = value.(ED[:z_ch])
+            output["Storage discharging"] = value.(ED[:z_dch])
+        end
     end
 
     return output

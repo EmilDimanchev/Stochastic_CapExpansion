@@ -233,14 +233,13 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
     # Variables
     cap = MP_output["Capacity"]
  
-    shed = eval_SPs == [] ? collect(SPs_output[s,f,k]["Load shedding"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Load shedding"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1])#model_output["Load shedding"]
-
-    gen = eval_SPs == [] ? collect(SPs_output[s,f,k]["Generation"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Generation"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1])#model_output["Generation"]
+    shed = nothing
+    gen = nothing
     
     #m = model_output["Capacity dual"]
     #theta = model_output["Risk adjusted probabilities"]
     Ω = settings["Risk aversion weight"]
-    price = eval_SPs == [] ? collect(SPs_output[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Power price"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1]) #model_output["Power balance dual"]
+    price = nothing
     # Settings
     resources = inputs["Generation resources"]
     all_resources = inputs["Resources"]
@@ -362,8 +361,12 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
     end
    
 
-    # Collect scenario results
     if settings["Write all scenarios flag"]
+        shed = eval_SPs == [] ? collect(SPs_output[s,f,k]["Load shedding"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Load shedding"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1])
+        gen = eval_SPs == [] ? collect(SPs_output[s,f,k]["Generation"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Generation"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1])
+        price = eval_SPs == [] ? collect(SPs_output[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Power price"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1])
+
+        # Collect scenario results
         for s in 1:S
             for f in 1:F
                 for k in 1:K

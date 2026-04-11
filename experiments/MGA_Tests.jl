@@ -5,6 +5,21 @@ using Distributed
 @everywhere using .Stochastic_CapExpansion
 @everywhere using Revise, JuMP, Gurobi, HiGHS, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions
 
+function log_result_memory!(label::String, output::Dict)
+    size_mb = round(Base.summarysize(output) / 1024^2; digits = 2)
+    @info("Approx memory for $(label): $(size_mb) MiB")
+end
+
+function release_heavy_payload!(output::Dict)
+    for key in ("SPs", "SPs_eval")
+        if haskey(output, key)
+            delete!(output, key)
+        end
+    end
+    GC.gc(false)
+    return nothing
+end
+
 function configure_parallel_workers!(settings::Dict)
     if settings["Parallel flag"]
         desired_workers = haskey(settings, "Workers") ? settings["Workers"] : max(Sys.CPU_THREADS - 1, 1)
@@ -55,13 +70,15 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
 
     
     
-    output_exp = benders_algorithm(inputs, settings, MP, SPs, "System_Expected"; Eval_SPs = Eval_SPs)
+    @time output_exp = benders_algorithm(inputs, settings, MP, SPs, "System_Expected"; Eval_SPs = Eval_SPs)
+    log_result_memory!("System_Expected output", output_exp)
     gap_exp = output_exp["Gaps"]
     push!(gaps, gap_exp)
     push!(run_labels, "System_Expected")
     # Write results
     results_destination = joinpath(results_folder,"System_Expected")
-    df_cap, df_syscost, df_emissions = write_results_benders(output_exp, inputs, settings, results_destination)
+    @time df_cap, df_syscost, df_emissions = write_results_benders(output_exp, inputs, settings, results_destination)
+    release_heavy_payload!(output_exp)
     push!(results_cap, df_cap)
     push!(results_syscost, df_syscost)
     push!(results_emissions, df_emissions)
@@ -74,12 +91,14 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
     settings["Risk aversion flag"] = true
     set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk_aversion_weight)
     output_cvar = benders_algorithm(inputs, settings, MP, SPs, "System_Weighted_CVaR"; Eval_SPs = Eval_SPs)
+    log_result_memory!("System_Weighted_CVaR output", output_cvar)
     gap_cvar = output_cvar["Gaps"]
     push!(run_labels, "System_Weighted_CVaR")
     push!(gaps, gap_cvar)
      # Write results
     results_destination = joinpath(results_folder,"System_Weighted_CVaR")
     df_cap, df_syscost, df_emissions = write_results_benders(output_cvar, inputs, settings, results_destination)
+    release_heavy_payload!(output_cvar)
     push!(results_cap, df_cap)
     push!(results_syscost, df_syscost)
     push!(results_emissions, df_emissions)
@@ -102,12 +121,14 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
             output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs)
+            log_result_memory!("Random_"*string(iteration)*" output", output_random)
             cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             gap = output_random["Gaps"]
             push!(run_labels, "Random_"*string(iteration))
             push!(gaps, gap)
             results_destination = joinpath(results_folder,"Random_"*string(iteration))
             df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
+            release_heavy_payload!(output_random)
             push!(results_cap, df_cap)
             push!(results_syscost, df_syscost)
             push!(results_emissions, df_emissions)
@@ -156,12 +177,14 @@ function run_stochastic_exploration_single_type(SPs::Array{Model, 3}, inputs::Di
     end
     MP = build_planning_model(inputs, settings)
     output = benders_algorithm(inputs, settings, MP, SPs, type;  Eval_SPs = Eval_SPs)
+    log_result_memory!(type * " output", output)
     gap = output["Gaps"]
     push!(run_labels, type)
     push!(gaps, gap)
     # Write results
     results_destination = joinpath(results_path,type)
     df_cap, df_syscost, df_emissions = write_results_benders(output, inputs, settings, results_destination)
+    release_heavy_payload!(output)
     push!(results_cap, df_cap)
     push!(results_syscost, df_syscost)
     push!(results_emissions, df_emissions)
@@ -183,12 +206,14 @@ function run_stochastic_exploration_single_type(SPs::Array{Model, 3}, inputs::Di
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
             output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs)
+            log_result_memory!("Random_"*string(iteration)*" output", output_random)
             #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             gap = output_random["Gaps"]
             push!(run_labels, "Random_"*string(iteration))
             push!(gaps, gap)
             results_destination = joinpath(results_path,"Random_"*string(iteration))
             df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
+            release_heavy_payload!(output_random)
             push!(results_cap, df_cap)
             push!(results_syscost, df_syscost)
             push!(results_emissions, df_emissions)
@@ -224,11 +249,13 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
     MP = build_planning_model(new_inputs, settings) #### When loaded with one scenario weighted, this is equivalent to a deterministic model with that scenario selected
     SP_one_scen = build_all_subproblems(new_inputs, settings)
     output = benders_algorithm(new_inputs, settings, MP, SP_one_scen, "OneScenarioLC"; Eval_SPs = SPs)
+    log_result_memory!("OneScenarioLC output", output)
     gap = output["Gaps"]
     push!(labels, "OneScenarioLC")
     push!(gaps, gap)
     results_destination = joinpath(results_path,"CostOptimal")
     df_cap, df_syscost, df_emissions = write_results_benders(output, new_inputs, settings, results_destination)
+    release_heavy_payload!(output)
     push!(results_cap, df_cap)
     push!(results_syscost, df_syscost)
     push!(results_emissions, df_emissions)
@@ -248,10 +275,12 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
     for iteration in 1:iterations
         set_objective_bendersMP!(MP, "Capacity", new_inputs, settings; set_coeffs = vectors[iteration])
         output_random = mga_benders(new_inputs, settings, MP, SP_one_scen, budgets, "Base_MGA_"*string(iteration); Eval_SPs = SPs)
+        log_result_memory!("Base_MGA_"*string(iteration)*" output", output_random)
         #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
         gap = output_random["Gaps"]
         results_destination = joinpath(results_path,"Base_MGA_"*string(iteration))
         df_cap, df_syscost, df_emissions = write_results_benders(output_random, new_inputs, settings, results_destination; budgets = budgets)
+        release_heavy_payload!(output_random)
         push!(results_cap, df_cap)
         push!(results_syscost, df_syscost)
         push!(results_emissions, df_emissions)
@@ -323,7 +352,7 @@ function test_stability_laptop(test_index)
     probabilities = [inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]]
     
     distribution_types = [["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
-    names = ["Gaussian", "LogNormal", "Gaussian-LogNormal", "LogNormal-Gaussian"]
+    dist_names = ["Gaussian", "LogNormal", "Gaussian-LogNormal", "LogNormal-Gaussian"]
 
     # Set evaluation probabilities
     inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
@@ -332,7 +361,7 @@ function test_stability_laptop(test_index)
 
     # Base Run
 
-    configure_parallel_workers!(settings)
+    @time configure_parallel_workers!(settings)
 
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
@@ -340,15 +369,17 @@ function test_stability_laptop(test_index)
     _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat", Eval_SPs = SPs)
 
     # Set new probabilities in inputs and run again
+    
     for (i, probs) in enumerate(distribution_types)
-        println("************* Beginning run with new probabilities - ", names[i], " **************")
+        println("************* Beginning run with new probabilities - ", dist_names[i], " **************")
         new_probabilities = generate_probabilities(probabilities, probs)
         inputs["Demand scenario probabilities"] = new_probabilities[1]
         inputs["Gas price scenario probabilities"] = new_probabilities[2]
         #inputs["Weather scenario probabilities"] = new_probabilities[3]
 
-        _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = names[i], Eval_SPs = SPs)
+        _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = dist_names[i], Eval_SPs = SPs)
     end
+    
 
 end
 
@@ -367,7 +398,7 @@ function test_stability_della(test_index)
     probabilities = [inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]]
     
     distribution_types = [["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
-    names = ["Gaussian", "LogNormal", "Gaussian-LogNormal", "LogNormal-Gaussian"]
+    dist_names = ["Gaussian", "LogNormal", "Gaussian-LogNormal", "LogNormal-Gaussian"]
 
     # Set evaluation probabilities
     inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
@@ -381,17 +412,17 @@ function test_stability_della(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
 
-    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat")
+    @time _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat")
 
     # Set new probabilities in inputs and run again
     for (i, probs) in enumerate(distribution_types)
-        println("************* Beginning run with new probabilities - ", names[i], " **************")
+        println("************* Beginning run with new probabilities - ", dist_names[i], " **************")
         new_probabilities = generate_probabilities(probabilities, probs)
         inputs["Demand scenario probabilities"] = new_probabilities[1]
         inputs["Gas price scenario probabilities"] = new_probabilities[2]
         #inputs["Weather scenario probabilities"] = new_probabilities[3]
 
-        _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = names[i], Eval_SPs = SPs)
+        @time _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = dist_names[i], Eval_SPs = SPs)
     end
 
 end
