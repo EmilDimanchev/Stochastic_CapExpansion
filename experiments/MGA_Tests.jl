@@ -139,6 +139,98 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
     return outputs, vectors
 end
 
+function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "dual_constraint", Eval_SPs = nothing)
+
+    #configure_parallel_workers!(settings)
+
+      # Result containers
+    results_cap = []
+    results_syscost = []
+    results_emissions = []
+    outputs = []
+    run_labels = []
+    gaps = []
+
+    # Model Settings
+    iterations = settings["Iterations"]
+    risk_aversion_weight = settings["Risk aversion weight"] ### Currently set consistently across runs and ahead of time
+    value_at_risk_percent = settings["Value-at-Risk percent"] ### Currently set consistently across runs and ahead of time
+    # Create and set expected value model
+    settings["Risk aversion flag"] = false
+
+    MP = build_planning_model(inputs, settings)
+
+    
+    
+    @time output_exp = benders_algorithm(inputs, settings, MP, SPs, "System_Expected"; Eval_SPs = Eval_SPs)
+    log_result_memory!("System_Expected output", output_exp)
+    gap_exp = output_exp["Gaps"]
+    push!(gaps, gap_exp)
+    push!(run_labels, "System_Expected")
+    # Write results
+    results_destination = joinpath(results_folder,"System_Expected")
+    @time df_cap, df_syscost, df_emissions = write_results_benders(output_exp, inputs, settings, results_destination)
+    release_heavy_payload!(output_exp)
+    push!(results_cap, df_cap)
+    push!(results_syscost, df_syscost)
+    push!(results_emissions, df_emissions)
+    @info("System_Expected solution has investment cost of ", output_exp["MP"]["Inv_cost"])
+    @info("Expected value system cost of " * "System_Expected" * " solution: $(output_exp["Expected Value"] + output_exp["MP"]["Inv_cost"])")
+    @info("Risk adjusted system cost of " * "System_Expected" * " solution: $((1-risk_aversion_weight)*output_exp["CVaR"] + risk_aversion_weight*output_exp["Expected Value"]+ output_exp["MP"]["Inv_cost"])")
+
+  
+    # Base Runs
+    settings["Risk aversion flag"] = true
+    set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk_aversion_weight)
+    output_cvar = benders_algorithm(inputs, settings, MP, SPs, "System_Weighted_CVaR"; Eval_SPs = Eval_SPs)
+    log_result_memory!("System_Weighted_CVaR output", output_cvar)
+    gap_cvar = output_cvar["Gaps"]
+    push!(run_labels, "System_Weighted_CVaR")
+    push!(gaps, gap_cvar)
+     # Write results
+    results_destination = joinpath(results_folder,"System_Weighted_CVaR")
+    df_cap, df_syscost, df_emissions = write_results_benders(output_cvar, inputs, settings, results_destination)
+    release_heavy_payload!(output_cvar)
+    push!(results_cap, df_cap)
+    push!(results_syscost, df_syscost)
+    push!(results_emissions, df_emissions)
+    @info("System_Weighted_CVaR solution has investment cost of ", output_cvar["MP"]["Inv_cost"])
+    @info("Expected value system cost of " * "System_Weighted_CVaR" * " solution: $(output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])")
+    @info("Risk adjusted system cost of " * "System_Weighted_CVaR" * " solution: $((1-risk_aversion_weight)*output_cvar["CVaR"] + risk_aversion_weight*output_cvar["Expected Value"]+ output_cvar["MP"]["Inv_cost"])")
+
+
+
+    if settings["Capacity Exploration"]
+        budgets = Dict()
+        # Set budgets? ------- budget set = set with budgets same percent greater than least cost solution for each metric
+        #budgets = add_budget_constraint_bendersMP(MP, ((output_exp["MP"]["Inv_cost"] + output_exp["Expected Value"])/settings["Scaling factor cost"])*budget_multiplier, "System_Expected", budgets)
+        #budgets = add_budget_constraint_bendersMP(MP, (((1-risk_aversion_weight)*output_cvar["CVaR"] + (risk_aversion_weight)*output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/settings["Scaling factor cost"])*budget_multiplier, "System_Weighted_CVaR", budgets; risk_aversion=risk_aversion_weight)
+        budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["MP"]["Inv_cost"] + output_cvar["Expected Value"])/settings["Scaling factor cost"]), "System_Expected", budgets)
+        budgets = add_budget_constraint_bendersMP(MP, (((1-risk_aversion_weight)*output_exp["CVaR"] + (risk_aversion_weight)*output_exp["Expected Value"] + output_exp["MP"]["Inv_cost"])/settings["Scaling factor cost"]), "System_Weighted_CVaR", budgets; risk_aversion=risk_aversion_weight)
+        cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x]), settings["Vector Type"], settings)
+        @info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
+        for iteration in 1:iterations
+            set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
+            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs)
+            log_result_memory!("Random_"*string(iteration)*" output", output_random)
+            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            gap = output_random["Gaps"]
+            push!(run_labels, "Random_"*string(iteration))
+            push!(gaps, gap)
+            results_destination = joinpath(results_folder,"Random_"*string(iteration))
+            df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
+            release_heavy_payload!(output_random)
+            push!(results_cap, df_cap)
+            push!(results_syscost, df_syscost)
+            push!(results_emissions, df_emissions)
+        end
+        #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
+        write_exploration_results!(results_cap, results_syscost, results_emissions, joinpath(summary_folder), run_labels, summary_name)
+    end
+    return outputs, vectors
+end
+
 
 function run_stochastic_exploration_single_type(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_path::String, summary_folder::String; type::String = "System_Expected", vector_set::Union{AbstractVector, Nothing} = nothing, budget_multiplier::Float64 = 1.10, Eval_SPs=nothing)
 
@@ -351,35 +443,49 @@ function test_stability_laptop(test_index)
     inputs = load_input_data(inputs_folder, settings)
     probabilities = [inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]]
     
-    distribution_types = [["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
-    dist_names = ["Gaussian", "LogNormal", "Gaussian-LogNormal", "LogNormal-Gaussian"]
+    distribution_types =[["Gaussian", "Gaussian", "Gaussian"],["Gaussian", "Gaussian", "Gaussian"]] #[["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
+    dist_names = ["Gaussian", "Gaussian_2"]
+    means = [5.5, 5.5, 5.5]
+    stds = [2.0, 2.0, 2.0]
+
+    # Base Run
+
+    configure_parallel_workers!(settings)
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+
+    #_, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat", Eval_SPs = SPs)
+
+    # Set new probabilities in inputs and run again
+    
+    
+    println("************* Beginning run with new probabilities - ", dist_names[1], " **************")
+    new_probabilities = generate_probabilities(probabilities, distribution_types[1], means, stds)
+    inputs["Demand scenario probabilities"] = new_probabilities[1]
+    inputs["Gas price scenario probabilities"] = new_probabilities[2]
+    #inputs["Weather scenario probabilities"] = new_probabilities[3]
 
     # Set evaluation probabilities
     inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
     inputs["Full Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
     inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
-
-    # Base Run
-
-    @time configure_parallel_workers!(settings)
-
-    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
-    SPs = build_all_subproblems(inputs, settings)
-
-    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat", Eval_SPs = SPs)
-
-    # Set new probabilities in inputs and run again
     
-    for (i, probs) in enumerate(distribution_types)
-        println("************* Beginning run with new probabilities - ", dist_names[i], " **************")
-        new_probabilities = generate_probabilities(probabilities, probs)
-        inputs["Demand scenario probabilities"] = new_probabilities[1]
-        inputs["Gas price scenario probabilities"] = new_probabilities[2]
-        #inputs["Weather scenario probabilities"] = new_probabilities[3]
 
-        _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = dist_names[i], Eval_SPs = SPs)
-    end
-    
+    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[1]), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = dist_names[1])
+
+
+    means = [5.7, 5.7, 5.7]
+    stds = [2.0, 2.0, 2.0]
+    println("************* Beginning run with new probabilities - ", dist_names[2], " **************")
+    new_probabilities = generate_probabilities(probabilities, distribution_types[2], means, stds)
+    inputs["Demand scenario probabilities"] = new_probabilities[1]
+    inputs["Gas price scenario probabilities"] = new_probabilities[2]
+    #inputs["Weather scenario probabilities"] = new_probabilities[3]
+
+    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[2]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = dist_names[2], Eval_SPs = SPs)
+
+    rmprocs(workers())
 
 end
 
@@ -397,13 +503,10 @@ function test_stability_della(test_index)
     inputs = load_input_data(inputs_folder, settings)
     probabilities = [inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]]
     
-    distribution_types = [["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
-    dist_names = ["Gaussian", "LogNormal", "Gaussian-LogNormal", "LogNormal-Gaussian"]
-
-    # Set evaluation probabilities
-    inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
-    inputs["Full Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
-    inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
+     distribution_types =[["Gaussian", "Gaussian", "Gaussian"],["Gaussian", "Gaussian", "Gaussian"]] #[["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
+    dist_names = ["Gaussian", "Gaussian_2"]
+    means = [5.5, 5.5, 5.5]
+    stds = [2.0, 2.0, 2.0]
 
     # Base Run
 
@@ -412,30 +515,49 @@ function test_stability_della(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
 
-    @time _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat")
+    #_, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat", Eval_SPs = SPs)
 
     # Set new probabilities in inputs and run again
-    for (i, probs) in enumerate(distribution_types)
-        println("************* Beginning run with new probabilities - ", dist_names[i], " **************")
-        new_probabilities = generate_probabilities(probabilities, probs)
-        inputs["Demand scenario probabilities"] = new_probabilities[1]
-        inputs["Gas price scenario probabilities"] = new_probabilities[2]
-        #inputs["Weather scenario probabilities"] = new_probabilities[3]
+    
+    
+    println("************* Beginning run with new probabilities - ", dist_names[1], " **************")
+    new_probabilities = generate_probabilities(probabilities, distribution_types[1], means, stds)
+    inputs["Demand scenario probabilities"] = new_probabilities[1]
+    inputs["Gas price scenario probabilities"] = new_probabilities[2]
+    #inputs["Weather scenario probabilities"] = new_probabilities[3]
 
-        @time _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = dist_names[i], Eval_SPs = SPs)
-    end
+    # Set evaluation probabilities
+    inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
+    inputs["Full Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
+    inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
+    
+
+    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[1]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = dist_names[1], Eval_SPs = SPs)
+
+
+    means = [5.7, 5.7, 5.7]
+    stds = [2.0, 2.0, 2.0]
+    println("************* Beginning run with new probabilities - ", dist_names[2], " **************")
+    new_probabilities = generate_probabilities(probabilities, distribution_types[2], means, stds)
+    inputs["Demand scenario probabilities"] = new_probabilities[1]
+    inputs["Gas price scenario probabilities"] = new_probabilities[2]
+    #inputs["Weather scenario probabilities"] = new_probabilities[3]
+
+    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[2]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = dist_names[2], Eval_SPs = SPs)
+
+
+
 
 end
 
-function generate_probabilities(Probablities::AbstractVector, Distribution_Type::AbstractVector)
+function generate_probabilities(Probablities::AbstractVector, Distribution_Type::AbstractVector, means::AbstractVector, stds::AbstractVector)
     result = Vector{Any}(undef, length(Distribution_Type))
-    parameters_normal = Dict("mean" => 5.5, "std" => 2.0)
-    parameters_LogNormal = Dict("mean" => 2, "std" => 1)
+    
     for (i, dist) in enumerate(Distribution_Type)
         if dist == "Gaussian"
-            result[i] = generate_normalized_distribution(length(Probablities[i]), dist, parameters_normal)
+            result[i] = generate_normalized_distribution(length(Probablities[i]), dist, means[i], stds[i])
         elseif dist == "LogNormal"
-            result[i] = generate_normalized_distribution(length(Probablities[i]), dist, parameters_LogNormal)
+            result[i] = generate_normalized_distribution(length(Probablities[i]), dist, means[i], stds[i])
         else
             error("Distribution type not supported")
         end
@@ -444,14 +566,14 @@ function generate_probabilities(Probablities::AbstractVector, Distribution_Type:
     return result
 end
 
-function generate_normalized_distribution(num_scenarios::Int, distribution_type::String, parameters::Dict)
+function generate_normalized_distribution(num_scenarios::Int, distribution_type::String, mean::Float64, std::Float64)
     if distribution_type == "Gaussian"
-        dist = Normal(parameters["mean"], parameters["std"]) # Example parameters, can be adjusted
+        dist = Normal(mean, std) # Example parameters, can be adjusted
         samples = pdf.(dist, collect(1:num_scenarios))
         normalized_samples = samples ./ sum(samples)
         return normalized_samples
     elseif distribution_type == "LogNormal"
-        dist = LogNormal(parameters["mean"], parameters["std"]) # Example parameters, can be adjusted
+        dist = LogNormal(mean, std) # Example parameters, can be adjusted
         samples = pdf.(dist, collect(1:num_scenarios))
         normalized_samples = samples ./ sum(samples)
         return normalized_samples

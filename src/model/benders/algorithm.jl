@@ -245,7 +245,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
     
             
-        @time outputs_sp = run_all_subproblems(SPs, inputs, settings, capacity_mix[j])
+        outputs_sp = run_all_subproblems(SPs, inputs, settings, capacity_mix[j])
 
         sp_all_results = outputs_sp
 

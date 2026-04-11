@@ -51,4 +51,4 @@ Vector Type: random
 Iterations: 50
 Capacity Exploration: true
 Seed: 1234
-Budget convergence tolerance: 0.005
+Budget convergence tolerance: 0.000001
