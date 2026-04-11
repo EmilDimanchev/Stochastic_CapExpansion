@@ -303,7 +303,6 @@ function simple_comp()
         mkpath(summary_folder)
     end
     settings = load_settings(inputs_folder)
-    settings["Memory debug flag"] = true
     inputs = load_input_data(inputs_folder, settings)
     
     inputs["Output Demand scenario probabilities"] = inputs["Demand scenario probabilities"] #Establish base weights ahead of time
@@ -349,7 +348,6 @@ function test_stability_laptop(test_index)
         mkpath(summary_folder)
     end
     settings = load_settings(inputs_folder)
-    settings["Memory debug flag"] = true
     inputs = load_input_data(inputs_folder, settings)
     probabilities = [inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]]
     
@@ -396,7 +394,6 @@ function test_stability_della(test_index)
         mkpath(summary_folder)
     end
     settings = load_settings(inputs_folder)
-    settings["Memory debug flag"] = true
     inputs = load_input_data(inputs_folder, settings)
     probabilities = [inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]]
     

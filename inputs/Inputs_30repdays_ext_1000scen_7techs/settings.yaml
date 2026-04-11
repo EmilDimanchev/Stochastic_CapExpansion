@@ -46,6 +46,7 @@ Regularization flag: true
 # Distributed Memory Parallelization
 Parallel flag: true
 Workers: 8
+Memory debug flag: false
 
 Vector Type: random
 Iterations: 2

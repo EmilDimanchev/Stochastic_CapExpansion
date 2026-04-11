@@ -466,7 +466,7 @@ function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Ve
                 if !(scenario_key in worker_keys)
                     error("Subproblem $(scenario_key) is not cached on worker $(pid). Call build_all_subproblems() before run_all_subproblems().")
                 end
-                @time sp_results[scenario_key...] = @fetchfrom pid _run_cached_subproblem!(scenario_key, capacity, minimal_payload)
+                sp_results[scenario_key...] = @fetchfrom pid _run_cached_subproblem!(scenario_key, capacity, minimal_payload)
                 
             end
         end
