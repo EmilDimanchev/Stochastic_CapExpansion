@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=Stability_test
+#SBATCH --job-name=New_Setup_Test
 #SBATCH --nodes=1                           # node count
 #SBATCH --ntasks=1                          # total number of tasks across all nodes
 #SBATCH --cpus-per-task=32                   # cpu-cores per task (>1 if multi-threaded tasks)
@@ -12,6 +12,6 @@
 
 module add julia/1.9.1
 module add gurobi/12.0.0
-julia --project="/home/ml6802/Stochastic_CapExpansion" -p32 stability_test.jl
+julia --project="/home/ml6802/Stochastic_CapExpansion" -p32 newsetup_test.jl
 
 date
