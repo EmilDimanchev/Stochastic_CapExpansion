@@ -7,7 +7,7 @@ Demand uncertainty: true
 Gas price uncertainty: true
 Weather uncertainty: false
 Risk aversion flag: false
-Risk aversion weight: 0.01
+Risk aversion weight: 0.5
 Value-at-Risk percent: 0.05
 Risk sharing flag: false
 
@@ -52,3 +52,4 @@ Iterations: 50
 Capacity Exploration: true
 Seed: 1234
 Budget convergence tolerance: 0.000001
+Cuts retained: 50000
