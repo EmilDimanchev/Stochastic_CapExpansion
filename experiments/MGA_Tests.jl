@@ -132,6 +132,9 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
             push!(results_cap, df_cap)
             push!(results_syscost, df_syscost)
             push!(results_emissions, df_emissions)
+            if length(cuts_to_keep) < settings["Cuts retained"]
+                push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
+            end
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
         write_exploration_results!(results_cap, results_syscost, results_emissions, joinpath(summary_folder), run_labels, summary_name)
@@ -202,6 +205,9 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
             push!(results_cap, df_cap)
             push!(results_syscost, df_syscost)
             push!(results_emissions, df_emissions)
+            if length(cuts_to_keep) < settings["Cuts retained"]
+                push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
+            end
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
         write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name)
