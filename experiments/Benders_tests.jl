@@ -140,7 +140,7 @@ function run_eval_SP_validation()
 end
 
 function run_risk_pareto_frontier(test_index)
-    inputs_folder = joinpath("Inputs","Inputs_30repdays_ext_1000scen_7techs")
+    inputs_folder = joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs_Della")
 
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
