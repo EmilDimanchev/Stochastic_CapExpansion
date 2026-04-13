@@ -412,10 +412,32 @@ function simple_comp()
 
 end
 
-function test_single(test_index)
+function test_single_laptop(test_index)
 
     inputs_folder = joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+
+    configure_parallel_workers!(settings)
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "New_Setup"), summary_folder; budget_multiplier = 1.05, vector_set = nothing, summary_name = "new_setup", Eval_SPs = nothing)
+
+end
+
+function test_single_della(test_index)
+
+    inputs_folder = "/home/ml6802/Stochastic_CapExpansion/inputs/Inputs_30repdays_ext_1000scen_7techs_Della"#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    results_folder = "/home/ml6802/Stochastic_CapExpansion/outputs/Test_"*string(test_index)
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
         mkpath(results_folder)
