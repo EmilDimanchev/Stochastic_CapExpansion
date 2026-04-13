@@ -212,7 +212,7 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
         write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name)
     end
-    return outputs, vectors
+    return vectors
 end
 
 
@@ -430,7 +430,7 @@ function test_single(test_index)
 
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
-    outputs_cvar, vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "New_Setup"), summary_folder; budget_multiplier = 1.05, vector_set = nothing, summary_name = "new_setup", Eval_SPs = nothing)
+    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "New_Setup"), summary_folder; budget_multiplier = 1.05, vector_set = nothing, summary_name = "new_setup", Eval_SPs = nothing)
 
 end
 

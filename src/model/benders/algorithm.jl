@@ -552,6 +552,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 UBs[i] = expected_value + output_mp["Inv_cost"]/settings["Scaling factor cost"]
             elseif budget_type == "System_Weighted_CVaR"
                 UBs[i] = risk_aversion_weight*expected_value + (1-risk_aversion_weight)*cvar_estimate + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+            elseif budget_type == "CVaR"
+                UBs[i] = cvar_estimate
             else
                 error("Budget type $(budget_type) not recognized for UB calculation.")
             end
