@@ -533,7 +533,7 @@ function test_stability_della(test_index)
     inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
     
 
-    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[1]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = dist_names[1], Eval_SPs = SPs)
+    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[1]), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = dist_names[1], Eval_SPs = SPs)
 
     
     for i in 2:length(dist_names)
