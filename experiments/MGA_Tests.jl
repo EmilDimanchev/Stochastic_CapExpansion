@@ -443,10 +443,14 @@ function test_stability_laptop(test_index)
     inputs = load_input_data(inputs_folder, settings)
     probabilities = [inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]]
     
-    distribution_types =[["Gaussian", "Gaussian", "Gaussian"],["Gaussian", "Gaussian", "Gaussian"]] #[["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
-    dist_names = ["Gaussian", "Gaussian_2"]
-    means = [5.5, 5.5, 5.5]
-    stds = [2.0, 2.0, 2.0]
+    distribution_types =[["Gaussian", "Gaussian", "Gaussian"],["Gaussian", "Gaussian", "Gaussian"],["Gaussian", "Gaussian", "Gaussian"],["Gaussian", "Gaussian", "Gaussian"]] #[["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
+    dist_names = ["Gaussian", "Gaussian_MeansWrong", "Gaussian_StdWrong", "Gaussian_BothWrong"]
+    m_dev = 1.0
+    s_dev = 1.0
+    m = 5.5
+    stdev = 2.0
+    means = [[m for i in 1:3],[m + m_dev for i in 1:3],[m for i in 1:3], [m + m_dev for i in 1:3]]
+    stds = [[stdev for i in 1:3],[stdev for i in 1:3],[stdev + s_dev for i in 1:3], [stdev + s_dev for i in 1:3]]
 
     # Base Run
 
@@ -458,10 +462,8 @@ function test_stability_laptop(test_index)
     #_, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat", Eval_SPs = SPs)
 
     # Set new probabilities in inputs and run again
-    
-    
     println("************* Beginning run with new probabilities - ", dist_names[1], " **************")
-    new_probabilities = generate_probabilities(probabilities, distribution_types[1], means, stds)
+    new_probabilities = generate_probabilities(probabilities, distribution_types[1], means[1], stds[1])
     inputs["Demand scenario probabilities"] = new_probabilities[1]
     inputs["Gas price scenario probabilities"] = new_probabilities[2]
     #inputs["Weather scenario probabilities"] = new_probabilities[3]
@@ -472,19 +474,20 @@ function test_stability_laptop(test_index)
     inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
     
 
-    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[1]), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = dist_names[1])
+    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[1]), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = dist_names[1], Eval_SPs = SPs)
 
+    
+    for i in 2:length(dist_names)
 
-    means = [5.7, 5.7, 5.7]
-    stds = [2.0, 2.0, 2.0]
-    println("************* Beginning run with new probabilities - ", dist_names[2], " **************")
-    new_probabilities = generate_probabilities(probabilities, distribution_types[2], means, stds)
-    inputs["Demand scenario probabilities"] = new_probabilities[1]
-    inputs["Gas price scenario probabilities"] = new_probabilities[2]
-    #inputs["Weather scenario probabilities"] = new_probabilities[3]
+        println("************* Beginning run with new probabilities - ", dist_names[i], " **************")
+        new_probabilities = generate_probabilities(probabilities, distribution_types[i], means[i], stds[i])
+        inputs["Demand scenario probabilities"] = new_probabilities[1]
+        inputs["Gas price scenario probabilities"] = new_probabilities[2]
+        #inputs["Weather scenario probabilities"] = new_probabilities[3]
 
-    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[2]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = dist_names[2], Eval_SPs = SPs)
+        _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = dist_names[i], Eval_SPs = SPs)
 
+    end
     rmprocs(workers())
 
 end
@@ -505,11 +508,12 @@ function test_stability_della(test_index)
     
     distribution_types =[["Gaussian", "Gaussian", "Gaussian"],["Gaussian", "Gaussian", "Gaussian"],["Gaussian", "Gaussian", "Gaussian"],["Gaussian", "Gaussian", "Gaussian"]] #[["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
     dist_names = ["Gaussian", "Gaussian_MeansWrong", "Gaussian_StdWrong", "Gaussian_BothWrong"]
-    #variation = 0.2
-    #mean = 5.5
-    #std = 2.0
-    means = [[5.5, 5.5, 5.5],[5.7, 5.7, 5.7],[5.5, 5.5, 5.5],[5.7, 5.7, 5.7]]
-    stds = [[2.0, 2.0, 2.0],[2.0, 2.0, 2.0],[2.2, 2.2, 2.2],[2.2, 2.2, 2.2]]
+    m_dev = 1.0
+    s_dev = 1.0
+    m = 5.5
+    stdev = 2.0
+    means = [[m for i in 1:3],[m + m_dev for i in 1:3],[m for i in 1:3], [m + m_dev for i in 1:3]]
+    stds = [[stdev for i in 1:3],[stdev for i in 1:3],[stdev + s_dev for i in 1:3], [stdev + s_dev for i in 1:3]]
 
     # Base Run
 
