@@ -1,5 +1,3 @@
-WARNING: using IR.SlotNumber in module LoweredCodeUtils conflicts with an existing identifier.
-WARNING: using IR.SSAValue in module LoweredCodeUtils conflicts with an existing identifier.
 WARNING: replacing module Stochastic_CapExpansion.
-/var/spool/slurmd/job6314777/slurm_script: line 16: 1251598 Killed                  julia --project="/home/ml6802/Stochastic_CapExpansion" -t64 pareto.jl
-[2026-03-31T19:54:39.814] error: Detected 1 oom_kill event in StepId=6314777.batch. Some of the step tasks have been OOM Killed.
+/var/spool/slurmd/job6944038/slurm_script: line 16: 3236134 Killed                  julia --project="/home/ml6802/Stochastic_CapExpansion" -p64 pareto.jl
+[2026-04-13T19:09:44.228] error: Detected 2 oom_kill events in StepId=6944038.batch. Some of the step tasks have been OOM Killed.
