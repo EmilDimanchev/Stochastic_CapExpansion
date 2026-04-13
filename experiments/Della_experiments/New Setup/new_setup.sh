@@ -12,6 +12,6 @@
 
 module add julia/1.9.1
 module add gurobi/12.0.0
-julia --project="/home/ml6802/Stochastic_CapExpansion" -p32 newsetup_test.jl
+julia --project="/home/ml6802/Stochastic_CapExpansion" -p64 newsetup_test.jl
 
 date

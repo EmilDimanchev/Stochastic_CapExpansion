@@ -1,3 +1,1 @@
 WARNING: replacing module Stochastic_CapExpansion.
-/var/spool/slurmd/job6944038/slurm_script: line 16: 3236134 Killed                  julia --project="/home/ml6802/Stochastic_CapExpansion" -p64 pareto.jl
-[2026-04-13T19:09:44.228] error: Detected 2 oom_kill events in StepId=6944038.batch. Some of the step tasks have been OOM Killed.
