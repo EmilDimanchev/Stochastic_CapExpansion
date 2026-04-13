@@ -139,7 +139,7 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
     return outputs, vectors
 end
 
-function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "dual_constraint", Eval_SPs = nothing)
+function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing)
 
     #configure_parallel_workers!(settings)
 
@@ -147,7 +147,6 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
     results_cap = []
     results_syscost = []
     results_emissions = []
-    outputs = []
     run_labels = []
     gaps = []
 
@@ -156,29 +155,10 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
     risk_aversion_weight = settings["Risk aversion weight"] ### Currently set consistently across runs and ahead of time
     value_at_risk_percent = settings["Value-at-Risk percent"] ### Currently set consistently across runs and ahead of time
     # Create and set expected value model
-    settings["Risk aversion flag"] = false
+    settings["Risk aversion flag"] = true
 
     MP = build_planning_model(inputs, settings)
 
-    
-    
-    @time output_exp = benders_algorithm(inputs, settings, MP, SPs, "System_Expected"; Eval_SPs = Eval_SPs)
-    log_result_memory!("System_Expected output", output_exp)
-    gap_exp = output_exp["Gaps"]
-    push!(gaps, gap_exp)
-    push!(run_labels, "System_Expected")
-    # Write results
-    results_destination = joinpath(results_folder,"System_Expected")
-    @time df_cap, df_syscost, df_emissions = write_results_benders(output_exp, inputs, settings, results_destination)
-    release_heavy_payload!(output_exp)
-    push!(results_cap, df_cap)
-    push!(results_syscost, df_syscost)
-    push!(results_emissions, df_emissions)
-    @info("System_Expected solution has investment cost of ", output_exp["MP"]["Inv_cost"])
-    @info("Expected value system cost of " * "System_Expected" * " solution: $(output_exp["Expected Value"] + output_exp["MP"]["Inv_cost"])")
-    @info("Risk adjusted system cost of " * "System_Expected" * " solution: $((1-risk_aversion_weight)*output_exp["CVaR"] + risk_aversion_weight*output_exp["Expected Value"]+ output_exp["MP"]["Inv_cost"])")
-
-  
     # Base Runs
     settings["Risk aversion flag"] = true
     set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk_aversion_weight)
@@ -203,10 +183,8 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
     if settings["Capacity Exploration"]
         budgets = Dict()
         # Set budgets? ------- budget set = set with budgets same percent greater than least cost solution for each metric
-        #budgets = add_budget_constraint_bendersMP(MP, ((output_exp["MP"]["Inv_cost"] + output_exp["Expected Value"])/settings["Scaling factor cost"])*budget_multiplier, "System_Expected", budgets)
-        #budgets = add_budget_constraint_bendersMP(MP, (((1-risk_aversion_weight)*output_cvar["CVaR"] + (risk_aversion_weight)*output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/settings["Scaling factor cost"])*budget_multiplier, "System_Weighted_CVaR", budgets; risk_aversion=risk_aversion_weight)
-        budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["MP"]["Inv_cost"] + output_cvar["Expected Value"])/settings["Scaling factor cost"]), "System_Expected", budgets)
-        budgets = add_budget_constraint_bendersMP(MP, (((1-risk_aversion_weight)*output_exp["CVaR"] + (risk_aversion_weight)*output_exp["Expected Value"] + output_exp["MP"]["Inv_cost"])/settings["Scaling factor cost"]), "System_Weighted_CVaR", budgets; risk_aversion=risk_aversion_weight)
+        budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["CVaR"])/settings["Scaling factor cost"]), "CVaR", budgets)
+        budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/settings["Scaling factor cost"])*(budget_multiplier), "System_Expected", budgets)
         cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
         vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x]), settings["Vector Type"], settings)
         @info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
@@ -226,7 +204,7 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
             push!(results_emissions, df_emissions)
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
-        write_exploration_results!(results_cap, results_syscost, results_emissions, joinpath(summary_folder), run_labels, summary_name)
+        write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name)
     end
     return outputs, vectors
 end
@@ -425,6 +403,28 @@ function simple_comp()
     i = 0
     results_path = joinpath(results_folder, "Results_Base_MGA", "Scenario_"*string(i))
     #_ = run_base_mga(SPs, new_inputs, settings, results_path, summary_folder; budget_multiplier=1.10, vector_set=nothing, scenario=i)
+
+end
+
+function test_single(test_index)
+
+    inputs_folder = joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+
+    configure_parallel_workers!(settings)
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+    outputs_cvar, vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "New_Setup"), summary_folder; budget_multiplier = 1.05, vector_set = nothing, summary_name = "new_setup", Eval_SPs = nothing)
 
 end
 
