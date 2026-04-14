@@ -536,8 +536,8 @@ function test_stability_della(test_index)
     
     distribution_types =[["Gaussian", "Gaussian", "Gaussian"],["Gaussian", "Gaussian", "Gaussian"],["Gaussian", "Gaussian", "Gaussian"],["Gaussian", "Gaussian", "Gaussian"]] #[["Gaussian", "Gaussian", "Gaussian"], ["LogNormal", "LogNormal", "LogNormal"], ["Gaussian", "LogNormal", "Gaussian"], ["LogNormal", "Gaussian", "LogNormal"]]
     dist_names = ["Gaussian", "Gaussian_MeansWrong", "Gaussian_StdWrong", "Gaussian_BothWrong"]
-    m_dev = 1.0
-    s_dev = 1.0
+    m_dev = 0.5
+    s_dev = 0.5
     m = 5.5
     stdev = 2.0
     means = [[m for i in 1:3],[m + m_dev for i in 1:3],[m for i in 1:3], [m + m_dev for i in 1:3]]
