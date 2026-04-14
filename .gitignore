@@ -10,4 +10,4 @@ Thumbs.db
 /outputs/
 *.out
 *.err
-/experiments/Della_experiments/*
+/experiments/Della_experiments/
