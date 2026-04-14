@@ -301,6 +301,8 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
         ev_op_base = results["Expected Value"] # model_output["Expected operating cost"] Base expected operating cost for single scenario
         co2 = collect(SPs_output[s,f,k]["Emissions"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) #model_output["Emissions"]
         co2_exp = sum(P_s[s]*P_f[f]*P_k[k]*co2[s,f,k] for s in 1:S, f in 1:F, k in 1:K)
+        prices = collect(SPs_output[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])
+        prices_exp = sum(P_s[s]*P_f[f]*P_k[k]*prices[s,f,k] for s in 1:S, f in 1:F, k in 1:K)
 
         # Eval SP expressions
          # Total system cost in x$
@@ -311,10 +313,11 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
         cvar_op_eval = results["CVaR_Eval"]
         co2_eval = collect(eval_SPs[s,f,k]["Emissions"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1]) #model_output["Emissions"]
         co2_exp_eval = sum(P_s_eval[s]*P_f_eval[f]*P_k_eval[k]*co2_eval[s,f,k] for s in 1:S, f in 1:F, k in 1:K) #model_output["Emissions expected"]
-        
+        prices_eval = collect(eval_SPs[s,f,k]["Power price"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1])
+        prices_exp_eval = sum(P_s_eval[s]*P_f_eval[f]*P_k_eval[k]*sum(prices_eval[s,f,k]) for s in 1:S, f in 1:F, k in 1:K)/length(prices_eval[1,1,1]) #model_output["Expected Power price"]
 
         # Make dfs
-        df_syscost = DataFrame(Investment_Cost = MP_output["Inv_cost"], System_Cost_EV_Base = system_cost_ev_base, System_Cost_CVaR_Base = system_cost_cvar_base, CVaR_OpCost_Base = cvar_op_base, EV_OpCost_Base = ev_op_base, System_Cost_EV_Eval = system_cost_eval, System_Cost_CVaR_Eval = sys_cost_risk_eval, CVaR_OpCost_Eval = cvar_op_eval, EV_OpCost_Eval = exp_op_cost_eval)
+        df_syscost = DataFrame(Investment_Cost = MP_output["Inv_cost"], System_Cost_EV_Base = system_cost_ev_base, System_Cost_CVaR_Base = system_cost_cvar_base, CVaR_OpCost_Base = cvar_op_base, EV_OpCost_Base = ev_op_base, System_Cost_EV_Eval = system_cost_eval, System_Cost_CVaR_Eval = sys_cost_risk_eval, CVaR_OpCost_Eval = cvar_op_eval, EV_OpCost_Eval = exp_op_cost_eval, Expected_Power_Price_Eval = prices_exp_eval, Expected_Power_Price_Base = prices_exp)
         df_emissions = DataFrame(Expected_CO2_Base = co2_exp, Expected_CO2_Eval = co2_exp_eval)
         if settings["Write all scenarios flag"]
             for s in 1:size(P_s_eval)[1]
@@ -326,6 +329,11 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
                         # Collect operating cost
                         col_name_OpCost = string("OperatingCostD",string(s),"F",string(f),"W",string(k))
                         insertcols!(df_syscost, col_name_OpCost => eval_SPs[s,f,k]["SP objective"])
+
+                        # Collect power prices
+                        col_name_PowerPrice = string("avgPowerPriceD",string(s),"F",string(f),"W",string(k))
+                        insertcols!(df_syscost, col_name_PowerPrice => sum(eval_SPs[s,f,k]["Power price"])/length(eval_SPs[1,1,1]["Power price"]))
+
                     end
                 end
             end
@@ -338,11 +346,14 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
         exp_op_cost = results["Expected Value"]
         sys_cost_risk = MP_output["Inv_cost"] + Ω*exp_op_cost + (1-Ω)*results["CVaR"] #model_output["Investment cost"] + Ω*exp_op_cost + (1-Ω)*cvar
         cvar_op = results["CVaR"]
+        prices = collect(SPs_output[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])
+        prices_exp = sum(P_s[s]*P_f[f]*P_k[k]*sum(prices[s,f,k]) for s in 1:S, f in 1:F, k in 1:K)/length(prices[1,1,1]) #model_output["Expected Power price"]
+   
         
        
         co2 = collect(SPs_output[s,f,k]["Emissions"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) #model_output["Emissions"]
         co2_exp = sum(P_s[s]*P_f[f]*P_k[k]*co2[s,f,k] for s in 1:S, f in 1:F, k in 1:K) #model_output["Emissions expected"]
-        df_syscost = DataFrame(Investment_Cost = MP_output["Inv_cost"], EV_SystemCost = system_cost, CVaR_SystemCost= sys_cost_risk, CVaR_OpCost = cvar_op, EV_OpCost = exp_op_cost)
+        df_syscost = DataFrame(Investment_Cost = MP_output["Inv_cost"], EV_SystemCost = system_cost, CVaR_SystemCost= sys_cost_risk, CVaR_OpCost = cvar_op, EV_OpCost = exp_op_cost, Expected_Power_Price = prices_exp)
         df_emissions = DataFrame(Expected_emissions = co2_exp)
         if settings["Write all scenarios flag"]
             for s in 1:size(P_s)[1]
@@ -354,6 +365,9 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
                         # Collect operating cost
                         col_name_OpCost = string("OperatingCostD",string(s),"F",string(f),"W",string(k))
                         insertcols!(df_syscost, col_name_OpCost => SPs_output[s,f,k]["SP objective"])
+                        # Collect power prices
+                        col_name_PowerPrice = string("avgPowerPriceD",string(s),"F",string(f),"W",string(k))
+                        insertcols!(df_syscost, col_name_PowerPrice => sum(SPs_output[s,f,k]["Power price"])/length(SPs_output[1,1,1]["Power price"]))
                     end
                 end
             end
