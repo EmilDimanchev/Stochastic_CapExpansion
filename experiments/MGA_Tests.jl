@@ -142,6 +142,79 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
     return outputs, vectors
 end
 
+function run_stochastic_exploration_adj_exp(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing)
+
+    #configure_parallel_workers!(settings)
+
+      # Result containers
+    results_cap = []
+    results_syscost = []
+    results_emissions = []
+    run_labels = []
+    gaps = []
+
+    # Model Settings
+    iterations = settings["Iterations"]
+    risk_aversion_weight = settings["Risk aversion weight"] ### Currently set consistently across runs and ahead of time
+    value_at_risk_percent = settings["Value-at-Risk percent"] ### Currently set consistently across runs and ahead of time
+    # Create and set expected value model
+    settings["Risk aversion flag"] = true
+
+    MP = build_planning_model(inputs, settings)
+
+    # Base Runs
+    settings["Risk aversion flag"] = true
+    set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk_aversion_weight)
+    output_cvar = benders_algorithm(inputs, settings, MP, SPs, "System_Weighted_CVaR"; Eval_SPs = Eval_SPs)
+    log_result_memory!("System_Weighted_CVaR output", output_cvar)
+    gap_cvar = output_cvar["Gaps"]
+    push!(run_labels, "System_Weighted_CVaR")
+    push!(gaps, gap_cvar)
+     # Write results
+    results_destination = joinpath(results_folder,"System_Weighted_CVaR")
+    df_cap, df_syscost, df_emissions = write_results_benders(output_cvar, inputs, settings, results_destination)
+    release_heavy_payload!(output_cvar)
+    push!(results_cap, df_cap)
+    push!(results_syscost, df_syscost)
+    push!(results_emissions, df_emissions)
+    @info("System_Weighted_CVaR solution has investment cost of ", output_cvar["MP"]["Inv_cost"])
+    @info("Expected value system cost of " * "System_Weighted_CVaR" * " solution: $(output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])")
+    @info("Risk adjusted system cost of " * "System_Weighted_CVaR" * " solution: $((1-risk_aversion_weight)*output_cvar["CVaR"] + risk_aversion_weight*output_cvar["Expected Value"]+ output_cvar["MP"]["Inv_cost"])")
+
+
+
+    if settings["Capacity Exploration"]
+        budgets = Dict()
+        # Set budgets? ------- budget set = set with budgets same percent greater than least cost solution for each metric
+        #budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["CVaR"])/settings["Scaling factor cost"]), "CVaR", budgets)
+        budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/settings["Scaling factor cost"])*(budget_multiplier), "System_Expected", budgets)
+        cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x]), settings["Vector Type"], settings)
+        @info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
+        for iteration in 1:iterations
+            set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
+            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs)
+            log_result_memory!("Random_"*string(iteration)*" output", output_random)
+            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            gap = output_random["Gaps"]
+            push!(run_labels, "Random_"*string(iteration))
+            push!(gaps, gap)
+            results_destination = joinpath(results_folder,"Random_"*string(iteration))
+            df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
+            release_heavy_payload!(output_random)
+            push!(results_cap, df_cap)
+            push!(results_syscost, df_syscost)
+            push!(results_emissions, df_emissions)
+            if length(cuts_to_keep) < settings["Cuts retained"]
+                push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
+            end
+        end
+        #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
+        write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name)
+    end
+    return vectors
+end
+
 function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing)
 
     #configure_parallel_workers!(settings)
@@ -453,6 +526,8 @@ function test_single_della(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
     vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "New_Setup"), summary_folder; budget_multiplier = 1.05, vector_set = nothing, summary_name = "new_setup", Eval_SPs = nothing)
+
+    vectors = run_stochastic_exploration_adj_exp(SPs, inputs, settings, joinpath(results_folder, "Adj_Exp"), summary_folder; budget_multiplier = 1.05, vector_set = vectors, summary_name = "Adj_Exp", Eval_SPs = SPs)
 
 end
 
