@@ -302,7 +302,7 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
         co2 = collect(SPs_output[s,f,k]["Emissions"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) #model_output["Emissions"]
         co2_exp = sum(P_s[s]*P_f[f]*P_k[k]*co2[s,f,k] for s in 1:S, f in 1:F, k in 1:K)
         prices = collect(SPs_output[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])
-        prices_exp = sum(P_s[s]*P_f[f]*P_k[k]*prices[s,f,k] for s in 1:S, f in 1:F, k in 1:K)
+        prices_exp = sum(P_s[s]*P_f[f]*P_k[k]*sum(prices[s,f,k]) for s in 1:S, f in 1:F, k in 1:K)
 
         # Eval SP expressions
          # Total system cost in x$
