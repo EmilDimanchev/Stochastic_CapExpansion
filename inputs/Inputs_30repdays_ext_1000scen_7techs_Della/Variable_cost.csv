@@ -1,0 +1,7 @@
+﻿Resources,FuelPrice-Base,FuelPrice-1,FuelPrice-2,FuelPrice-3,FuelPrice-4,FuelPrice-5,FuelPrice-6,FuelPrice-7,FuelPrice-8,FuelPrice-9,FuelPrice-10
+Gas,30,24,25.33333333,26.66666667,28,29.33333333,30.66666667,32,33.33333333,34.66666667,36
+Gas turbine,35,29,30.33333333,31.66666667,33,34.33333333,35.66666667,37,38.33333333,39.66666667,41
+Wind,0,0,0,0,0,0,0,0,0,0,0
+Solar,0,0,0,0,0,0,0,0,0,0,0
+Nuclear,2,2,2,2,2,2,2,2,2,2,2
+Coal,15,15,15,15,15,15,15,15,15,15,15
