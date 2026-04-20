@@ -269,7 +269,7 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     f = scenario_index[2]
     k = scenario_index[3]
 
-    demand_shift_weather_scenario = inputs["Demand shift weather"][:,k]
+    demand_shift_weather_scenario = inputs["Demand shift weather"][:,:,k]
     variable_costs_scenario = inputs["Variable costs"][:,f]
     availability_scenario = inputs["Generation availability"][:,:,k]
     period_weights_scenario = inputs["Period weights"][:,k]
@@ -324,6 +324,8 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     # Representative periods
     n_periods = inputs["Number of representative periods"]
     t_weights = period_weights_scenario
+    zone_map = inputs["Zone map"]
+    res_zone_map = inputs["Resource zone map"]
 
     # ~~~
     # Build model
@@ -335,6 +337,8 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     O =  inputs["Number of storage resources"]
     storage_flag = O > 0
     R = G + O
+    L = inputs["Number of lines"]
+    Z = inputs["Number of zones"]
 
     # ~~~
     # Parameters
@@ -346,9 +350,8 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     demand_add = demand_adder_scenario./scaling_factor_demand
     demand_shift_weather = demand_shift_weather_scenario./scaling_factor_demand
     cost_var = variable_costs_scenario./scaling_factor_cost
-
     # Demand
-    @expression(ED, demand[t in 1:T], demand_base[t] + demand_shift_weather[t] + demand_add)
+    @expression(ED, demand[t in 1:T, z in 1:Z], demand_base[t, z] + demand_shift_weather[t, z] + demand_add)
     max_nse = settings["Max nse"] # percentage of demand that can be curtailed in each segments
     nse_segs = length(max_nse)
     price_nse = settings["Cost of nonserved energy"]./scaling_factor_cost
@@ -361,8 +364,8 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     @variable(ED, g[r in 1:G, t in 1:T] >= 0) # MWh
     @variable(ED, x[r in 1:R] in Parameter(0.0)) # Capacity, MW
     # Non-servED energy
-    @variable(ED, y[seg in 1:nse_segs, t in 1:T] >= 0) # $/MWh
-    @expression(ED, cost_nse[t in 1:T], sum(price_nse[seg]*y[seg,t] for seg in 1:nse_segs))
+    @variable(ED, y[seg in 1:nse_segs, t in 1:T, z in 1:Z] >= 0) # $/MWh
+    @expression(ED, cost_nse[t in 1:T, z in 1:Z], sum(price_nse[seg]*y[seg,t,z] for seg in 1:nse_segs))
 
     if storage_flag
         @variable(ED, z_dch[t in 1:T] >= 0)
@@ -397,27 +400,41 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
 
     # Load shedding
     # Maximum non served energy (primal feasibility)
-    @constraint(ED, max_load_shedding[seg in 1:nse_segs,t in 1:T], max_nse[seg]*demand[t] - y[seg,t] >= 0)
-    @expression(ED, total_nse[t in 1:T], sum(y[seg,t] for seg in 1:nse_segs))
+    @constraint(ED, max_load_shedding[seg in 1:nse_segs,t in 1:T, z in 1:Z], max_nse[seg]*demand[t,z] - y[seg,t,z] >= 0)
+    @expression(ED, total_nse[t in 1:T, z in 1:Z], sum(y[seg,t,z] for seg in 1:nse_segs))
     # Consumer surplus including demand shock for reporting purposes
-    @expression(ED, served_demand[seg in 1:nse_segs, t in 1:T], max_nse[seg]*demand[t] - y[seg,t])
-    @expression(ED, total_benefit[t in 1:T], price_nse[1]*demand_base[t] + sum(price_nse[seg]*served_demand[seg,t] for seg in 2:nse_segs))
+    @expression(ED, served_demand[seg in 1:nse_segs, t in 1:T, z in 1:Z], max_nse[seg]*demand[t,z] - y[seg,t,z])
+    @expression(ED, total_benefit[t in 1:T, z in 1:Z], price_nse[1]*demand_base[t,z] + sum(price_nse[seg]*served_demand[seg,t,z] for seg in 2:nse_segs))
 
     # Capacity limit on generation
     @constraint(ED, capacity_limit[r in 1:G, t in 1:T], g[r,t] <= x[r]*availability[t,r])
+    if Z > 1
+        @variable(ED, flow[t in 1:T, l in 1:L])
+        @constraint(ED, transmission_limit[t in 1:T, l in 1:L], flow[t,l] <= inputs["Line capacities"][l]/scaling_factor_demand)
+        @constraint(ED, transmission_limit_negative[t in 1:T, l in 1:L], flow[t,l] >= -inputs["Line capacities"][l]/scaling_factor_demand)
+    end
+
 
     # Power balance constraint
+    @expression(ED, supply[t in 1:T, z in 1:Z], sum(g[r,t]*res_zone_map[r,z] for r in 1:G))
     if storage_flag
-        @constraint(ED, power_balance[t in 1:T], sum(g[r,t] for r in 1:G) + total_nse[t] + z_dch[t] - z_ch[t] - demand[t] == 0)
-    else
-        @constraint(ED, power_balance[t in 1:T], sum(g[r,t] for r in 1:G) + total_nse[t] - demand[t] == 0)
+        for t in 1:T, z in 1:Z
+            add_to_expression!(supply[t,z], res_zone_map[G+1,z]*(z_dch[t] - z_ch[t]))
+        end
     end
+    if Z > 1
+        for t in 1:T, z in 1:Z
+            add_to_expression!(supply[t,z], sum(flow[t,l]*zone_map[l,z] for l in 1:L))
+        end
+    end
+    @constraint(ED, power_balance[t in 1:T, z in 1:Z], supply[t,z] + total_nse[t,z] - demand[t,z] == 0)
+
 
     # ~~~
     # Objective function
     # ~~~ 
 
-    @objective(ED, Min, sum(t_weights[t]*g[r,t]*cost_var[r] for r in 1:G, t in 1:T) + sum(t_weights[t]*cost_nse[t] for t in 1:T))
+    @objective(ED, Min, sum(t_weights[t]*g[r,t]*cost_var[r] for r in 1:G, t in 1:T) + sum(t_weights[t]*cost_nse[t,z] for t in 1:T, z in 1:Z))
 
     return ED
 end
@@ -505,6 +522,8 @@ function write_subproblem_results(ED::Model, inputs, settings; minimal_payload::
     G = inputs["Number of generation resources"]
     O =  inputs["Number of storage resources"]
     storage_flag = O > 0
+    L = inputs["Number of lines"]
+    Z = inputs["Number of zones"]
 
 
     max_nse = settings["Max nse"] # percentage of demand that can be curtailed in each segments
@@ -519,7 +538,7 @@ function write_subproblem_results(ED::Model, inputs, settings; minimal_payload::
 
     output["Power price"] = dual.(ED[:power_balance]).*settings["Scaling factor cost"]./t_weights
     nse_dual = dual.(ED[:max_load_shedding]).*settings["Scaling factor cost"]
-    output["Max NSE dual"] = sum(max_nse[seg]*ED[:demand][t]*nse_dual[seg,t] for seg in 1:nse_segs, t in 1:T)
+    #output["Max NSE dual"] = sum(max_nse[seg]*ED[:demand][t]*nse_dual[seg,t] for seg in 1:nse_segs, t in 1:T)
     generation = value.(ED[:g])
     output["Emissions"] = sum(t_weights[t]*generation[r,t]*co2_factors[r] for r in 1:G, t in 1:T)
     output["Load shedding"] = value.(ED[:total_nse])
