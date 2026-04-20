@@ -1,0 +1,13 @@
+Resources,Zone,Index_ID,CES_eligible,Contracted,Storage,Investment cost,Emissions_ton_per_MWh,Capacity_UB
+Gas-z1,1,1,0,1,0,40721,0.4,200000
+Gas-z2,2,1,0,1,0,41700,0.4,200000
+Gas turbine-z1,1,2,0,1,0,30000,0.45,200000
+Gas turbine-z2,2,2,0,1,0,29000,0.45,200000
+Wind-z1,1,3,1,1,0,42417,0,200000
+Wind-z2,2,3,1,1,0,45000,0,200000
+Solar-z1,1,4,1,1,0,33577,0,200000
+Solar-z2,2,4,1,1,0,34500,0,200000
+Nuclear-z1,1,5,0,1,0,150000,0,200000
+Nuclear-z2,2,5,0,1,0,148000,0,200000
+Coal-z1,1,6,0,1,0,100000,0.8,200000
+Coal-z2,2,6,0,1,0,98000,0.8,200000

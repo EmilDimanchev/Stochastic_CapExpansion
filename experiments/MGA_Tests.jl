@@ -509,7 +509,7 @@ end
 
 function test_single_della(test_index)
 
-    inputs_folder = "/home/ml6802/Stochastic_CapExpansion/inputs/Inputs_30repdays_ext_1000scen_7techs_Della"#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    inputs_folder = "/home/ml6802/Stochastic_CapExpansion/inputs/Inputs_30d_1000scen_7tech_2z_Della"#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
     results_folder = "/home/ml6802/Stochastic_CapExpansion/outputs/Test_"*string(test_index)
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -527,7 +527,7 @@ function test_single_della(test_index)
     SPs = build_all_subproblems(inputs, settings)
     vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "New_Setup"), summary_folder; budget_multiplier = 1.05, vector_set = nothing, summary_name = "new_setup", Eval_SPs = nothing)
 
-    vectors = run_stochastic_exploration_adj_exp(SPs, inputs, settings, joinpath(results_folder, "Adj_Exp"), summary_folder; budget_multiplier = 1.05, vector_set = vectors, summary_name = "Adj_Exp", Eval_SPs = SPs)
+    #vectors = run_stochastic_exploration_adj_exp(SPs, inputs, settings, joinpath(results_folder, "Adj_Exp"), summary_folder; budget_multiplier = 1.05, vector_set = vectors, summary_name = "Adj_Exp", Eval_SPs = SPs)
 
 end
 
@@ -596,7 +596,7 @@ function test_stability_laptop(test_index)
 end
 
 function test_stability_della(test_index)
-    inputs_folder = "/home/ml6802/Stochastic_CapExpansion/inputs/Inputs_30repdays_ext_1000scen_7techs_Della"#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    inputs_folder = "/home/ml6802/Stochastic_CapExpansion/inputs/Inputs_30d_1000scen_7tech_2z_Della"#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
     results_folder = "/home/ml6802/Stochastic_CapExpansion/outputs/Test_"*string(test_index) #joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -625,7 +625,7 @@ function test_stability_della(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
 
-    #_, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat", Eval_SPs = SPs)
+    #_, vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "Flat"), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = "Flat", Eval_SPs = SPs)
 
     # Set new probabilities in inputs and run again
     println("************* Beginning run with new probabilities - ", dist_names[1], " **************")
@@ -640,7 +640,7 @@ function test_stability_della(test_index)
     inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
     
 
-    _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[1]), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = dist_names[1], Eval_SPs = SPs)
+    _, vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, dist_names[1]), summary_folder; budget_multiplier=1.10, vector_set=nothing, summary_name = dist_names[1], Eval_SPs = SPs)
 
     
     for i in 2:length(dist_names)
@@ -651,7 +651,7 @@ function test_stability_della(test_index)
         inputs["Gas price scenario probabilities"] = new_probabilities[2]
         #inputs["Weather scenario probabilities"] = new_probabilities[3]
 
-        _, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, dist_names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = dist_names[i], Eval_SPs = SPs)
+        _, vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, dist_names[i]), summary_folder; budget_multiplier=1.10, vector_set=vectors, summary_name = dist_names[i], Eval_SPs = SPs)
 
     end
 
