@@ -544,7 +544,7 @@ function write_subproblem_results(ED::Model, inputs, settings; minimal_payload::
     output["Load shedding"] = value.(ED[:total_nse])
     sd = value.(ED[:served_demand]).*settings["Scaling factor demand"]
     tb = value.(ED[:total_benefit]).*(settings["Scaling factor cost"]*settings["Scaling factor demand"])
-    output["Consumer surplus"] = sum(t_weights[t]*(tb[t] - output["Power price"][t]*sum(sd[seg,t] for seg in 1:nse_segs)) for t in 1:T)
+    #output["Consumer surplus"] = sum(t_weights[t]*(tb[t] - output["Power price"][t]*sum(sd[seg,t] for seg in 1:nse_segs)) for t in 1:T)
     # Time-series outputs are large; only materialize when full scenario writes are requested.
     if settings["Write all scenarios flag"]
         output["Generation"] = generation

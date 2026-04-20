@@ -253,6 +253,8 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
     G = inputs["Number of generation resources"]
     O =  inputs["Number of storage resources"]
     R = G + O 
+    L = inputs["Number of lines"]
+    Z = inputs["Number of zones"]
 
 
     #if storage_flag
@@ -379,7 +381,6 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
         shed = eval_SPs == [] ? collect(SPs_output[s,f,k]["Load shedding"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Load shedding"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1])
         gen = eval_SPs == [] ? collect(SPs_output[s,f,k]["Generation"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Generation"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1])
         price = eval_SPs == [] ? collect(SPs_output[s,f,k]["Power price"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1]) : collect(eval_SPs[s,f,k]["Power price"] for s in 1:size(P_s_eval)[1], f in 1:size(P_f_eval)[1], k in 1:size(P_k_eval)[1])
-
         # Collect scenario results
         for s in 1:S
             for f in 1:F
@@ -387,37 +388,40 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
                     # Generation
                     col_names = [string(i,"_D",string(s),"F",string(f),"W",string(k)) for i in resources]
                     df_gen = hcat(df_gen, DataFrame(transpose(gen[s,f,k]), col_names))
-                    # Power price
-                    col_name = string("D",string(s),"F",string(f),"W",string(k))
-                    insertcols!(df_price, col_name => price[s,f,k])
+                    for z in 1:Z
+                        
+                        # Power price
+                        col_name = string("D",string(s),"F",string(f),"W",string(k), "Z", string(z))
+                        insertcols!(df_price, col_name => price[s,f,k][:,z])
 
-                    # Average system cost by scenario
-                    #col_name_syscost = string("Average_System_Cost_", "Demand-",string(s),"_FuelPrice-",string(f),"_Weather-",string(k))
-                    #insertcols!(df_syscost, col_name_syscost => avg_sys_cost_scenarios[s,f,k])
+                        # Average system cost by scenario
+                        #col_name_syscost = string("Average_System_Cost_", "Demand-",string(s),"_FuelPrice-",string(f),"_Weather-",string(k))
+                        #insertcols!(df_syscost, col_name_syscost => avg_sys_cost_scenarios[s,f,k])
 
-                    # Collect CO2 emissions
-                    #insertcols!(df_co2_all, col_name => model_output["Emissions"][s,f,k])
-                    # Collect operating cost
-                    #insertcols!(df_oper_all, col_name => model_output["Operating cost"][s,f,k])
-                    
-                    #if !model_output["Risk sharing flag"]
-                    #   insertcols!(df_theta, col_name => theta[:,s,f,k])
-                    #else
-                    #    insertcols!(df_theta, col_name => theta[s,f,k])
-                    #end
-                    
-                    # Battery operation
-                    #if storage_flag
-                    #    insertcols!(df_bat, col_name => net_battery[:,s,f,k])
-                    #end
-                    # Load shedding
-                    insertcols!(df_nse, col_name => shed[s,f,k])
-                    
-                    #if !model_output["Risk sharing flag"]
-                    #    insertcols!(df_u, col_name => model_output["CVaR Loss"][:,s,f,k])
-                    #else
-                    #    insertcols!(df_u, col_name => model_output["CVaR Loss"][s,f,k])
-                    #end
+                        # Collect CO2 emissions
+                        #insertcols!(df_co2_all, col_name => model_output["Emissions"][s,f,k])
+                        # Collect operating cost
+                        #insertcols!(df_oper_all, col_name => model_output["Operating cost"][s,f,k])
+                        
+                        #if !model_output["Risk sharing flag"]
+                        #   insertcols!(df_theta, col_name => theta[:,s,f,k])
+                        #else
+                        #    insertcols!(df_theta, col_name => theta[s,f,k])
+                        #end
+                        
+                        # Battery operation
+                        #if storage_flag
+                        #    insertcols!(df_bat, col_name => net_battery[:,s,f,k])
+                        #end
+                        # Load shedding
+                        insertcols!(df_nse, col_name => shed[s,f,k][:,z])
+                        
+                        #if !model_output["Risk sharing flag"]
+                        #    insertcols!(df_u, col_name => model_output["CVaR Loss"][:,s,f,k])
+                        #else
+                        #    insertcols!(df_u, col_name => model_output["CVaR Loss"][s,f,k])
+                        #end
+                    end
                 end
             end
         end
