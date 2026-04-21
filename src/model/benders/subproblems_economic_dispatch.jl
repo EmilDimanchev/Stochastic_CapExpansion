@@ -430,6 +430,8 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     @constraint(ED, power_balance[t in 1:T, z in 1:Z], supply[t,z] + total_nse[t,z] - demand[t,z] == 0)
 
 
+    @expression(ED, cost_by_zone[z in 1:Z], sum(g[r,t]*res_zone_map[r,z]*cost_var[r] for r in 1:G, t in 1:T) + sum(cost_nse[t,z] for t in 1:T))
+    @expression(ED, emissions_by_zone[z in 1:Z], sum(t_weights[t]*sum(g[r,t]*res_zone_map[r,z]*co2_factors[r] for r in 1:G) for t in 1:T))
     # ~~~
     # Objective function
     # ~~~ 
@@ -535,7 +537,8 @@ function write_subproblem_results(ED::Model, inputs, settings; minimal_payload::
     if minimal_payload
         return output
     end
-
+    output["Cost by zone"] = value.(ED[:cost_by_zone]).*settings["Scaling factor cost"]
+    output["Emissions by zone"] = value.(ED[:emissions_by_zone])
     output["Power price"] = dual.(ED[:power_balance]).*settings["Scaling factor cost"]./t_weights
     nse_dual = dual.(ED[:max_load_shedding]).*settings["Scaling factor cost"]
     #output["Max NSE dual"] = sum(max_nse[seg]*ED[:demand][t]*nse_dual[seg,t] for seg in 1:nse_segs, t in 1:T)

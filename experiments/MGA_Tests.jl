@@ -501,9 +501,16 @@ function test_single_laptop(test_index)
 
     configure_parallel_workers!(settings)
 
+       # Set evaluation probabilities
+    inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
+    inputs["Full Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
+    inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
+    
+
+
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
-    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "New_Setup"), summary_folder; budget_multiplier = 1.05, vector_set = nothing, summary_name = "new_setup", Eval_SPs = nothing)
+    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "New_Setup"), summary_folder; budget_multiplier = 1.05, vector_set = nothing, summary_name = "new_setup", Eval_SPs = SPs)
 
 end
 

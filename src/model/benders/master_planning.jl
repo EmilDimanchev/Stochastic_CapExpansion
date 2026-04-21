@@ -156,6 +156,7 @@ function build_planning_model(inputs, settings)
     G = inputs["Number of generation resources"]
     O =  inputs["Number of storage resources"]
     R = G + O
+    Z = inputs["Number of zones"]
 
     Ω = settings["Risk aversion weight"]
     x_ub = 1e6
@@ -179,6 +180,8 @@ function build_planning_model(inputs, settings)
     if risk_aversion_flag
         add_risk_terms!(MP, inputs, settings)
     end
+
+    @expression(MP, inv_cost_by_zone[z in 1:Z], sum(x[r]*cost_inv[r]*inputs["Resource zone map"][r,z] for r in 1:R))
 
     # ~~~
     # Objective function
@@ -327,7 +330,7 @@ function write_outputs(MP, settings)
     output["Inv_cost"] = value(MP[:inv_cost])*scaling_factor_cost
     output["Expected alpha"] = value(MP[:expected_alpha])*scaling_factor_cost
     output["Expected System Cost"] = value.(MP[:exp_sys_cost])*scaling_factor_cost
-
+    output["Inv cost by zone"] = value.(MP[:inv_cost_by_zone]).*scaling_factor_cost
     # Record results from the linearization or not
     if settings["Risk aversion flag"]
         output["CVaR Loss"] = value.(MP[:u]).*scaling_factor_cost
