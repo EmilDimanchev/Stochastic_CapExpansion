@@ -296,7 +296,8 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
             end
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
-        write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name)
+
+        write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; remake_labels = mapping)
     end
     return vectors
 end
@@ -713,7 +714,7 @@ end
 
 function mapping_test_laptop(test_index)
 
-     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -727,16 +728,32 @@ function mapping_test_laptop(test_index)
 
     configure_parallel_workers!(settings)
 
-       # Set evaluation probabilities
-    inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
-    inputs["Full Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
-    inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
-    
-
-
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
-    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = SPs, mapping=true)
+    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping = true)
+
+
+end
+
+function mapping_test_della(test_index)
+
+     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+
+    configure_parallel_workers!(settings)
+    
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping=true)
 
 
 end

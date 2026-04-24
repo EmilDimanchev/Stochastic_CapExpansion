@@ -517,7 +517,7 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
 
 end
 
-function make_results_mapping_dfs(MP_output, SPs_output, cvar, ev, inputs::Dict, settings::Dict;  results_folder::String = nothing,budgets = nothing)
+function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs::Dict, settings::Dict)
 
  
     # This function is for writing results from the Benders algorithm, which has a different structure than the monolithic model output
@@ -592,7 +592,7 @@ function make_results_mapping_dfs(MP_output, SPs_output, cvar, ev, inputs::Dict,
     #end
 
     # Collect results
-    df_cap = DataFrame(Resource = all_resources, Capacity = cap)
+    df_cap = DataFrame(cap', columns=all_resources)
     # VaR
     if settings["Risk sharing flag"]
         value_at_risk = MP_output["VaR"] # VaR is a vector indexed by technology
@@ -847,11 +847,22 @@ function make_results_mapping_dfs(MP_output, SPs_output, cvar, ev, inputs::Dict,
 
 end
 
+function remove_undefs(x)
+    x_new = []
+    for i in eachindex(x)
+        if !isassigned(x, i)
+            break
+        end
+        push!(x_new, x[i])
+    end
+    return x_new
+end
+
 function write_mapping_results(results::Dict, inputs, settings)
-    mp_by_iteration = results["All MP outputs per iteration"]
-    sp_by_iteration = results["All SP outputs per iteration"]
-    cvars = results["CVaR_hist"]
-    evs = results["Expected Value hist"]
+    mp_by_iteration = remove_undefs(results["All MP outputs per iteration"])
+    sp_by_iteration = remove_undefs(results["All SP outputs per iteration"])
+    cvars = remove_undefs(results["CVaR_hist"])
+    evs = remove_undefs(results["Expected Value hist"])
 
     n_iterations = length(mp_by_iteration)
 
@@ -859,6 +870,7 @@ function write_mapping_results(results::Dict, inputs, settings)
     sp_output = sp_by_iteration[1]
     cvar = cvars[1]
     ev = evs[1]
+    
     df_cap, df_syscost, df_emissions = make_results_mapping_dfs(mp_output, sp_output, cvar, ev, inputs, settings)
 
     for i in 2:n_iterations
@@ -866,7 +878,7 @@ function write_mapping_results(results::Dict, inputs, settings)
         sp_output = sp_by_iteration[i]
         cvar = cvars[i]
         ev = evs[i]
-        temp_df_cap, temp_df_syscost, temp_df_emissions = write_results_mapping(mp_output, sp_output, cvar, ev, inputs, settings)
+        temp_df_cap, temp_df_syscost, temp_df_emissions = make_results_mapping_dfs(mp_output, sp_output, cvar, ev, inputs, settings)
         append!(df_cap, temp_df_cap)
         append!(df_syscost, temp_df_syscost)
         append!(df_emissions, temp_df_emissions)
@@ -883,15 +895,28 @@ function write_gaps!(gaps::AbstractVector, labels::AbstractVector,results_folder
     CSV.write(joinpath(results_folder, "Gaps.csv"), df_gaps)
 end
 
+function find_tot_length(dfs::AbstractVector)
+    total_length = 0
+    for df in dfs
+        total_length += size(df)[1] # count rows in each df
+    end
+    return total_length
+end
 
-function write_exploration_results!(dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_emissions::AbstractVector, results_folder::String, labels::AbstractVector = [], scenario::String = "")
+
+function write_exploration_results!(dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_emissions::AbstractVector, results_folder::String, labels::AbstractVector = [], scenario::String = ""; remake_labels::Bool = false)
 
     if !isdir(results_folder)
         mkpath(results_folder)
     end
 
     names = gather_names(dfs_cap[1], dfs_syscost[1], dfs_emissions[1], length(labels) > 0)
-    data = Array{Any,2}(undef, length(dfs_cap), length(names))
+    println(dfs_cap[1])
+    total_length = find_tot_length(dfs_cap)
+    data = Array{Any,2}(undef, total_length, length(names))
+    if remake_labels
+        labels = ["Sample "*string(i) for i in 1:total_length]
+    end
     data = gather_data(data, dfs_cap, dfs_syscost, dfs_emissions, labels)
     df_exploration = DataFrame(data, names)
 
