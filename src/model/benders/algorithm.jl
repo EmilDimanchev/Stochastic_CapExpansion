@@ -158,7 +158,7 @@ end
 
 ####TODO - modify containers to be preallocated sizes to avoid memory over runs from push! and append!
 
-function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing)
+function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing, mapping = false)
     # Iterations
     J_max = 150
 
@@ -205,6 +205,14 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     unst_LB = -Inf
 
     gaps = []
+    all_outputs_sp = Vector{Dict}(undef, J_max)
+    cvars = Vector{Any}(undef, J_max)
+    evs = Vector{Any}(undef, J_max)
+    all_outputs_mp = Vector{Dict}(undef, J_max)
+
+    if mapping
+        @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
+    end
 
     
     output_mp = run_planning_model(MP, settings)
@@ -219,6 +227,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     end
     capacity_mix_initial = output_mp["Capacity"]
     push!(capacity_mix, capacity_mix_initial)
+    push!(all_outputs_mp, output_mp)
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # Algorithm
@@ -246,6 +255,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     
             
         outputs_sp = run_all_subproblems(SPs, inputs, settings, capacity_mix[j])
+        if mapping
+            push!(all_outputs_sp, outputs_sp)
+        end
 
         sp_all_results = outputs_sp
 
@@ -264,6 +276,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         if all(size(SPs) .>= (1,1,1))
             cvar_estimate = compute_cvar(sp_obj_per_iter, P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
         end
+        push!(cvars, cvar_estimate)
+        push!(evs, expected_value)
    
         if risk_aversion_flag
             UB = risk_aversion_weight*expected_value + (1-risk_aversion_weight)*cvar_estimate + output_mp["Inv_cost"]/settings["Scaling factor cost"]
@@ -320,6 +334,12 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             results["LB_hist"] = LB_hist
             results["UB_hist"] = UB_hist
             results["Gaps"] = gaps
+            if mapping
+                results["CVaR_hist"] = cvars
+                results["Expected Value hist"] = evs
+                results["All SP outputs per iteration"] = all_outputs_sp
+                results["All MP outputs per iteration"] = all_outputs_mp
+            end
 
             # Evaluate MP sol on Eval SPs if needed
             if Eval_SPs !== nothing
@@ -374,6 +394,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 "LB_hist" => LB_hist,
                 "UB_hist" => UB_hist,
             ])
+            push!(all_outputs_mp, output_mp)
             
         end
     end
@@ -432,7 +453,7 @@ function compute_cvar(SP_obj, P, P_f, P_k, VaR_Percent)
     return tail_weighted_sum / alpha
 end
 
-function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing)
+function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing, mapping = false)
     # Iterations 
     J_max = 150
 
@@ -482,6 +503,14 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     expected_value = 0.0
     cvar_estimate = 0.0
     gap_hist = []
+    all_outputs_sp = Vector{Dict}(undef, J_max)
+    cvars = Vector{Any}(undef, J_max)
+    evs = Vector{Any}(undef, J_max)
+
+    if mapping
+        @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
+    end
+
     
 
     
@@ -518,6 +547,10 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     
             
         outputs_sp = run_all_subproblems(SPs, inputs, settings, capacity_mix[j])
+        
+        if mapping
+            push!(all_outputs_sp, outputs_sp)
+        end
 
         sp_all_results = outputs_sp
 
@@ -545,6 +578,10 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
         if isnothing(Eval_SPs) || all(size(SPs) .>= (1,1,1))
             cvar_estimate = compute_cvar(sp_obj_per_iter, P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
         end
+
+        push!(cvars, cvar_estimate)
+        push!(evs, expected_value)
+   
 
         # Build actual UBs based on risk aversion settings and budget types ---- supports multiple budget types at once, but will track the minimum UB across iterations for each type separately
         for (i, budget_type) in enumerate(budget_types)
@@ -592,6 +629,12 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             results["UB_hist"] = UB_hist
             results["Gaps"] = gap_hist
             println("Gaps at convergence: ", gap_hist[end])
+
+            if mapping
+                results["CVaR_hist"] = cvars
+                results["Expected Value hist"] = evs
+                results["All SP outputs per iteration"] = all_outputs_sp
+            end
 
             # Evaluate MP sol on Eval SPs if needed
             if Eval_SPs !== nothing

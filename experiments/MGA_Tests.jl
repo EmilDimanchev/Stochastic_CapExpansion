@@ -11,7 +11,7 @@ function log_result_memory!(label::String, output::Dict)
 end
 
 function release_heavy_payload!(output::Dict)
-    for key in ("SPs", "SPs_eval")
+    for key in ("SPs", "SPs_eval", "All MP outputs per iteration", "All SP outputs per iteration")
         if haskey(output, key)
             delete!(output, key)
         end
@@ -215,7 +215,7 @@ function run_stochastic_exploration_adj_exp(SPs::Array{Model, 3}, inputs::Dict, 
     return vectors
 end
 
-function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing)
+function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false)
 
     #configure_parallel_workers!(settings)
 
@@ -238,7 +238,7 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
     # Base Runs
     settings["Risk aversion flag"] = true
     set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk_aversion_weight)
-    output_cvar = benders_algorithm(inputs, settings, MP, SPs, "System_Weighted_CVaR"; Eval_SPs = Eval_SPs)
+    output_cvar = benders_algorithm(inputs, settings, MP, SPs, "System_Weighted_CVaR"; Eval_SPs = Eval_SPs, mapping = mapping)
     log_result_memory!("System_Weighted_CVaR output", output_cvar)
     gap_cvar = output_cvar["Gaps"]
     push!(run_labels, "System_Weighted_CVaR")
@@ -246,6 +246,13 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
      # Write results
     results_destination = joinpath(results_folder,"System_Weighted_CVaR")
     df_cap, df_syscost, df_emissions = write_results_benders(output_cvar, inputs, settings, results_destination)
+    if mapping
+        temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output_cvar, inputs, settings)
+        push!(results_cap, temp_df_cap)
+        push!(results_syscost, temp_df_syscost)
+        push!(results_emissions, temp_df_emissions)
+    end
+    
     release_heavy_payload!(output_cvar)
     push!(results_cap, df_cap)
     push!(results_syscost, df_syscost)
@@ -266,13 +273,19 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
         @info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
-            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs)
+            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs, mapping = mapping)
             log_result_memory!("Random_"*string(iteration)*" output", output_random)
             cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             gap = output_random["Gaps"]
             push!(run_labels, "Random_"*string(iteration))
             push!(gaps, gap)
             results_destination = joinpath(results_folder,"Random_"*string(iteration))
+            if mapping
+                temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output_random, inputs, settings)
+                push!(results_cap, temp_df_cap)
+                push!(results_syscost, temp_df_syscost)
+                push!(results_emissions, temp_df_emissions)
+            end
             df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
             release_heavy_payload!(output_random)
             push!(results_cap, df_cap)
@@ -695,4 +708,35 @@ function generate_normalized_distribution(num_scenarios::Int, distribution_type:
     else
         error("Distribution type not supported")
     end
+end
+
+
+function mapping_test_laptop(test_index)
+
+     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+
+    configure_parallel_workers!(settings)
+
+       # Set evaluation probabilities
+    inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
+    inputs["Full Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
+    inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
+    
+
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = SPs, mapping=true)
+
+
 end
