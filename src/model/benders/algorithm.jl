@@ -325,8 +325,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             sp_all_results = run_all_subproblems(SPs, inputs, settings, output_mp["Capacity"]; minimal_payload=false)
             all_outputs_mp[j] = output_mp
             all_outputs_sp[j] = sp_all_results
-            evs[j] = sum(P[s]*P_f[f]*P_k[k]*sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"]
-            cvars[j] = compute_cvar(reshape([sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K)), P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
+            evs[j] = sum(P[s]*P_f[f]*P_k[k]*sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K)
+            cvars[j] = compute_cvar(reshape([sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K)), P, P_f, P_k, VaR_Percent)
 
             results["MP"] = output_mp
             results["SPs"] = sp_all_results
@@ -363,8 +363,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 #@info("Gap $(gap*100)% is within mapping threshold; will save iteration data and turn off regularization for feasible space mapping.")
                 settings["Regularization flag"] = false
                 all_outputs_sp[j] = outputs_sp
-                cvars[j] = cvar_estimate
-                evs[j] = expected_value
+                cvars[j] = cvar_estimate*settings["Scaling factor cost"]
+                evs[j] = expected_value*settings["Scaling factor cost"]
                 all_outputs_mp[j] = output_mp
 
                 if indicator_written == false
@@ -636,8 +636,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             if mapping 
                 all_outputs_mp[j] = output_mp
                 all_outputs_sp[j] = sp_all_results
-                evs[j] = sum(P[s]*P_f[f]*P_k[k]*sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"]
-                cvars[j] = compute_cvar(reshape([sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K)), P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
+                evs[j] = sum(P[s]*P_f[f]*P_k[k]*sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K)
+                cvars[j] = compute_cvar(reshape([sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K)), P, P_f, P_k, VaR_Percent)
 
                 results["CVaR_hist"] = cvars[first_write:j]
                 results["Expected Value hist"] = evs[first_write:j]
@@ -674,8 +674,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
         else
             if mapping && maximum(gaps) <= settings["Mapping Gap Threshold"]
                 all_outputs_sp[j] = outputs_sp
-                cvars[j] = cvar_estimate
-                evs[j] = expected_value
+                cvars[j] = cvar_estimate*settings["Scaling factor cost"]
+                evs[j] = expected_value*settings["Scaling factor cost"]
                 all_outputs_mp[j] = output_mp
 
                 if indicator_written == false

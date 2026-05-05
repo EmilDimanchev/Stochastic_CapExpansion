@@ -24,6 +24,7 @@ function configure_parallel_workers!(settings::Dict)
     if settings["Parallel flag"]
         desired_workers = haskey(settings, "Workers") ? settings["Workers"] : max(Sys.CPU_THREADS - 1, 1)
         if nworkers() < desired_workers
+            println("Current workers: ", nworkers(), ". Adding ", desired_workers - nworkers(), " workers for parallel processing...")
             addprocs(desired_workers - nworkers())
         end
 
