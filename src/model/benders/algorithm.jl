@@ -210,6 +210,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     evs = Vector{Any}(undef, J_max)
     all_outputs_mp = Vector{Any}(undef, J_max)
     minimal_payload = true
+    first_write = 0
+    indicator_written = false
 
     if mapping
         @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
@@ -229,7 +231,6 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     end
     capacity_mix_initial = output_mp["Capacity"]
     push!(capacity_mix, capacity_mix_initial)
-    all_outputs_mp[1] = output_mp
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # Algorithm
@@ -257,9 +258,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     
             
         outputs_sp = run_all_subproblems(SPs, inputs, settings, capacity_mix[j], minimal_payload=minimal_payload)
-        if mapping
-            all_outputs_sp[j] = outputs_sp
-        end
+        
 
         sp_all_results = outputs_sp
 
@@ -278,8 +277,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         if all(size(SPs) .>= (1,1,1))
             cvar_estimate = compute_cvar(sp_obj_per_iter, P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
         end
-        cvars[j] = cvar_estimate
-        evs[j] = expected_value
+        
 
         if risk_aversion_flag
             UB = risk_aversion_weight*expected_value + (1-risk_aversion_weight)*cvar_estimate + output_mp["Inv_cost"]/settings["Scaling factor cost"]
@@ -325,10 +323,10 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             output_mp = run_planning_model(MP, settings)
             set_capacity_parameters!(SPs, output_mp["Capacity"])
             sp_all_results = run_all_subproblems(SPs, inputs, settings, output_mp["Capacity"]; minimal_payload=false)
-            all_outputs_mp[j+1] = output_mp
-            all_outputs_sp[j+1] = sp_all_results
-            evs[j+1] = sum(P[s]*P_f[f]*P_k[k]*sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"]
-            cvars[j+1] = compute_cvar(reshape([sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K)), P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
+            all_outputs_mp[j] = output_mp
+            all_outputs_sp[j] = sp_all_results
+            evs[j] = sum(P[s]*P_f[f]*P_k[k]*sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"]
+            cvars[j] = compute_cvar(reshape([sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K)), P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
 
             results["MP"] = output_mp
             results["SPs"] = sp_all_results
@@ -341,10 +339,11 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             results["UB_hist"] = UB_hist
             results["Gaps"] = gaps
             if mapping
-                results["CVaR_hist"] = cvars
-                results["Expected Value hist"] = evs
-                results["All SP outputs per iteration"] = all_outputs_sp
-                results["All MP outputs per iteration"] = all_outputs_mp
+                results["CVaR_hist"] = cvars[first_write:j]
+                results["Expected Value hist"] = evs[first_write:j]
+                results["All SP outputs per iteration"] = all_outputs_sp[first_write:j]
+                results["All MP outputs per iteration"] = all_outputs_mp[first_write:j]
+                results["first_write"] = first_write
             end
 
             # Evaluate MP sol on Eval SPs if needed
@@ -360,6 +359,21 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
             break
         else
+            if mapping && gap <= settings["Mapping Gap Threshold"]
+                #@info("Gap $(gap*100)% is within mapping threshold; will save iteration data and turn off regularization for feasible space mapping.")
+                settings["Regularization flag"] = false
+                all_outputs_sp[j] = outputs_sp
+                cvars[j] = cvar_estimate
+                evs[j] = expected_value
+                all_outputs_mp[j] = output_mp
+
+                if indicator_written == false
+                    @info("Gap $(gap*100)% is within mapping threshold; will save iteration data and turn off regularization for feasible space mapping starting next iteration.")
+                    indicator_written = true
+                    first_write = j
+                end
+            end
+
             add_optimality_cuts!(MP, sp_obj_per_iter, duals_sp_per_iter, capacity_mix[j], coeffs, inputs,settings, j, case_name)
             @info("Running investment problem")
             output_mp_unst = run_planning_model(MP, settings)
@@ -375,6 +389,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             push!(LB_hist, LB)
             
             if settings["Regularization flag"]
+                
                 @info("Applying regularization to master problem")
                 output_mp = regularization(MP, min_UB, LB, settings)
                 alpha_ev_stb = output_mp["Expected alpha"]/settings["Scaling factor cost"]
@@ -384,7 +399,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                     LB = risk_adjusted_LB_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
                 else
                     LB = alpha_ev_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
-                end 
+                end
             else
                 output_mp = output_mp_unst
             end
@@ -400,8 +415,6 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 "LB_hist" => LB_hist,
                 "UB_hist" => UB_hist,
             ])
-            all_outputs_mp[j+1] = output_mp
-            
         end
     end
     elapsed = time() - algorithm_start_time
@@ -513,6 +526,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     cvars = Vector{Any}(undef, J_max)
     evs = Vector{Any}(undef, J_max)
     all_outputs_mp = Vector{Any}(undef, J_max)
+    indicator_written = false
+    first_write = 0
 
     if mapping
         @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
@@ -522,7 +537,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
 
     capacity_mix_initial = output_mp["Capacity"]
     push!(capacity_mix, capacity_mix_initial)
-    all_outputs_mp[1] = output_mp
+    
     minimal_payload = true
     if mapping
         minimal_payload = false
@@ -555,10 +570,6 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             
         outputs_sp = run_all_subproblems(SPs, inputs, settings, capacity_mix[j], minimal_payload=minimal_payload)
         
-        if mapping
-            all_outputs_sp[j] = outputs_sp
-        end
-
         sp_all_results = outputs_sp
 
         sp_obj_per_iter = reshape([outputs_sp[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K))
@@ -585,9 +596,6 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
         if isnothing(Eval_SPs) || all(size(SPs) .>= (1,1,1))
             cvar_estimate = compute_cvar(sp_obj_per_iter, P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
         end
-
-        cvars[j] = cvar_estimate
-        evs[j] = expected_value
 
 
         # Build actual UBs based on risk aversion settings and budget types ---- supports multiple budget types at once, but will track the minimum UB across iterations for each type separately
@@ -625,6 +633,18 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             output_mp = run_planning_model(MP, settings)
             set_capacity_parameters!(SPs, output_mp["Capacity"])
             sp_all_results = run_all_subproblems(SPs, inputs, settings, output_mp["Capacity"]; minimal_payload=false)
+            if mapping 
+                all_outputs_mp[j] = output_mp
+                all_outputs_sp[j] = sp_all_results
+                evs[j] = sum(P[s]*P_f[f]*P_k[k]*sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"]
+                cvars[j] = compute_cvar(reshape([sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K)), P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
+
+                results["CVaR_hist"] = cvars[first_write:j]
+                results["Expected Value hist"] = evs[first_write:j]
+                results["All SP outputs per iteration"] = all_outputs_sp[first_write:j]
+                results["All MP outputs per iteration"] = all_outputs_mp[first_write:j]
+                results["first_write"] = first_write
+            end
 
             results["MP"] = output_mp
             results["SPs"] = sp_all_results
@@ -635,14 +655,11 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             #results["Lower bounds"] = lower_bounds
             results["UB_hist"] = UB_hist
             results["Gaps"] = gap_hist
-            println("Gaps at convergence: ", gap_hist[end])
 
-            if mapping
-                results["CVaR_hist"] = cvars
-                results["Expected Value hist"] = evs
-                results["All SP outputs per iteration"] = all_outputs_sp
-                results["All MP outputs per iteration"] = all_outputs_mp
-            end
+            println("Gaps at convergence: ", gap_hist[end])
+            
+
+            
 
             # Evaluate MP sol on Eval SPs if needed
             if Eval_SPs !== nothing
@@ -655,6 +672,19 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             end
             break
         else
+            if mapping && maximum(gaps) <= settings["Mapping Gap Threshold"]
+                all_outputs_sp[j] = outputs_sp
+                cvars[j] = cvar_estimate
+                evs[j] = expected_value
+                all_outputs_mp[j] = output_mp
+
+                if indicator_written == false
+                    @info("Gap $(maximum(gaps)*100)% is within mapping threshold; will save iteration data and turn off regularization for feasible space mapping starting next iteration.")
+                    indicator_written = true
+                    first_write = j
+                end
+            end
+
             add_optimality_cuts!(MP, sp_obj_per_iter, duals_sp_per_iter, capacity_mix[j], coeffs, inputs,settings, j, case_name)
             @info("Running investment problem")
             output_mp = run_planning_model(MP, settings)
@@ -667,7 +697,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 "UB_hist" => UB_hist,
                 "gap_hist" => gap_hist,
             ])
-            all_outputs_mp[j+1] = output_mp
+
         end
     end
     elapsed = time() - algorithm_start_time

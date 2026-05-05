@@ -247,10 +247,10 @@ function add_optimality_cuts!(MP, SP_obj, SP_dual, x_prev, coeffs, inputs,settin
     SP_obj = SP_obj./scaling_factor_cost
     SP_dual = SP_dual./scaling_factor_cost
     if cvar_tail
-        @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:u][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) - MP[:ζ], base_name = "cvar_tail_cuts_"*case*string(iteration))
+        @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:u][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) - MP[:ζ], base_name = "cvar_tail_cuts_"*case*"_"*string(iteration)*"_")
     end
     
-    @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:alpha][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R), base_name = "optimality_cut_"*case*string(iteration))
+    @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:alpha][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R), base_name = "optimality_cut_"*case*"_"*string(iteration)*"_")
 end
 # Multiple dispatch run_planning_model with and without SP outputs for cuts
 function run_planning_model(MP, settings)

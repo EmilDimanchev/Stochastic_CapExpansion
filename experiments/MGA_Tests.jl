@@ -136,7 +136,7 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
                 push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
             end
         end
-        #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
+        
         write_exploration_results!(results_cap, results_syscost, results_emissions, joinpath(summary_folder), run_labels, summary_name)
     end
     return outputs, vectors
@@ -225,6 +225,7 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
     results_emissions = []
     run_labels = []
     gaps = []
+    cuts_to_keep = []
 
     # Model Settings
     iterations = settings["Iterations"]
@@ -251,12 +252,14 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
         push!(results_cap, temp_df_cap)
         push!(results_syscost, temp_df_syscost)
         push!(results_emissions, temp_df_emissions)
+    else 
+        push!(results_cap, df_cap)
+        push!(results_syscost, df_syscost)
+        push!(results_emissions, df_emissions)
     end
     
     release_heavy_payload!(output_cvar)
-    push!(results_cap, df_cap)
-    push!(results_syscost, df_syscost)
-    push!(results_emissions, df_emissions)
+    
     @info("System_Weighted_CVaR solution has investment cost of ", output_cvar["MP"]["Inv_cost"])
     @info("Expected value system cost of " * "System_Weighted_CVaR" * " solution: $(output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])")
     @info("Risk adjusted system cost of " * "System_Weighted_CVaR" * " solution: $((1-risk_aversion_weight)*output_cvar["CVaR"] + risk_aversion_weight*output_cvar["Expected Value"]+ output_cvar["MP"]["Inv_cost"])")
@@ -268,14 +271,19 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
         # Set budgets? ------- budget set = set with budgets same percent greater than least cost solution for each metric
         budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["CVaR"])/settings["Scaling factor cost"]), "CVaR", budgets)
         budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/settings["Scaling factor cost"])*(budget_multiplier), "System_Expected", budgets)
-        cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+        if mapping
+            cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")) && (parse(Int,split(string(con), "_")[end-1]) <= output_cvar["first_write"] + 10)]
+        else
+            cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+        end
         vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x]), settings["Vector Type"], settings)
         @info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
+            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs, mapping = mapping)
             log_result_memory!("Random_"*string(iteration)*" output", output_random)
-            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            
             gap = output_random["Gaps"]
             push!(run_labels, "Random_"*string(iteration))
             push!(gaps, gap)
@@ -285,19 +293,22 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
                 push!(results_cap, temp_df_cap)
                 push!(results_syscost, temp_df_syscost)
                 push!(results_emissions, temp_df_emissions)
+            else
+                df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
+                push!(results_cap, df_cap)
+                push!(results_syscost, df_syscost)
+                push!(results_emissions, df_emissions)
             end
-            df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
+            
             release_heavy_payload!(output_random)
-            push!(results_cap, df_cap)
-            push!(results_syscost, df_syscost)
-            push!(results_emissions, df_emissions)
-            if length(cuts_to_keep) < settings["Cuts retained"]
+            
+            if length(cuts_to_keep) < settings["Cuts retained"] && !mapping
                 push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
             end
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
 
-        write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; remake_labels = mapping)
+        write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
     end
     return vectors
 end
@@ -715,8 +726,9 @@ end
 function mapping_test_laptop(test_index)
 
     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
-    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    results_folder = joinpath("outputs", "Test_"*string(test_index), "Mapping_Test")
     summary_folder = joinpath(results_folder, "Summary")
+
     if !isdir(results_folder)
         mkpath(results_folder)
     end
@@ -730,7 +742,13 @@ function mapping_test_laptop(test_index)
 
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
-    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping = true)
+
+    vector_set = nothing
+    summary_name = "mapping"
+    Eval_SPs = nothing
+    mapping = true
+
+    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, results_folder, summary_folder; budget_multiplier = 1.005, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping = true)
 
 
 end

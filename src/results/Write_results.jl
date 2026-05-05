@@ -524,16 +524,11 @@ function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs:
 
     # Should only have all uncertainties set to false if SPs eval are provided
     eval_SPs = []
-    try 
-        eval_SPs = (haskey(results, "SPs_eval")) ? results["SPs_eval"] : []
-    catch
-        error("SPs_eval not found in results. Make sure to include SPs_eval in the output of the Benders algorithm when running with all uncertainties set to false.")
-    end 
-
-    if !isdir(results_folder)
-        mkpath(results_folder)
-    end
-
+    #try 
+      #  eval_SPs = (haskey(results, "SPs_eval")) ? results["SPs_eval"] : []
+    #catch
+    #    error("SPs_eval not found in results. Make sure to include SPs_eval in the output of the Benders algorithm when running with all uncertainties set to false.")
+    #end 
     # Parameters
     P_s = inputs["Demand scenario probabilities"]
     P_f = inputs["Gas price scenario probabilities"]
@@ -543,11 +538,11 @@ function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs:
     P_k_eval = [0.0]
     
 
-    if haskey(results, "SPs_eval")
-        P_s_eval = inputs["Full Demand scenario probabilities"]
-        P_f_eval = inputs["Full Gas price scenario probabilities"]
-        P_k_eval = inputs["Full Weather scenario probabilities"]
-    end
+    #if haskey(results, "SPs_eval")
+    #    P_s_eval = inputs["Full Demand scenario probabilities"]
+    #    P_f_eval = inputs["Full Gas price scenario probabilities"]
+    #    P_k_eval = inputs["Full Weather scenario probabilities"]
+    #end
     S_eval = size(P_s_eval)[1] # number of demand scenarios
     F_eval = size(P_f_eval)[1] # number of fuel cost scenarios
     K_eval = size(P_k_eval)[1] # number of weather scenarios
@@ -592,7 +587,7 @@ function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs:
     #end
 
     # Collect results
-    df_cap = DataFrame(cap', columns=all_resources)
+    df_cap = DataFrame(cap', all_resources)
     # VaR
     if settings["Risk sharing flag"]
         value_at_risk = MP_output["VaR"] # VaR is a vector indexed by technology
@@ -624,7 +619,7 @@ function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs:
     df_emissions = DataFrame()
     inv_cost_by_zone = MP_output["Inv cost by zone"]
 
-    if eval_SPs != [] #### Condition means all uncertainties off and we have Eval SPs
+    if false #eval_SPs != [] #### Condition means all uncertainties off and we have Eval SPs
         # Base expressions
         system_cost_ev_base = MP_output["Inv_cost"] + ev # model_output["System cost"] Base system cost for single scenario
         system_cost_cvar_base = MP_output["Inv_cost"] + Ω*ev + (1-Ω)*cvar # model_output["Risk adjusted system cost"] Base risk-adjusted system cost for single scenario
@@ -807,7 +802,7 @@ function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs:
     end
 
     names = inputs["Resources"]
-    gaps = results["Gaps"]
+    #gaps = results["Gaps"]
     """
     if (typeof(gaps[1]) == Vector{Float64}) && !isnothing(budgets)
         k = collect(key for key in keys(budgets))
@@ -904,30 +899,47 @@ function find_tot_length(dfs::AbstractVector)
 end
 
 
-function write_exploration_results!(dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_emissions::AbstractVector, results_folder::String, labels::AbstractVector = [], scenario::String = ""; remake_labels::Bool = false)
+function write_exploration_results!(results_cap::AbstractVector, results_syscost::AbstractVector, results_emissions::AbstractVector, results_folder::String, run_labels::AbstractVector = [], summary_name::String = ""; mapping = false)
 
     if !isdir(results_folder)
         mkpath(results_folder)
     end
-
-    names = gather_names(dfs_cap[1], dfs_syscost[1], dfs_emissions[1], length(labels) > 0)
-    println(dfs_cap[1])
-    total_length = find_tot_length(dfs_cap)
-    data = Array{Any,2}(undef, total_length, length(names))
-    if remake_labels
+    df_exploration = DataFrame()
+    names_list = gather_names(results_cap[1], results_syscost[1], results_emissions[1], length(run_labels) > 0; mapping = mapping)
+    total_length = find_tot_length(results_cap)
+    data = Array{Any,2}(undef, total_length, length(names_list))
+    if mapping
         labels = ["Sample "*string(i) for i in 1:total_length]
-    end
-    data = gather_data(data, dfs_cap, dfs_syscost, dfs_emissions, labels)
-    df_exploration = DataFrame(data, names)
 
-    CSV.write(joinpath(results_folder,"Summary_"*scenario*".csv"), df_exploration)
+        dfs_cap = vcat(results_cap...)
+        dfs_syscost = vcat(results_syscost...)
+        dfs_emissions = vcat(results_emissions...)
+
+        dfs_cap.Index = labels
+        dfs_syscost.Index = labels
+        dfs_emissions.Index = labels
+
+        df_exploration = innerjoin(dfs_cap, dfs_syscost, on = :Index)
+        df_exploration = innerjoin(df_exploration, dfs_emissions, on = :Index)
+
+    else
+        data = gather_data(data, results_cap, results_syscost, results_emissions, run_labels; mapping = mapping)
+        df_exploration = DataFrame(data, names_list)
+    end
+    CSV.write(joinpath(results_folder,"Summary_"*summary_name*".csv"), df_exploration)
 
 end
 
-function gather_names(cap::DataFrame, sys_cost::DataFrame, emissions::DataFrame, label_bool::Bool = false)
+function gather_names(cap::DataFrame, sys_cost::DataFrame, emissions::DataFrame, label_bool::Bool = false; mapping = false)
     name_vec = []
-    for resource in cap.Resource
-        push!(name_vec, resource)
+    if mapping
+        for col in names(cap)
+            push!(name_vec, col)
+        end
+    else
+        for resource in cap.Resource
+            push!(name_vec, resource)
+        end
     end
     for col in names(sys_cost)
         push!(name_vec, col)
@@ -941,23 +953,32 @@ function gather_names(cap::DataFrame, sys_cost::DataFrame, emissions::DataFrame,
     return name_vec
 end
 
-function gather_data(data::AbstractArray,dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_emissions::AbstractVector, labels::AbstractVector)
-    
+function gather_data(data::AbstractArray,dfs_cap::AbstractVector, dfs_syscost::AbstractVector, dfs_emissions::AbstractVector, labels::AbstractVector; mapping = false)
+
     for i in 1:length(dfs_cap)
-        row = make_rows(dfs_cap[i], dfs_syscost[i], dfs_emissions[i], length(labels) > 0 ? labels[i] : "")
+        row = make_rows(dfs_cap[i], dfs_syscost[i], dfs_emissions[i], length(labels) > 0 ? labels[i] : ""; mapping = false)
         data[i,:] = row
     end
 
     return data
 end
 
-function make_rows(cap::DataFrame, sys_cost::DataFrame, emissions::DataFrame, label::String)
+
+
+
+function make_rows(cap::DataFrame, sys_cost::DataFrame, emissions::DataFrame, label::String; mapping = false)
     row = Any[]
     if label != ""
         push!(row, label)
     end
-    for resource in cap.Resource
-        push!(row, cap[cap.Resource .== resource, :Capacity])
+    if mapping
+        for col in names(cap)
+            push!(row, cap[:,col])
+        end
+    else
+        for resource in cap.Resource
+            push!(row, cap[cap.Resource .== resource, :Capacity])
+        end
     end
     for col in names(sys_cost)
         push!(row, sys_cost[:,col])
@@ -965,6 +986,7 @@ function make_rows(cap::DataFrame, sys_cost::DataFrame, emissions::DataFrame, la
     for col in names(emissions)
         push!(row, emissions[:,col])
     end
+    println("Row length: ", length(row))
 
     return row
 end
