@@ -5,6 +5,13 @@ using Distributed
 @everywhere using .Stochastic_CapExpansion
 @everywhere using Revise, JuMP, Gurobi, HiGHS, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions
 
+
+#=========================
+
+Utility functions for logging and managing memory, configuring parallel workers, and running stochastic exploration with Benders and MGA
+
+=========================#
+
 function log_result_memory!(label::String, output::Dict)
     size_mb = round(Base.summarysize(output) / 1024^2; digits = 2)
     @info("Approx memory for $(label): $(size_mb) MiB")
@@ -47,6 +54,16 @@ function configure_parallel_workers!(settings::Dict)
         @info("Running without parallelization")
     end
 end
+
+
+
+#============================
+
+
+Main MGA functions for running stochastic exploration with Benders and MGA, including base runs and iterative exploration with budget constraints, cut management, and result logging
+
+
+==============================#
 
 function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "dual_constraint", Eval_SPs = nothing)
 
@@ -466,6 +483,13 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
     write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, labels, string(scenario))
 end
 
+
+#=====================
+
+Test Functions for specific experiments
+
+=======================#
+
 function simple_comp()
     inputs_folder = joinpath("inputs","Inputs_30repdays_ext_1000scen_7techs")
     test_index = 10
@@ -691,6 +715,13 @@ function test_stability_della(test_index)
 
 end
 
+#==================
+
+Stability test helper functions
+
+
+===================#
+
 function generate_probabilities(Probablities::AbstractVector, Distribution_Type::AbstractVector, means::AbstractVector, stds::AbstractVector)
     result = Vector{Any}(undef, length(Distribution_Type))
     
@@ -722,6 +753,17 @@ function generate_normalized_distribution(num_scenarios::Int, distribution_type:
         error("Distribution type not supported")
     end
 end
+
+
+
+#=================
+
+
+Mapping test functions - run with mapping flag on and evaluation SPs to see how well the mapping performs in approximating the true performance of solutions across iterations
+
+
+===================#
+
 
 
 function mapping_test_laptop(test_index)
@@ -774,5 +816,121 @@ function mapping_test_della(test_index)
     SPs = build_all_subproblems(inputs, settings)
     vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping=true)
 
+
+end
+
+
+###########
+
+# Interpolation evaluation functions
+
+#######
+
+function evaluate_interpolates(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, interpolate_df::DataFrame, results_folder::String)
+    # result containers
+    results_cap = []
+    results_syscost = []
+    results_emissions = []
+
+    P_s = inputs["Demand scenario probabilities"]
+    P_f = inputs["Gas price scenario probabilities"]
+    P_k = inputs["Weather scenario probabilities"]
+    VaR_percent = settings["Value-at-Risk percent"]
+    Z = inputs["Number of zones"]
+    costs_by_resource = inputs["Investment costs"]
+
+    # isolate capacity vectors
+    index_indx = findfirst(==("Index"), names(interpolate_df))
+    labels = Vector(interpolate_df[:, index_indx])
+    cap_vectors = interpolate_df[:, 1:index_indx-1]
+
+    # get costs
+    inv_costs = cap_vectors .* reshape(costs_by_resource, 1, :)
+    tot_inv_costs = sum.(eachrow(Matrix(inv_costs)))
+    
+    col_by_zone = collect(findall(x -> occursin("z"*string(z), x), names(inv_costs)) for z in 1:Z)
+    cost_by_zone = [sum.(eachrow(inv_costs[:, col_by_zone[z]])) for z in 1:Z]
+
+    for i in 1:nrow(interpolate_df)
+        caps = Vector(cap_vectors[i, :])
+        outputs_sp = run_all_subproblems(SPs, inputs, settings, caps, minimal_payload=false)
+        ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
+
+        costs_by_zone_it = [cost_by_zone[z][i] for z in 1:Z]
+
+        df_cap, df_syscost, df_emissions = make_results_mapping_dfs(caps, outputs_sp, tot_inv_costs[i], costs_by_zone_it, cvar, ev, inputs, settings)
+        push!(results_cap, df_cap)
+        push!(results_syscost, df_syscost)
+        push!(results_emissions, df_emissions)
+    end
+    write_exploration_results!(results_cap, results_syscost, results_emissions, results_folder, labels, "Interpolates"; mapping=true)
+end
+
+function evaluate_subproblems(outputs_sp::Array{Dict{String, Any}, 3}, P_s::Vector, P_f::Vector, P_k::Vector, VaR_percent::Float64)
+    S = length(P_s)
+    F = length(P_f)
+    K = length(P_k)
+
+    sp_obj_per_iter = reshape([outputs_sp[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K))
+    ev = sum(P_s[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)
+    cvar = compute_cvar(sp_obj_per_iter, P_s, P_f, P_k, VaR_percent)
+    return ev, cvar
+end
+
+#=========
+
+Run interpolate evaluation
+
+==========#
+
+function run_interpolate_evaluation_laptop(test_index)
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    results_folder = joinpath("outputs", "Test_"*string(test_index), "Interpolate_Evaluation")
+    summary_folder = joinpath(results_folder, "Summary")
+    interp_file = joinpath("inputs", "interpolates", "Summary_mapping.csv")
+
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+    interpolate_df = CSV.read(interp_file, DataFrame, header=true)
+
+    configure_parallel_workers!(settings)
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+
+    evaluate_interpolates(SPs, inputs, settings, interpolate_df, summary_folder)
+
+end
+
+
+
+function run_interpolate_evaluation_della(test_index)
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    results_folder = joinpath("outputs", "Test_"*string(test_index), "Interpolate_Evaluation")
+    summary_folder = joinpath(results_folder, "Summary")
+    interp_file = joinpath("inputs", "interpolates", "Summary_mapping_della.csv")
+
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+    interpolate_df = CSV.read(interp_file, DataFrame, header=true)
+
+    configure_parallel_workers!(settings)
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+
+    evaluate_interpolates(SPs, inputs, settings, interpolate_df, summary_folder)
 
 end
