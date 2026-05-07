@@ -1,0 +1,59 @@
+Results folder path: <results_path>
+Solver: HiGHS
+
+Write all scenarios flag: true # If true, writes results for all scenarios. If false, only writes results for the expected value scenario (if demand uncertainty is true) or the base scenario (if demand uncertainty is false)
+# Risk
+Demand uncertainty: true
+Gas price uncertainty: true
+Weather uncertainty: false
+Risk aversion flag: false
+Risk aversion weight: 0.5
+Value-at-Risk percent: 0.05
+Risk sharing flag: false
+
+
+# Policy instruments
+Price cap: 2000
+Investment tax credits flag: false
+Production tax credits flag: false
+Standard flag: false
+Carbon cap flag: false
+Carbon tax flag: false
+# Policy parameters
+# Investment tax credits
+Endogenous tax credits flag: false
+Tax credits: [0, 0, 0, 0, 0]
+# Production tax credit
+Production credits: [0, 0, 0, 0]
+# CES
+Standard mandate: 0.80
+# Carbon tax 
+Carbon tax: 0
+# Cap and trade
+Carbon cap: 25000
+Contracts: false
+Search equilibria: false
+
+Scaling factor cost: 1e5
+Scaling factor demand: 1
+Convergence tolerance: 1e-5
+
+Cost of nonserved energy: [9e3,1500,1100,400]
+Max nse: [0.917,0.05,0.03,0.003]
+
+Regularization flag: false
+
+# Distributed Memory Parallelization
+Parallel flag: true
+Workers: 8
+Memory debug flag: false
+
+Vector Type: random
+Iterations: 2
+Capacity Exploration: true
+Seed: 1234
+Budget convergence tolerance: 0.000001
+Cuts retained: 50000
+
+Mapping: true
+Mapping Gap Threshold: 1.0
