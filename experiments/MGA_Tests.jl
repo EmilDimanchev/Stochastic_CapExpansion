@@ -842,8 +842,9 @@ function evaluate_interpolates(SPs::Array{Model, 3}, inputs::Dict, settings::Dic
     # isolate capacity vectors
     index_indx = findfirst(==("Index"), names(interpolate_df))
     labels = Vector(interpolate_df[:, index_indx])
-    cap_vectors = interpolate_df[:, 1:index_indx-1]
-
+    select!(interpolate_df, Not(:Index))
+    investment_indx = findfirst(==("Investment_Cost"), names(interpolate_df))
+    cap_vectors = interpolate_df[:, 1:investment_indx-1]
     # get costs
     inv_costs = cap_vectors .* reshape(costs_by_resource, 1, :)
     tot_inv_costs = sum.(eachrow(Matrix(inv_costs)))
@@ -852,8 +853,9 @@ function evaluate_interpolates(SPs::Array{Model, 3}, inputs::Dict, settings::Dic
     cost_by_zone = [sum.(eachrow(inv_costs[:, col_by_zone[z]])) for z in 1:Z]
 
     for i in 1:nrow(interpolate_df)
+        @info("Evaluating interpolate ", labels[i])
         caps = Vector(cap_vectors[i, :])
-        outputs_sp = run_all_subproblems(SPs, inputs, settings, caps, minimal_payload=false)
+        @time outputs_sp = run_all_subproblems(SPs, inputs, settings, caps, minimal_payload=false)
         ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
 
         costs_by_zone_it = [cost_by_zone[z][i] for z in 1:Z]
@@ -887,7 +889,7 @@ function run_interpolate_evaluation_laptop(test_index)
     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
     results_folder = joinpath("outputs", "Test_"*string(test_index), "Interpolate_Evaluation")
     summary_folder = joinpath(results_folder, "Summary")
-    interp_file = joinpath("inputs", "interpolates", "Summary_mapping.csv")
+    interp_file = joinpath("experiments", "Della_experiments", "Mapping","mapping_budget_2p_MGCA.csv")
 
     if !isdir(results_folder)
         mkpath(results_folder)
