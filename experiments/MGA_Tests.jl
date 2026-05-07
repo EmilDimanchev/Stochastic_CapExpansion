@@ -855,7 +855,7 @@ function evaluate_interpolates(SPs::Array{Model, 3}, inputs::Dict, settings::Dic
     for i in 1:nrow(interpolate_df)
         @info("Evaluating interpolate ", labels[i])
         caps = Vector(cap_vectors[i, :])
-        @time outputs_sp = run_all_subproblems(SPs, inputs, settings, caps, minimal_payload=false)
+        outputs_sp = run_all_subproblems(SPs, inputs, settings, caps, minimal_payload=false)
         ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
 
         costs_by_zone_it = [cost_by_zone[z][i] for z in 1:Z]
