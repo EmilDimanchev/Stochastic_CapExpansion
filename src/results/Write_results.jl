@@ -725,7 +725,7 @@ function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs:
             col_name_price_zone = string("Price_by_zone_base", string("Zone"), string(z))
             insertcols!(df_syscost, col_name_price_zone => prices_by_zone_exp[z])
         end
-        if false #settings["Write all scenarios flag"]
+        if settings["Write all scenarios flag"]
             for s in 1:size(P_s)[1]
                 for f in 1:size(P_f)[1]
                     for k in 1:size(P_k)[1]
@@ -1050,7 +1050,7 @@ function make_results_mapping_dfs(capacities::AbstractVector, SPs_output, tot_in
             col_name_price_zone = string("Price_by_zone_base", string("Zone"), string(z))
             insertcols!(df_syscost, col_name_price_zone => prices_by_zone_exp[z])
         end
-        if false #settings["Write all scenarios flag"]
+        if settings["Write all scenarios flag"]
             for s in 1:size(P_s)[1]
                 for f in 1:size(P_f)[1]
                     for k in 1:size(P_k)[1]

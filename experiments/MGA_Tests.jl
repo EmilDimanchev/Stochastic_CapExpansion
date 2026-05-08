@@ -255,7 +255,6 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
     MP = build_planning_model(inputs, settings)
 
     # Base Runs
-    settings["Risk aversion flag"] = true
     set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk_aversion_weight)
     output_cvar = benders_algorithm(inputs, settings, MP, SPs, "System_Weighted_CVaR"; Eval_SPs = Eval_SPs, mapping = mapping)
     log_result_memory!("System_Weighted_CVaR output", output_cvar)
