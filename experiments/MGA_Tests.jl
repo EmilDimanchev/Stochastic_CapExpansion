@@ -3,7 +3,7 @@ using Distributed
 @everywhere include("../src/Stochastic_CapExpansion.jl")
 
 @everywhere using .Stochastic_CapExpansion
-@everywhere using Revise, JuMP, Gurobi, HiGHS, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions
+@everywhere using Revise, JuMP, Gurobi, HiGHS, Ipopt, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions, Surrogates
 
 
 #=========================
@@ -233,7 +233,7 @@ function run_stochastic_exploration_adj_exp(SPs::Array{Model, 3}, inputs::Dict, 
     return vectors
 end
 
-function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false)
+function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100)
 
     #configure_parallel_workers!(settings)
 
@@ -248,9 +248,14 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
     # Model Settings
     iterations = settings["Iterations"]
     risk_aversion_weight = settings["Risk aversion weight"] ### Currently set consistently across runs and ahead of time
-    value_at_risk_percent = settings["Value-at-Risk percent"] ### Currently set consistently across runs and ahead of time
+    VaR_percent = settings["Value-at-Risk percent"] ### Currently set consistently across runs and ahead of time
     # Create and set expected value model
     settings["Risk aversion flag"] = true
+
+    P_s = inputs["Demand scenario probabilities"]
+    P_f = inputs["Gas price scenario probabilities"]
+    P_k = inputs["Weather scenario probabilities"]
+    
 
     MP = build_planning_model(inputs, settings)
 
@@ -325,6 +330,25 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
 
+        # Map interior after exterior mapping
+        if mapping
+            all_caps = Matrix(vcat(results_cap...))
+            samples = sample_interior(all_caps, n_samples)
+            eval_MP = build_planning_model(inputs, settings)
+            for (i, sample) in enumerate(samples)
+                @info("Sample $i: Evaluating interior point with capacities: $sample")
+                fix_capacities!(eval_MP, sample)
+                outputs_mp = run_planning_model(eval_MP, settings)
+                outputs_sp = run_all_subproblems(SPs, inputs, settings, sample, minimal_payload=false)
+                ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
+                @info("Sample $i: Investment cost = $(outputs_mp["Inv_cost"]), Expected value = $ev, CVaR = $(cvar)")
+                unfix_capacities!(eval_MP)
+                temp_df_cap, temp_df_syscost, temp_df_emissions = make_results_mapping_dfs(outputs_mp, outputs_sp, cvar, ev, inputs, settings)
+                push!(results_cap, temp_df_cap)
+                push!(results_syscost, temp_df_syscost)
+                push!(results_emissions, temp_df_emissions)
+            end
+        end
         write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
     end
     return vectors
@@ -481,6 +505,44 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
     #write_gaps!(gaps, labels, joinpath(results_path, "Gaps"))
     write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, labels, string(scenario))
 end
+
+
+#======================
+
+Interior sampling functions
+
+
+=======================#
+
+function make_mgca_problem(points)
+    rows, cols = size(points)
+    points = max.(points, 0.0) # ensure all points are non-negative for convex combination
+
+    model = Model(Ipopt.Optimizer)
+    @variable(model, l[1:rows] >= 0)
+    @constraint(model, c_sum, sum(l[i] for i in 1:rows) == 1)
+    @variable(model, x[1:cols])
+    @constraint(model, x == points' * l)
+    @constraint(model, c_max_l, l .<= 0.95) # do not replicate individual points
+    @objective(model, Min, 0)
+    set_silent(model)
+    return model
+end
+
+function sample_interior(points, num_samples)
+    model = make_mgca_problem(points)
+    samples = []
+    for _ in 1:num_samples
+        optimize!(model)
+        push!(samples, max.(value.(model[:x]),0.0))
+
+        vec = rand(length(model[:x])).*maximum(points, dims=1)[:] # random point within bounds of observed points
+        
+        @objective(model, Min, sum((model[:x][i] - vec[i])^2 for i in 1:length(model[:x]))) # move towards a random point to get a different solution in the next iteration
+    end
+    return samples
+end
+
 
 
 #=====================
@@ -789,8 +851,9 @@ function mapping_test_laptop(test_index)
     summary_name = "mapping"
     Eval_SPs = nothing
     mapping = true
+    budget_multiplier = 1.001
 
-    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, results_folder, summary_folder; budget_multiplier = 1.005, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping = true)
+    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, results_folder, summary_folder; budget_multiplier = 1.005, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping = true, n_samples = 10)
 
 
 end
@@ -813,8 +876,7 @@ function mapping_test_della(test_index)
     
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
-    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping=true)
-
+    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping=true, n_samples = 3000)
 
 end
 

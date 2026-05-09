@@ -441,3 +441,16 @@ function manage_cuts(MP::Model, cuts_to_keep::Vector{String})
     end
     return cuts_to_keep
 end
+
+
+function fix_capacities!(MP::Model, new_caps::Vector{Float64})
+    for r in 1:length(new_caps)
+        fix(MP[:x][r], new_caps[r], force = true)
+    end
+end
+
+function unfix_capacities!(MP::Model)
+    for r in 1:length(MP[:x])
+        unfix(MP[:x][r])
+    end
+end

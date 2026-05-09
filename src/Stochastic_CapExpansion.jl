@@ -1,5 +1,5 @@
 module Stochastic_CapExpansion
-    using Revise, JuMP, Gurobi, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributed, DistributedArrays, Distributions
+    using Revise, JuMP, Gurobi, DataFrames, CSV, YAML, Random, LinearAlgebra, Ipopt, Combinatorics, Dates, Distributed, DistributedArrays, Distributions, Surrogates
 
    function include_all_in_folder(folder_path::String)
         files = readdir(folder_path, join=true)
@@ -24,5 +24,5 @@ module Stochastic_CapExpansion
     export run_benders_algorithm, benders_algorithm, compute_cvar
     export run_planning_model, build_planning_model, add_optimality_cuts!, add_risk_terms!, add_budget_constraint_bendersMP!, set_objective_bendersMP!
     export run_economic_dispatch, run_all_subproblems, build_all_subproblems, set_capacity_parameters!, run_subproblem
-    export write_mapping_results, make_results_mapping_dfs
+    export write_mapping_results, make_results_mapping_dfs, fix_capacities!, unfix_capacities!
 end
