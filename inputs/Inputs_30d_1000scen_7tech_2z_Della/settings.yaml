@@ -54,3 +54,6 @@ Capacity Exploration: true
 Seed: 1234
 Budget convergence tolerance: 0.000001
 Cuts retained: 50000
+
+Mapping: true
+Mapping Gap Threshold: 0.2
