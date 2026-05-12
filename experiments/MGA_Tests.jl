@@ -973,11 +973,10 @@ end
 
 
 
-function run_interpolate_evaluation_della(test_index)
+function run_interpolate_evaluation_della(test_index, interp_file)
     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
     results_folder = joinpath("outputs", "Test_"*string(test_index), "Interpolate_Evaluation")
     summary_folder = joinpath(results_folder, "Summary")
-    interp_file = joinpath("experiments", "Della_experiments", "Mapping","mapping_multibudget_MGCA.csv")
 
     if !isdir(results_folder)
         mkpath(results_folder)
