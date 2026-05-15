@@ -853,7 +853,7 @@ function mapping_test_laptop(test_index)
     mapping = true
     budget_multiplier = 1.001
 
-    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, results_folder, summary_folder; budget_multiplier = 1.005, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping = true, n_samples = 10)
+    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, results_folder, summary_folder; budget_multiplier = 1.005, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping = true, n_samples = 50)
 
 
 end
