@@ -333,7 +333,7 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
         # Map interior after exterior mapping
         if mapping
             all_caps = Matrix(vcat(results_cap...))
-            samples = sample_interior(all_caps, n_samples)
+            @time samples = sample_interior(all_caps, n_samples)
             eval_MP = build_planning_model(inputs, settings)
             for (i, sample) in enumerate(samples)
                 @info("Sample $i: Evaluating interior point with capacities: $sample")
@@ -866,7 +866,7 @@ function mapping_test_della(test_index)
     
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
-    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping=true, n_samples = 3000)
+    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping=true, n_samples = settings["Interior Samples"])
 
 end
 
