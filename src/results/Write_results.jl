@@ -1055,13 +1055,13 @@ function make_results_mapping_dfs(capacities::AbstractVector, SPs_output, tot_in
                 for f in 1:size(P_f)[1]
                     for k in 1:size(P_k)[1]
                         # Collect CO2 emissions
-                        col_name_Emissions = string("EmissionsD",string(s),"F",string(f),"W",string(k))
-                        insertcols!(df_co2_all, col_name_Emissions => SPs_output[s,f,k]["Emissions"])
+                        col_name_Emissions = string("Emissions_D_",string(s),"_F_",string(f),"_W_",string(k))
+                        insertcols!(df_emissions, col_name_Emissions => SPs_output[s,f,k]["Emissions"])
                         # Collect operating cost
-                        col_name_OpCost = string("OperatingCostD",string(s),"F",string(f),"W",string(k))
+                        col_name_OpCost = string("OperatingCost_D_",string(s),"_F_",string(f),"_W_",string(k))
                         insertcols!(df_syscost, col_name_OpCost => SPs_output[s,f,k]["SP objective"])
                         # Collect power prices
-                        col_name_PowerPrice = string("avgPowerPriceD",string(s),"F",string(f),"W",string(k))
+                        col_name_PowerPrice = string("avgPowerPrice_D_",string(s),"_F_",string(f),"_W_",string(k))
                         insertcols!(df_syscost, col_name_PowerPrice => sum(SPs_output[s,f,k]["Power price"])/length(SPs_output[1,1,1]["Power price"]))
                     end
                 end

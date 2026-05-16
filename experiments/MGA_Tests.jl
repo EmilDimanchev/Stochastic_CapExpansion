@@ -530,17 +530,7 @@ function make_mgca_problem(points)
 end
 
 function sample_interior(points, num_samples)
-    model = make_mgca_problem(points)
-    samples = []
-    for _ in 1:num_samples
-        optimize!(model)
-        push!(samples, max.(value.(model[:x]),0.0))
-
-        vec = rand(length(model[:x])).*maximum(points, dims=1)[:] # random point within bounds of observed points
-        
-        @objective(model, Min, sum((model[:x][i] - vec[i])^2 for i in 1:length(model[:x]))) # move towards a random point to get a different solution in the next iteration
-    end
-    return samples
+    return sample_interior_distributed(points, num_samples)
 end
 
 

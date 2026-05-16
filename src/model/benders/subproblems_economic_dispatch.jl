@@ -3,6 +3,7 @@ using Distributed, DistributedArrays, JuMP, Gurobi
 
 const WORKER_SP_CACHE = Dict{Tuple{Int, Int, Int}, Model}()
 const WORKER_DATA_CACHE = Dict{Symbol, Any}()
+const WORKER_MGCA_CACHE = Dict{Symbol, Any}()
 const MASTER_WORKER_SP_KEYS = Dict{Int, Set{Tuple{Int, Int, Int}}}()
 const MASTER_SCENARIO_TO_WORKER = Dict{Tuple{Int, Int, Int}, Int}()
 const WORKER_SOLVE_COUNTER = Ref(0)
@@ -58,6 +59,103 @@ function _run_cached_subproblem!(scenario_key::Tuple{Int, Int, Int}, capacity::V
     set_parameter_value.(SP[:x], capacity)
     result = run_subproblem(SP, WORKER_DATA_CACHE[:inputs], WORKER_DATA_CACHE[:settings]; minimal_payload=minimal_payload)
     return result
+end
+
+function _clear_worker_mgca_cache!()
+    empty!(WORKER_MGCA_CACHE)
+    GC.gc(false)
+    return nothing
+end
+
+function _set_worker_mgca_problem_data!(points, solver)
+    WORKER_MGCA_CACHE[:points] = points
+    WORKER_MGCA_CACHE[:solver] = solver
+
+    return nothing
+end
+
+function _build_and_cache_mgca_problem!()
+    points = WORKER_MGCA_CACHE[:points]
+    solver = WORKER_MGCA_CACHE[:solver]
+
+    rows, cols = size(points)
+    bounded_points = max.(points, 0.0)
+    model = Model()
+    if solver == "HiGHS"
+        set_optimizer(model, Ipopt.Optimizer)
+    elseif solver == "Gurobi"
+        set_optimizer(model, Gurobi.Optimizer)
+    end
+    @variable(model, l[1:rows] >= 0)
+    @constraint(model, sum(l[i] for i in 1:rows) == 1)
+    @variable(model, x[1:cols])
+    @constraint(model, x == bounded_points' * l)
+    @constraint(model, l .<= 0.95)
+    @objective(model, Min, 0)
+    set_silent(model)
+
+    WORKER_MGCA_CACHE[:model] = model
+    return nothing
+end
+
+function _run_cached_mgca_sample!(target::Vector{Float64})
+    model = WORKER_MGCA_CACHE[:model]
+    @objective(model, Min, sum((model[:x][i] - target[i])^2 for i in 1:length(model[:x])))
+    optimize!(model)
+    return max.(value.(model[:x]), 0.0)
+end
+
+function sample_interior_distributed(points, num_samples, settings)
+    samples = Vector{Vector{Float64}}(undef, num_samples)
+    solver = settings["Solver"]
+    if nworkers() > 0
+        pids = workers()
+        @sync for pid in pids
+            @async begin
+                remotecall_wait(_clear_worker_mgca_cache!, pid)
+                remotecall_wait(_set_worker_mgca_problem_data!, pid, points, solver)
+                remotecall_wait(_build_and_cache_mgca_problem!, pid)
+            end
+        end
+
+        max_point = maximum(points, dims=1)[:]
+        sample_targets = [rand(length(max_point)) .* max_point for _ in 1:num_samples]
+
+        @sync for (idx, target) in enumerate(sample_targets)
+            @async begin
+                pid = pids[mod1(idx, length(pids))]
+                samples[idx] = @fetchfrom pid _run_cached_mgca_sample!(target)
+            end
+        end
+        @everywhere GC.gc()
+    else
+        model = Model()
+        if solver == "HiGHS"
+            set_optimizer(model, Ipopt.Optimizer)
+        elseif solver == "Gurobi"
+            set_optimizer(model, Gurobi.Optimizer)
+        end
+        rows, cols = size(points)
+        bounded_points = max.(points, 0.0)
+        @variable(model, l[1:rows] >= 0)
+        @constraint(model, sum(l[i] for i in 1:rows) == 1)
+        @variable(model, x[1:cols])
+        @constraint(model, x == bounded_points' * l)
+        @constraint(model, l .<= 0.95)
+        @objective(model, Min, 0)
+        set_silent(model)
+
+        max_point = maximum(points, dims=1)[:]
+        for idx in 1:num_samples
+            optimize!(model)
+            samples[idx] = max.(value.(model[:x]), 0.0)
+
+            target = rand(length(max_point)) .* max_point
+            @objective(model, Min, sum((model[:x][i] - target[i])^2 for i in 1:length(model[:x])))
+        end
+    end
+
+    return samples
 end
 
 function run_economic_dispatch(inputs, settings, capacity, demand_shift_weather_scenario, variable_costs_scenario, availability_scenario, period_weights_scenario, demand_adder_scenario)
