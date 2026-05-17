@@ -1,2 +1,2 @@
-﻿Lines,z1,z2,Existing_capacity
-1,1,-1,10000
+﻿Lines,z1,z2,Existing_capacity,Max_expansion,CAPEX_per_MW
+1,1,-1,0,10000,6000

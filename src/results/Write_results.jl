@@ -842,7 +842,7 @@ function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs:
 
 end
 
-function make_results_mapping_dfs(capacities::AbstractVector, SPs_output, tot_inv_cost, inv_cost_zone, cvar, ev, inputs::Dict, settings::Dict)
+function make_results_mapping_dfs(capacities::AbstractVector, line_capacities::AbstractVector, SPs_output, tot_inv_cost, inv_cost_zone, cvar, ev, inputs::Dict, settings::Dict)
 
  
     # This function is for writing results from the Benders algorithm, which has a different structure than the monolithic model output
@@ -912,7 +912,11 @@ function make_results_mapping_dfs(capacities::AbstractVector, SPs_output, tot_in
     #end
 
     # Collect results
-    df_cap = DataFrame(cap', all_resources)
+    all_cap = vcat(cap, line_capacities)
+    all_names = vcat(all_resources, inputs["Line names"])
+    df_cap = DataFrame(all_cap', all_names)
+    
+    
     # VaR
     #if settings["Risk sharing flag"]
      #   value_at_risk = MP_output["VaR"] # VaR is a vector indexed by technology
@@ -1004,7 +1008,7 @@ function make_results_mapping_dfs(capacities::AbstractVector, SPs_output, tot_in
                 for f in 1:size(P_f_eval)[1]
                     for k in 1:size(P_k_eval)[1]
                         # Collect CO2 emissions
-                        col_name_Emissions = string("EmissionsD",string(s),"F",string(f),"W",string(k))
+                        col_name_Emissions = string("Emissions_D_",string(s),"F",string(f),"W",string(k))
                         insertcols!(df_co2_all, col_name_Emissions => eval_SPs[s,f,k]["Emissions"])
                         # Collect operating cost
                         col_name_OpCost = string("OperatingCostD",string(s),"F",string(f),"W",string(k))

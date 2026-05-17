@@ -9,6 +9,8 @@ function load_input_data(inputs_path, settings)
     zone_columns = filter(x -> occursin(r"^z\d+$", x), names(lines_input))
     inputs["Number of zones"] = length(zone_columns)
     inputs["Line capacities"] = Array(lines_input[:, "Existing_capacity"])
+    inputs["Max expansion"] = Array(lines_input[:, "Max_expansion"])
+    inputs["CAPEX per MW"] = Array(lines_input[:, "CAPEX_per_MW"])
     inputs["Zone map"] = Array(lines_input[:, zone_columns])
 
     fuel_response_input = CSV.read(string(inputs_path,"/","Fuel_response.csv"), DataFrame, header=true)

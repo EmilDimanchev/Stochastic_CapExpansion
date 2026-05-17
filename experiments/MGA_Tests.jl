@@ -30,9 +30,10 @@ end
 function configure_parallel_workers!(settings::Dict)
     if settings["Parallel flag"]
         desired_workers = haskey(settings, "Workers") ? settings["Workers"] : max(Sys.CPU_THREADS - 1, 1)
-        if nworkers() < desired_workers
-            println("Current workers: ", nworkers(), ". Adding ", desired_workers - nworkers(), " workers for parallel processing...")
-            addprocs(desired_workers - nworkers())
+        wkers = nworkers() == 1 ? 0 : nworkers()
+        if wkers < desired_workers
+            println("Current workers: ", wkers, ". Adding ", desired_workers - wkers, " workers for parallel processing...")
+            addprocs(desired_workers - wkers)
         end
 
         project_root = abspath(joinpath(@__DIR__, ".."))
@@ -41,7 +42,7 @@ function configure_parallel_workers!(settings::Dict)
                 include(joinpath($project_root, "src", "Stochastic_CapExpansion.jl"))
             end
             using .Stochastic_CapExpansion
-            using Revise, JuMP, Gurobi, HiGHS, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions
+            using Revise, JuMP, Ipopt, Gurobi, HiGHS, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions
             nothing
         end
         @sync for pid in workers()
@@ -134,7 +135,7 @@ function run_stochastic_exploration(SPs::Array{Model, 3}, inputs::Dict, settings
         budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["MP"]["Inv_cost"] + output_cvar["Expected Value"])/settings["Scaling factor cost"]), "System_Expected", budgets)
         budgets = add_budget_constraint_bendersMP(MP, (((1-risk_aversion_weight)*output_exp["CVaR"] + (risk_aversion_weight)*output_exp["Expected Value"] + output_exp["MP"]["Inv_cost"])/settings["Scaling factor cost"]), "System_Weighted_CVaR", budgets; risk_aversion=risk_aversion_weight)
         cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
-        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x]), settings["Vector Type"], settings)
+        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Vector Type"], settings)        
         @info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
@@ -207,7 +208,7 @@ function run_stochastic_exploration_adj_exp(SPs::Array{Model, 3}, inputs::Dict, 
         budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["CVaR"])/settings["Scaling factor cost"]), "CVaR", budgets)
         budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/settings["Scaling factor cost"])*(budget_multiplier), "System_Expected", budgets)
         cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
-        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x]), settings["Vector Type"], settings)
+        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Vector Type"], settings)
         @info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
@@ -255,6 +256,7 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
     P_s = inputs["Demand scenario probabilities"]
     P_f = inputs["Gas price scenario probabilities"]
     P_k = inputs["Weather scenario probabilities"]
+    R = length(inputs["Resources"])
     
 
     MP = build_planning_model(inputs, settings)
@@ -294,11 +296,12 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
         budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["CVaR"])/settings["Scaling factor cost"]), "CVaR", budgets)
         budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/settings["Scaling factor cost"])*(budget_multiplier), "System_Expected", budgets)
         if mapping
-            cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")) && (parse(Int,split(string(con), "_")[end-1]) <= output_cvar["first_write"] + 10)]
+            cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
+            cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output_cvar["first_write"] + 10, cuts_to_keep)
         else
             cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
         end
-        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x]), settings["Vector Type"], settings)
+        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Vector Type"], settings)
         @info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
@@ -333,11 +336,11 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
         # Map interior after exterior mapping
         if mapping
             all_caps = Matrix(vcat(results_cap...))
-            @time samples = sample_interior(all_caps, n_samples)
+            @time samples = sample_interior(all_caps, n_samples, settings)
             eval_MP = build_planning_model(inputs, settings)
             for (i, sample) in enumerate(samples)
                 @info("Sample $i: Evaluating interior point with capacities: $sample")
-                fix_capacities!(eval_MP, sample)
+                fix_capacities!(eval_MP, sample[1:R], sample[R+1:end])
                 outputs_mp = run_planning_model(eval_MP, settings)
                 outputs_sp = run_all_subproblems(SPs, inputs, settings, sample, minimal_payload=false)
                 ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
@@ -529,8 +532,8 @@ function make_mgca_problem(points)
     return model
 end
 
-function sample_interior(points, num_samples)
-    return sample_interior_distributed(points, num_samples)
+function sample_interior(points, num_samples, settings)
+    return sample_interior_distributed(points, num_samples, settings)
 end
 
 

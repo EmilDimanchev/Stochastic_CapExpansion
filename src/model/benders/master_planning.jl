@@ -19,6 +19,7 @@ function run_planning_model(inputs, settings, SP_obj_list, SP_dual_list, x_prev)
 
     scaling_factor_cost = settings["Scaling factor cost"]
     cost_inv = cost_inv./scaling_factor_cost
+    capex_line = inputs["CAPEX per MW"]./scaling_factor_cost
 
     # ~~~
     # Build model
@@ -31,6 +32,7 @@ function run_planning_model(inputs, settings, SP_obj_list, SP_dual_list, x_prev)
     K = size(P_k)[1] # number of weather scenarios
     G = inputs["Number of generation resources"]
     O =  inputs["Number of storage resources"]
+    L = inputs["Number of lines"]
     R = G + O
 
 
@@ -67,6 +69,8 @@ function run_planning_model(inputs, settings, SP_obj_list, SP_dual_list, x_prev)
     # Capacity
     @variable(MP, x[r in 1:R] >= 0) # Capacity, MW
     @constraint(MP, max_capacity[r in 1:R], x[r] <= x_ub)
+    @variable(MP, x_line[l in 1:L] >= 0) # Transmission line expansion, MW
+    @constraint(MP, max_line_expansion[l in 1:L], x_line[l] <= inputs["Max expansion"][l])
 
     # Cuts
     @variable(MP, alpha[s in 1:S, f in 1:F, k in 1:K] >= 0)
@@ -75,7 +79,7 @@ function run_planning_model(inputs, settings, SP_obj_list, SP_dual_list, x_prev)
         # Auxiliary varliables for CVaR
         @variable(MP, u[s in 1:S, f in 1:F, k in 1:K] >= 0) # loss relative to VaR, $/MW
         @variable(MP, ζ) # VaR variable, $/MW
-         @constraint(MP, cvar_tail[s in 1:S, f in 1:F, k in 1:K, j in 1:J], MP[:u][s,f,k] >= SP_obj[s,f,k,j] + sum(SP_dual[r,s,f,k,j]*(MP[:x][r]-x_prev[j][r]) for r in 1:R) - MP[:ζ])
+        @constraint(MP, cvar_tail[s in 1:S, f in 1:F, k in 1:K, j in 1:J], MP[:u][s,f,k] >= SP_obj[s,f,k,j] + sum(SP_dual[r,s,f,k,j]*(MP[:x][r]-x_prev[j][r]) for r in 1:R) - MP[:ζ])
     end
         # @constraint(MP, cvar_tail[s in 1:S, f in 1:F, k in 1:K], u[s,f,k] >= sum(t_weights[t]*g[r,t,s,f,k]*cost_var[r,f] for r in 1:G) + sum(t_weights[t]*eNSE_Cost[t,s,f,k] for t in 1:T) + sum(cost_inv[r]*x[r] for r in 1:R) - ζ)
     
@@ -126,6 +130,8 @@ function build_planning_model(inputs, settings)
 
     if settings["Solver"] == "HiGHS"
         set_optimizer(MP, HiGHS.Optimizer)
+        set_optimizer_attribute(MP, "solver", "choose")
+        set_optimizer_attribute(MP, "run_crossover", "off")
     elseif settings["Solver"] == "Gurobi"
         set_optimizer(MP, Gurobi.Optimizer)
         set_optimizer_attribute(MP, "OptimalityTol", 1e-5)
@@ -143,6 +149,7 @@ function build_planning_model(inputs, settings)
 
     scaling_factor_cost = settings["Scaling factor cost"]
     cost_inv = cost_inv./scaling_factor_cost
+    capex_line = inputs["CAPEX per MW"]./scaling_factor_cost
 
     # ~~~
     # Build model
@@ -157,6 +164,7 @@ function build_planning_model(inputs, settings)
     O =  inputs["Number of storage resources"]
     R = G + O
     Z = inputs["Number of zones"]
+    L = inputs["Number of lines"]
 
     Ω = settings["Risk aversion weight"]
     x_ub = 1e6
@@ -169,12 +177,15 @@ function build_planning_model(inputs, settings)
     @variable(MP, x[r in 1:R] >= 1e-5) # Capacity, MW
     @constraint(MP, max_capacity[r in 1:R], x[r] <= x_ub)
 
+    @variable(MP, x_line[l in 1:L] >= 0) # Transmission line expansion, MW
+    @constraint(MP, max_line_expansion[l in 1:L], x_line[l] <= inputs["Max expansion"][l])
+
     # Cuts
     @variable(MP, alpha[s in 1:S, f in 1:F, k in 1:K] >= 0)
     
 
     # Cost Expressions
-    @expression(MP, inv_cost, sum(x[r]*cost_inv[r] for r in 1:R))
+    @expression(MP, inv_cost, sum(x[r]*cost_inv[r] for r in 1:R) + sum(x_line[l]*capex_line[l] for l in 1:L))
     @expression(MP, expected_alpha, sum(P[s]*P_f[f]*P_k[k]*alpha[s,f,k] for s in 1:S, f in 1:F, k in 1:K))
     @expression(MP, exp_sys_cost, expected_alpha + inv_cost)
     if risk_aversion_flag
@@ -227,7 +238,7 @@ function add_risk_terms!(MP::Model, inputs, settings)
 
 end
 
-function add_optimality_cuts!(MP, SP_obj, SP_dual, x_prev, coeffs, inputs,settings, iteration, case)
+function add_optimality_cuts!(MP, SP_obj, cap_dual, line_dual, x_prev, x_prev_line, coeffs, inputs,settings, iteration, case)
     scaling_factor_cost = settings["Scaling factor cost"]
     cvar_tail = settings["Risk aversion flag"]
 
@@ -243,14 +254,16 @@ function add_optimality_cuts!(MP, SP_obj, SP_dual, x_prev, coeffs, inputs,settin
     G = inputs["Number of generation resources"]
     O =  inputs["Number of storage resources"]
     R = G + O
+    L = inputs["Number of lines"]
 
     SP_obj = SP_obj./scaling_factor_cost
-    SP_dual = SP_dual./scaling_factor_cost
+    cap_dual = cap_dual./scaling_factor_cost
+    line_dual = line_dual./scaling_factor_cost
     if cvar_tail
-        @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:u][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) - MP[:ζ], base_name = "cvar_tail_cuts_"*case*"_"*string(iteration)*"_")
+        @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:u][s,f,k] >= SP_obj[s,f,k] + sum(cap_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) + sum(line_dual[l,s,f,k]*(MP[:x_line][l]-x_prev_line[l]) for l in 1:L) - MP[:ζ], base_name = "cvar_tail_cuts_"*case*"_"*string(iteration)*"_")
     end
     
-    @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:alpha][s,f,k] >= SP_obj[s,f,k] + sum(SP_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R), base_name = "optimality_cut_"*case*"_"*string(iteration)*"_")
+    @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:alpha][s,f,k] >= SP_obj[s,f,k] + sum(cap_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) + sum(line_dual[l,s,f,k]*(MP[:x_line][l]-x_prev_line[l]) for l in 1:L), base_name = "optimality_cut_"*case*"_"*string(iteration)*"_")
 end
 # Multiple dispatch run_planning_model with and without SP outputs for cuts
 function run_planning_model(MP, settings)
@@ -281,12 +294,43 @@ function run_planning_model(MP, settings)
 
 end
 
+function adjust_gamma(prev_UB, UBnew, LB, gamma)
+    Ia = prev_UB - UBnew;
+	Ip = prev_UB - LB-gamma*(prev_UB-LB);
+	ω = 0.5;
+	η₁ = 0.1;
+	η₂ = 0.9;
+    max_gamma = 0.25
+	if Ia>=0 && Ip>0
 
-function regularization(MP, UB, LB, settings)
+		r = Ia/Ip
+		
+		if r <=η₁
+			#bad iteration: there wasn't enough improvement, we increase γ because we are less confident in the piecewise approximation in the master model
+			gamma = gamma*1.2;
+		elseif η₁ <= r <= η₂
+			#okish iteration
+			#do nothing
+		else
+			#good iteration, we are feeling confident in the piecewise approximation in the master model and so we reduce γ
+			gamma = gamma/1.2;
+		end
+        gamma = min(gamma, max_gamma)
 
-    @constraint(MP, cLevel_set, MP[:eObj] <= LB + 0.5*(UB-LB))
+	else
+		#do nothing
+	end
+    return gamma
+end
+
+
+function regularization(MP, UB, LB, gamma, settings)
+
+    @constraint(MP, cLevel_set, MP[:eObj] <= LB + gamma*(UB-LB))
+    #@constraint(MP, cLevel_set, MP[:eObj] >= LB + gamma*(UB-LB))
+    set_optimizer_attribute(MP, "solver", "ipm")
     
-    @objective(MP, Min, sum(0.0 * MP[:alpha]))
+    @objective(MP, Min, 0.0)
 
     optimize!(MP)
 
@@ -314,6 +358,9 @@ function regularization(MP, UB, LB, settings)
     delete(MP,MP[:cLevel_set])
     unregister(MP,:cLevel_set)
     @objective(MP,Min, MP[:eObj])
+    if settings["Solver"] == "HiGHS"
+        set_optimizer_attribute(MP, "solver", "choose")
+    end
 
     return output
 
@@ -324,6 +371,7 @@ function write_outputs(MP, settings)
     output = Dict{String, Any}()
     output["Planning objective"] = value(MP[:eObj])*scaling_factor_cost
     output["Capacity"] = value.(MP[:x])
+    output["Line expansion"] = value.(MP[:x_line])
     output["Alpha"] = value.(MP[:alpha]).*scaling_factor_cost
     output["Contract volume"] = 0
     output["Contract price"] = 0
@@ -376,7 +424,8 @@ function set_objective_bendersMP!(model, objective_type::String, inputs, setting
         if set_coeffs == []
             error("For Capacity objective, please provide a vector of coefficients for the capacity expression.")
         end
-        @objective(model, Min, set_coeffs'*model[:x])
+        x_full = [collect(model[:x][r] for r in 1:length(model[:x])); collect(model[:x_line][l] for l in 1:length(model[:x_line]))]
+        @objective(model, Min, set_coeffs' * x_full)
         @info("Objective set to minimize capacity expression: ", objective_function(model))
     else
         error("Unsupported objective type. Please choose from 'Expectation', 'Weighted CVaR', or 'Capacity'.")
@@ -443,14 +492,20 @@ function manage_cuts(MP::Model, cuts_to_keep::Vector{String})
 end
 
 
-function fix_capacities!(MP::Model, new_caps::Vector{Float64})
+function fix_capacities!(MP::Model, new_caps::Vector{Float64}, new_line_caps::Vector{Float64})
     for r in 1:length(new_caps)
         fix(MP[:x][r], new_caps[r], force = true)
+    end
+    for l in 1:length(new_line_caps)
+        fix(MP[:x_line][l], new_line_caps[l], force = true)
     end
 end
 
 function unfix_capacities!(MP::Model)
     for r in 1:length(MP[:x])
         unfix(MP[:x][r])
+    end
+    for l in 1:length(MP[:x_line])
+        unfix(MP[:x_line][l])
     end
 end

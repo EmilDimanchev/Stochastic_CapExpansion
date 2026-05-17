@@ -54,9 +54,10 @@ function _build_and_cache_subproblem!(scenario_key::Tuple{Int, Int, Int})
     return nothing
 end
 
-function _run_cached_subproblem!(scenario_key::Tuple{Int, Int, Int}, capacity::Vector{Float64}, minimal_payload::Bool)
+function _run_cached_subproblem!(scenario_key::Tuple{Int, Int, Int}, capacity::Vector{Float64}, capacity_line::Vector{Float64}, minimal_payload::Bool)
     SP = WORKER_SP_CACHE[scenario_key]
     set_parameter_value.(SP[:x], capacity)
+    set_parameter_value.(SP[:x_line], capacity_line)
     result = run_subproblem(SP, WORKER_DATA_CACHE[:inputs], WORKER_DATA_CACHE[:settings]; minimal_payload=minimal_payload)
     return result
 end
@@ -461,6 +462,7 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     # Generation
     @variable(ED, g[r in 1:G, t in 1:T] >= 0) # MWh
     @variable(ED, x[r in 1:R] in Parameter(0.0)) # Capacity, MW
+    @variable(ED, x_line[l in 1:L] in Parameter(0.0)) # Line capacity, MW
     # Non-servED energy
     @variable(ED, y[seg in 1:nse_segs, t in 1:T, z in 1:Z] >= 0) # $/MWh
     @expression(ED, cost_nse[t in 1:T, z in 1:Z], sum(price_nse[seg]*y[seg,t,z] for seg in 1:nse_segs))
@@ -508,8 +510,8 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     @constraint(ED, capacity_limit[r in 1:G, t in 1:T], g[r,t] <= x[r]*availability[t,r])
     if Z > 1
         @variable(ED, flow[t in 1:T, l in 1:L])
-        @constraint(ED, transmission_limit[t in 1:T, l in 1:L], flow[t,l] <= inputs["Line capacities"][l]/scaling_factor_demand)
-        @constraint(ED, transmission_limit_negative[t in 1:T, l in 1:L], flow[t,l] >= -inputs["Line capacities"][l]/scaling_factor_demand)
+        @constraint(ED, transmission_limit[t in 1:T, l in 1:L], flow[t,l] <= x_line[l]/scaling_factor_demand)
+        @constraint(ED, transmission_limit_negative[t in 1:T, l in 1:L], flow[t,l] >= -x_line[l]/scaling_factor_demand)
     end
 
 
@@ -540,9 +542,10 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
 end
 
 
-function set_capacity_parameters!(SPs::Array{Model,3}, capacity::Vector{Float64})
+function set_capacity_parameters!(SPs::Array{Model,3}, capacity::Vector{Float64}, capacity_line::Vector{Float64})
     for SP in SPs
         set_parameter_value.(SP[:x], capacity)
+        set_parameter_value.(SP[:x_line], capacity_line)
     end
 end
 
@@ -563,7 +566,7 @@ function run_subproblem(ED::Model, inputs, settings; minimal_payload::Bool=false
     return output
 end
 
-function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Vector{Float64}; minimal_payload::Bool=get(settings, "Minimal worker payload flag", true))
+function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Vector{Float64}, capacity_line::Vector{Float64}; minimal_payload::Bool=get(settings, "Minimal worker payload flag", true))
 
     sp_results = Array{Dict{String, Any},3}(undef, size(SPs)...)
     if settings["Parallel flag"] && nworkers() > 0
@@ -583,7 +586,7 @@ function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Ve
                 if !(scenario_key in worker_keys)
                     error("Subproblem $(scenario_key) is not cached on worker $(pid). Call build_all_subproblems() before run_all_subproblems().")
                 end
-                sp_results[scenario_key...] = @fetchfrom pid _run_cached_subproblem!(scenario_key, capacity, minimal_payload)
+                sp_results[scenario_key...] = @fetchfrom pid _run_cached_subproblem!(scenario_key, capacity, capacity_line, minimal_payload)
                 
             end
         end
@@ -592,7 +595,7 @@ function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Ve
         if settings["Parallel flag"] && nworkers() == 0
             @warn("Parallel flag is true but no distributed workers are available. Falling back to serial subproblem solves.")
         end
-        set_capacity_parameters!(SPs, capacity)
+        set_capacity_parameters!(SPs, capacity, capacity_line)
         for s in 1:size(SPs,1), f in 1:size(SPs,2), k in 1:size(SPs,3)
             sp_results[s,f,k] = run_subproblem(SPs[s,f,k], inputs, settings; minimal_payload=minimal_payload) 
         end
@@ -630,7 +633,9 @@ function write_subproblem_results(ED::Model, inputs, settings; minimal_payload::
     nse_segs = length(max_nse)
     
     
-    output["SP dual"] = dual.(ParameterRef.(ED[:x])).*settings["Scaling factor cost"]
+    output["capacity dual"] = dual.(ParameterRef.(ED[:x])).*settings["Scaling factor cost"]
+    output["line dual"] = dual.(ParameterRef.(ED[:x_line])).*settings["Scaling factor cost"]
+
     output["SP objective"] = objective_value(ED).*(settings["Scaling factor cost"]*settings["Scaling factor demand"])
     if minimal_payload
         return output
@@ -643,6 +648,7 @@ function write_subproblem_results(ED::Model, inputs, settings; minimal_payload::
     generation = value.(ED[:g])
     output["Emissions"] = sum(t_weights[t]*generation[r,t]*co2_factors[r] for r in 1:G, t in 1:T)
     output["Load shedding"] = value.(ED[:total_nse])
+    output["Net Flow"] = value.(ED[:flow])
     sd = value.(ED[:served_demand]).*settings["Scaling factor demand"]
     tb = value.(ED[:total_benefit]).*(settings["Scaling factor cost"]*settings["Scaling factor demand"])
     #output["Consumer surplus"] = sum(t_weights[t]*(tb[t] - output["Power price"][t]*sum(sd[seg,t] for seg in 1:nse_segs)) for t in 1:T)
