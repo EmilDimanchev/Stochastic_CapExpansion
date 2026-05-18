@@ -193,6 +193,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     # Initializing new bound settings
     LB_hist = [-Inf]
     UB_hist = [Inf]
+    inv_cost_hist = []
     
     UB = Inf
     P = inputs["Demand scenario probabilities"]
@@ -205,7 +206,13 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     cvar_estimate = 0.0
     min_UB = Inf
     unst_LB = -Inf
+    inv_cost_unst = 0.0
+    cut_deactivation_threshold = settings["Cut deactivation threshold"]
     gamma = 0.001 # Initial regularization parameter; will be adjusted based on gap
+    if settings["Regularization strategy"] == "QTR"
+        gamma = 0.5
+        phi = 0.5
+    end
 
     gaps = []
     all_outputs_sp = Vector{Any}(undef, J_max)
@@ -215,6 +222,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     minimal_payload = true
     first_write = 0
     indicator_written = false
+    last_iteration_cuts = Dict{String, Int64}()
+    rhs_values = Dict{String, Float64}()
 
     if mapping
         @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
@@ -236,6 +245,10 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     line_expansion_initial = output_mp["Line expansion"]
     push!(capacity_mix, capacity_mix_initial)
     push!(line_expansion, line_expansion_initial)
+    stab_cent_cap = capacity_mix_initial
+    stab_cent_line = line_expansion_initial
+    push!(inv_cost_hist, output_mp["Inv_cost"]/settings["Scaling factor cost"]) 
+
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # Algorithm
@@ -294,6 +307,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         end
         if UB < min_UB
             min_UB = UB
+            stab_cent_cap = capacity_mix[j]
+            stab_cent_line = line_expansion[j]
         end
         push!(UB_hist, min_UB)
         
@@ -393,23 +408,58 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             else
                 LB_unst  = alpha_ev + output_mp_unst["Inv_cost"]/settings["Scaling factor cost"]
             end
+            inv_cost_unst = output_mp_unst["Inv_cost"]/settings["Scaling factor cost"]
             LB = max(LB, LB_unst)
             push!(LB_hist, LB)
+
+            all_cuts = [name(con) for con in all_constraints(MP) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+            for cut in all_cuts
+                if !haskey(last_iteration_cuts, cut) 
+                    # catalog and update last iteration
+                    last_iteration_cuts[cut] = j
+                    rhs_values[cut] = constraint_by_name(MP, cut).rhs
+                elseif output_mp_unst["Cut Duals"][cut] >= 0.0001
+                    # only update
+                    last_iteration_cuts[cut] = j
+                elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold
+                    # deactivate
+                    @info("Deactivating cut $(cut) due to inactivity.")
+                    deactivate_constraint(MP, cut)
+                end
+            end
+
+
             
             if settings["Regularization flag"]
-                
-                @info("Applying regularization to master problem")
-                gamma = adjust_gamma(UB_hist[end-1], min_UB, LB, gamma)
-                output_mp = regularization(MP, min_UB, LB, gamma, settings)
-                alpha_ev_stb = output_mp["Expected alpha"]/settings["Scaling factor cost"]
-                if risk_aversion_flag
-                    u_cvar_stb = output_mp["CVaR term"]/settings["Scaling factor cost"]
-                    risk_adjusted_LB_stb = risk_aversion_weight*alpha_ev_stb + (1-risk_aversion_weight)*u_cvar_stb
-                    LB = risk_adjusted_LB_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
-                else
-                    LB = alpha_ev_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+                if settings["Regularization strategy"] == "Level Set"
+                    @info("Applying level set regularization to master problem")
+                    gamma = adjust_gamma(UB_hist[end-1], min_UB, LB, gamma)
+                    output_mp = regularization(MP, min_UB, LB, gamma, settings)
+                    alpha_ev_stb = output_mp["Expected alpha"]/settings["Scaling factor cost"]
+                    if risk_aversion_flag
+                        u_cvar_stb = output_mp["CVaR term"]/settings["Scaling factor cost"]
+                        risk_adjusted_LB_stb = risk_aversion_weight*alpha_ev_stb + (1-risk_aversion_weight)*u_cvar_stb
+                        #LB = risk_adjusted_LB_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+                    else
+                        #LB = alpha_ev_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+                    end
+                    #@info("Pre-reg LB: $LB_unst, Post-reg LB: $LB")
+                elseif settings["Regularization strategy"] == "QTR"
+                    @info("Applying quasi-tangential regularization to master problem")
+                    x_vector = vcat(vec(output_mp_unst["Capacity"]), vec(output_mp_unst["Line expansion"]))
+                    gamma = set_gamma_qtr(gamma, phi, inv_cost_unst, inv_cost_hist[end], x_vector)
+                    output_mp = qtr_regularization(MP, stab_cent_cap, stab_cent_line, phi, gamma, settings)
+                    alpha_ev_stb = output_mp["Expected alpha"]/settings["Scaling factor cost"]
+                    if risk_aversion_flag
+                        u_cvar_stb = output_mp["CVaR term"]/settings["Scaling factor cost"]
+                        risk_adjusted_LB_stb = risk_aversion_weight*alpha_ev_stb + (1-risk_aversion_weight)*u_cvar_stb
+                        #LB = risk_adjusted_LB_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+                    else
+                        #LB = alpha_ev_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+                    end
+                    #@info("Pre-reg LB: $LB_unst, Post-reg LB: $LB")
+                    push!(inv_cost_hist, output_mp["Inv_cost"]/settings["Scaling factor cost"])
                 end
-                @info("Pre-reg LB: $LB_unst, Post-reg LB: $LB")
             else
                 output_mp = output_mp_unst
             end
@@ -434,7 +484,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
     # Report results
     @info("Final capacity mix:" * string(results["Capacity per iteration"]))
-    return results
+    return results, rhs_values
 
 end
 
@@ -542,6 +592,9 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     all_outputs_mp = Vector{Any}(undef, J_max)
     indicator_written = false
     first_write = 0
+    last_iteration_cuts = Dict{String, Int64}()
+    rhs_values = Dict{String, Float64}()
+    cut_deactivation_threshold = settings["Cut deactivation threshold"]
 
     if mapping
         @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
@@ -721,6 +774,22 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 "gap_hist" => gap_hist,
             ])
 
+            all_cuts = [name(con) for con in all_constraints(MP) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+            for cut in all_cuts
+                if !haskey(last_iteration_cuts, cut) 
+                    # catalog and update last iteration
+                    last_iteration_cuts[cut] = j
+                    rhs_values[cut] = constraint_by_name(MP, cut).rhs
+                elseif output_mp_unst["Cut Duals"][cut] >= 0.0001
+                    # only update
+                    last_iteration_cuts[cut] = j
+                elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold
+                    # deactivate
+                    @info("Deactivating cut $(cut) due to inactivity.")
+                    deactivate_constraint(MP, cut)
+                end
+            end
+
         end
     end
     elapsed = time() - algorithm_start_time
@@ -729,6 +798,6 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     # Report results
     @info("Final capacity mix:" * string(results["Capacity per iteration"]))
     @info("Final line expansion:" * string(results["Line expansion per iteration"]))
-    return results
+    return results, rhs_values
 
 end

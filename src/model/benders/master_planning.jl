@@ -1,5 +1,11 @@
 export run_planning_model, build_planning_model, add_optimality_cuts!
 
+#=====================================
+
+Base function (Out of date, but keeping for reference)
+
+=====================================#
+
 function run_planning_model(inputs, settings, SP_obj_list, SP_dual_list, x_prev)
     # Model
     MP = Model(Gurobi.Optimizer)
@@ -122,6 +128,11 @@ function run_planning_model(inputs, settings, SP_obj_list, SP_dual_list, x_prev)
     return output
 end
 
+#=====================================
+
+Constructors
+
+=====================================#
 
 function build_planning_model(inputs, settings)
     # Model
@@ -265,6 +276,13 @@ function add_optimality_cuts!(MP, SP_obj, cap_dual, line_dual, x_prev, x_prev_li
     
     @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:alpha][s,f,k] >= SP_obj[s,f,k] + sum(cap_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) + sum(line_dual[l,s,f,k]*(MP[:x_line][l]-x_prev_line[l]) for l in 1:L), base_name = "optimality_cut_"*case*"_"*string(iteration)*"_")
 end
+
+#=====================================
+
+Runner
+
+=====================================#
+
 # Multiple dispatch run_planning_model with and without SP outputs for cuts
 function run_planning_model(MP, settings)
 
@@ -293,6 +311,13 @@ function run_planning_model(MP, settings)
     return output
 
 end
+
+
+#=====================================
+
+Regularization functions
+
+=====================================#
 
 function adjust_gamma(prev_UB, UBnew, LB, gamma)
     Ia = prev_UB - UBnew;
@@ -324,7 +349,7 @@ function adjust_gamma(prev_UB, UBnew, LB, gamma)
 end
 
 
-function regularization(MP, UB, LB, gamma, settings)
+function level_set_regularization(MP, UB, LB, gamma, settings)
 
     @constraint(MP, cLevel_set, MP[:eObj] <= LB + gamma*(UB-LB))
     #@constraint(MP, cLevel_set, MP[:eObj] >= LB + gamma*(UB-LB))
@@ -366,6 +391,65 @@ function regularization(MP, UB, LB, gamma, settings)
 
 end
 
+# Quadratic trust region regularization
+# per https://www.sciencedirect.com/science/article/pii/S0377221719303617
+function qtr_regularization(MP, stab_cent_cap, stab_cent_line, gamma_qtr, settings)
+    # Sets
+    R = length(MP[:x])
+    L = length(MP[:x_line])
+
+    @constraint(MP, cTrust_region, sum((MP[:x][r]-stab_cent_cap[r])^2 for r in 1:R) + sum((MP[:x_line][l]-stab_cent_line[l])^2 for l in 1:L) <= gamma_qtr)
+
+    optimize!(MP)
+
+    if termination_status(MP) != MOI.OPTIMAL
+        @warn("Model did not solve to optimality. Status: ", termination_status(MP))
+    end
+    if termination_status(MP) == MOI.INFEASIBLE
+        @warn("Model did not solve to optimality. Status: ", termination_status(MP))
+        compute_conflict!(MP)
+        list_of_conflicting_constraints = ConstraintRef[];
+        for (F, S) in list_of_constraint_types(MP)
+            for con in all_constraints(MP, F, S)
+                if get_attribute(con, MOI.ConstraintConflictStatus()) == MOI.IN_CONFLICT
+                    push!(list_of_conflicting_constraints, con)
+                end
+            end
+        end
+        display(list_of_conflicting_constraints)
+        error("Model infeasible. See conflicting constraints above.")
+    end
+    
+    # Write outputs
+    output = write_outputs(MP, settings)
+
+    delete(MP,MP[:cTrust_region])
+    unregister(MP,:cTrust_region)
+end
+
+
+function set_gamma_qtr(gamma_qtr, phi, U_unst, U_prev, x_vector)
+    phi_min = 0.1
+    kappa = 0.5
+    if abs(1- (U_unst/U_prev)) < 0.01
+        phi = max(phi_min, kappa*phi)
+    end
+
+    gamma_qtr = phi^2 * norm(x_vector, 1)^2
+
+    return gamma_qtr
+end
+
+
+
+
+#=====================================
+
+Outputs
+
+=====================================#
+
+
 function write_outputs(MP, settings)
     scaling_factor_cost = settings["Scaling factor cost"]
     output = Dict{String, Any}()
@@ -379,6 +463,8 @@ function write_outputs(MP, settings)
     output["Expected alpha"] = value(MP[:expected_alpha])*scaling_factor_cost
     output["Expected System Cost"] = value.(MP[:exp_sys_cost])*scaling_factor_cost
     output["Inv cost by zone"] = value.(MP[:inv_cost_by_zone]).*scaling_factor_cost
+    cuts = [con for con in all_constraints(MP) if startswith(string(con), "optimality_cut") || startswith(string(con), "cvar_tail_cuts")]
+    output["Cut Duals"] = Dict[name(con) => dual(con) for con in cuts]
     # Record results from the linearization or not
     if settings["Risk aversion flag"]
         output["CVaR Loss"] = value.(MP[:u]).*scaling_factor_cost
@@ -489,6 +575,27 @@ function manage_cuts(MP::Model, cuts_to_keep::Vector{String})
         end
     end
     return cuts_to_keep
+end
+
+function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String})
+    for cut_name in cuts_to_deactivate
+        if haskey(MP, Symbol(cut_name))
+            set_normalized_rhs(MP[Symbol(cut_name)], 1e6) # effectively deactivate the cut by setting a very large RHS
+        else
+            @warn("Cut ", cut_name, " not found in model. Cannot deactivate.")
+        end
+    end
+    return original_rhs
+end
+
+function reactivate_cuts(MP::Model, cuts_to_reactivate::Vector{String}, original_rhs::Dict{String, Float64})
+    for cut_name in cuts_to_reactivate
+        if haskey(MP, Symbol(cut_name)) && haskey(original_rhs, cut_name) && normalized_rhs(MP[Symbol(cut_name)]) >= 1e6
+            set_normalized_rhs(MP[Symbol(cut_name)], original_rhs[cut_name]) # reactivate the cut by restoring original RHS
+        else
+            @warn("Cut ", cut_name, " not found in model or original RHS not recorded. Cannot reactivate.")
+        end
+    end
 end
 
 

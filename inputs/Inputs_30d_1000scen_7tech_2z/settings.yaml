@@ -42,6 +42,7 @@ Cost of nonserved energy: [9e3,1500,1100,400]
 Max nse: [0.917,0.05,0.03,0.003]
 
 Regularization flag: true
+Regularization strategy: "QTR" # options are "QTR" and "Level Set"
 
 # Distributed Memory Parallelization
 Parallel flag: true
@@ -54,6 +55,7 @@ Capacity Exploration: true
 Seed: 1234
 Budget convergence tolerance: 0.0001
 Cuts retained: 50000
+Cut deactivation threshold: 8
 
 Mapping: true
 Mapping Gap Threshold: 0.2
