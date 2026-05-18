@@ -209,9 +209,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     inv_cost_unst = 0.0
     cut_deactivation_threshold = settings["Cut deactivation threshold"]
     gamma = 0.001 # Initial regularization parameter; will be adjusted based on gap
+    phi = 0.5
     if settings["Regularization strategy"] == "QTR"
         gamma = 0.5
-        phi = 0.5
     end
 
     gaps = []
@@ -224,6 +224,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     indicator_written = false
     last_iteration_cuts = Dict{String, Int64}()
     rhs_values = Dict{String, Float64}()
+    removed_cuts = []
 
     if mapping
         @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
@@ -412,20 +413,25 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             LB = max(LB, LB_unst)
             push!(LB_hist, LB)
 
-            all_cuts = [name(con) for con in all_constraints(MP) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+            all_cuts = [string(name(con)) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+            cuts_to_remove = String[]
             for cut in all_cuts
                 if !haskey(last_iteration_cuts, cut) 
                     # catalog and update last iteration
                     last_iteration_cuts[cut] = j
-                    rhs_values[cut] = constraint_by_name(MP, cut).rhs
+                    rhs_values[cut] = normalized_rhs(constraint_by_name(MP, cut))
                 elseif output_mp_unst["Cut Duals"][cut] >= 0.0001
                     # only update
                     last_iteration_cuts[cut] = j
-                elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold
+                elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold && !(cut in removed_cuts)
                     # deactivate
-                    @info("Deactivating cut $(cut) due to inactivity.")
-                    deactivate_constraint(MP, cut)
+                    #@info("Deactivating cut $(cut) due to inactivity.")
+                    push!(cuts_to_remove, cut)
                 end
+            end
+            if length(cuts_to_remove) >= 1
+                deactivate_cuts(MP, cuts_to_remove)
+                append!(removed_cuts, cuts_to_remove)
             end
 
 
@@ -434,7 +440,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 if settings["Regularization strategy"] == "Level Set"
                     @info("Applying level set regularization to master problem")
                     gamma = adjust_gamma(UB_hist[end-1], min_UB, LB, gamma)
-                    output_mp = regularization(MP, min_UB, LB, gamma, settings)
+                    output_mp = level_set_regularization(MP, min_UB, LB, gamma, settings)
                     alpha_ev_stb = output_mp["Expected alpha"]/settings["Scaling factor cost"]
                     if risk_aversion_flag
                         u_cvar_stb = output_mp["CVaR term"]/settings["Scaling factor cost"]
@@ -445,10 +451,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                     end
                     #@info("Pre-reg LB: $LB_unst, Post-reg LB: $LB")
                 elseif settings["Regularization strategy"] == "QTR"
-                    @info("Applying quasi-tangential regularization to master problem")
                     x_vector = vcat(vec(output_mp_unst["Capacity"]), vec(output_mp_unst["Line expansion"]))
-                    gamma = set_gamma_qtr(gamma, phi, inv_cost_unst, inv_cost_hist[end], x_vector)
-                    output_mp = qtr_regularization(MP, stab_cent_cap, stab_cent_line, phi, gamma, settings)
+                    gamma, phi = set_gamma_qtr(gamma, phi, inv_cost_unst, inv_cost_hist[end], x_vector)
+                    output_mp = qtr_regularization(MP, stab_cent_cap, stab_cent_line, gamma, settings)
                     alpha_ev_stb = output_mp["Expected alpha"]/settings["Scaling factor cost"]
                     if risk_aversion_flag
                         u_cvar_stb = output_mp["CVaR term"]/settings["Scaling factor cost"]
@@ -774,7 +779,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 "gap_hist" => gap_hist,
             ])
 
-            all_cuts = [name(con) for con in all_constraints(MP) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+            all_cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
             for cut in all_cuts
                 if !haskey(last_iteration_cuts, cut) 
                     # catalog and update last iteration

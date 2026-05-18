@@ -351,10 +351,13 @@ end
 
 function level_set_regularization(MP, UB, LB, gamma, settings)
 
-    @constraint(MP, cLevel_set, MP[:eObj] <= LB + gamma*(UB-LB))
+    @constraint(MP, cLevel_set, MP[:eObj] <= LB + 0.5*(UB-LB))
     #@constraint(MP, cLevel_set, MP[:eObj] >= LB + gamma*(UB-LB))
-    set_optimizer_attribute(MP, "solver", "ipm")
-    
+    if settings["Solver"] == "HiGHS"
+        set_optimizer_attribute(MP, "solver", "ipm")
+    elseif settings["Solver"] == "Gurobi"
+        set_optimizer_attribute(MP, "Method", 2)
+    end
     @objective(MP, Min, 0.0)
 
     optimize!(MP)
@@ -385,6 +388,8 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
     @objective(MP,Min, MP[:eObj])
     if settings["Solver"] == "HiGHS"
         set_optimizer_attribute(MP, "solver", "choose")
+    elseif settings["Solver"] == "Gurobi"
+        set_optimizer_attribute(MP, "Method", -1)
     end
 
     return output
@@ -421,10 +426,11 @@ function qtr_regularization(MP, stab_cent_cap, stab_cent_line, gamma_qtr, settin
     end
     
     # Write outputs
-    output = write_outputs(MP, settings)
+    output = write_outputs(MP, settings; reg=true)
 
     delete(MP,MP[:cTrust_region])
     unregister(MP,:cTrust_region)
+    return output
 end
 
 
@@ -437,7 +443,7 @@ function set_gamma_qtr(gamma_qtr, phi, U_unst, U_prev, x_vector)
 
     gamma_qtr = phi^2 * norm(x_vector, 1)^2
 
-    return gamma_qtr
+    return gamma_qtr, phi
 end
 
 
@@ -450,7 +456,7 @@ Outputs
 =====================================#
 
 
-function write_outputs(MP, settings)
+function write_outputs(MP, settings; reg=false)
     scaling_factor_cost = settings["Scaling factor cost"]
     output = Dict{String, Any}()
     output["Planning objective"] = value(MP[:eObj])*scaling_factor_cost
@@ -463,8 +469,7 @@ function write_outputs(MP, settings)
     output["Expected alpha"] = value(MP[:expected_alpha])*scaling_factor_cost
     output["Expected System Cost"] = value.(MP[:exp_sys_cost])*scaling_factor_cost
     output["Inv cost by zone"] = value.(MP[:inv_cost_by_zone]).*scaling_factor_cost
-    cuts = [con for con in all_constraints(MP) if startswith(string(con), "optimality_cut") || startswith(string(con), "cvar_tail_cuts")]
-    output["Cut Duals"] = Dict[name(con) => dual(con) for con in cuts]
+    
     # Record results from the linearization or not
     if settings["Risk aversion flag"]
         output["CVaR Loss"] = value.(MP[:u]).*scaling_factor_cost
@@ -475,6 +480,13 @@ function write_outputs(MP, settings)
         output["CVaR Loss"] = 0
         output["VaR"] = 0
         output["CVaR term"] = 0
+    end
+    
+    if !reg
+        cuts = [con for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut") || startswith(string(con), "cvar_tail_cuts")]
+        cut_names = [name(con) for con in cuts]
+        cut_duals = [dual(con) for con in cuts]
+        output["Cut Duals"] = Dict(zip(cut_names, cut_duals))
     end
 
     return output
@@ -579,13 +591,8 @@ end
 
 function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String})
     for cut_name in cuts_to_deactivate
-        if haskey(MP, Symbol(cut_name))
-            set_normalized_rhs(MP[Symbol(cut_name)], 1e6) # effectively deactivate the cut by setting a very large RHS
-        else
-            @warn("Cut ", cut_name, " not found in model. Cannot deactivate.")
-        end
+        set_normalized_rhs(constraint_by_name(MP, cut_name), 1e6) # effectively deactivate the cut by setting a very large RHS
     end
-    return original_rhs
 end
 
 function reactivate_cuts(MP::Model, cuts_to_reactivate::Vector{String}, original_rhs::Dict{String, Float64})
