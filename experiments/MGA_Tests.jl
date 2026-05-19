@@ -95,7 +95,7 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
 
     # Base Runs
     set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk_aversion_weight)
-    output_cvar, rhs_values = benders_algorithm(inputs, settings, MP, SPs, "System_Weighted_CVaR"; Eval_SPs = Eval_SPs, mapping = mapping)
+    output_cvar = benders_algorithm(inputs, settings, MP, SPs, "System_Weighted_CVaR"; Eval_SPs = Eval_SPs, mapping = mapping)
     log_result_memory!("System_Weighted_CVaR output", output_cvar)
     gap_cvar = output_cvar["Gaps"]
     push!(run_labels, "System_Weighted_CVaR")
@@ -128,19 +128,21 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
         budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["CVaR"])/settings["Scaling factor cost"]), "CVaR", budgets)
         budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/settings["Scaling factor cost"])*(budget_multiplier), "System_Expected", budgets)
         cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
-        cuts_to_keep = copy(cuts)
+        #cuts_to_keep = copy(cuts)
+        rhs_values = output_cvar["RHS Values"]
+        removed_cuts = output_cvar["Removed cuts"]
         if mapping
-            cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output_cvar["first_write"] + 10, cuts_to_keep)
+            #cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output_cvar["first_write"] + 10, cuts_to_keep)
         end
         vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Vector Type"], settings)
-        @info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
+        #@info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
-            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             # other option - reactivate all cuts then let alg deactivate those that are not useful
-            # reactivate_cuts(MP, cuts, rhs_values)
+            reactivate_cuts(MP, removed_cuts, rhs_values)
 
-            output_random, rhs_values = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs, mapping = mapping)
+            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs, mapping = mapping)
             log_result_memory!("Random_"*string(iteration)*" output", output_random)
             
             gap = output_random["Gaps"]
@@ -160,10 +162,12 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
             end
             
             release_heavy_payload!(output_random)
+            rhs_values = output_random["RHS Values"]
+            removed_cuts = output_random["Removed cuts"]
             
-            if length(cuts_to_keep) < settings["Cuts retained"] && !mapping
-                push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
-            end
+            #if length(cuts_to_keep) < settings["Cuts retained"] && !mapping
+             #   push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
+           # end
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
 
@@ -171,15 +175,16 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
         if mapping
             all_caps = Matrix(vcat(results_cap...))
             @time samples = sample_interior(all_caps, n_samples, settings)
-            eval_MP = build_planning_model(inputs, settings)
+            MP = build_planning_model(inputs, settings)
             for (i, sample) in enumerate(samples)
                 @info("Sample $i: Evaluating interior point with capacities: $sample")
-                fix_capacities!(eval_MP, sample[1:R], sample[R+1:end])
-                outputs_mp = run_planning_model(eval_MP, settings)
-                outputs_sp = run_all_subproblems(SPs, inputs, settings, sample, minimal_payload=false)
+                fix_capacities!(MP, sample[1:R], sample[R+1:end])
+                outputs_mp = run_planning_model(MP, settings)
+                outputs_sp = run_all_subproblems(SPs, inputs, settings, sample[1:R], sample[R+1:end]; minimal_payload=false)
                 ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
                 @info("Sample $i: Investment cost = $(outputs_mp["Inv_cost"]), Expected value = $ev, CVaR = $(cvar)")
-                unfix_capacities!(eval_MP)
+                @info("Sample $i: Budget Percentage for CVaR: $((cvar*settings["Scaling factor cost"])/budgets["CVaR"]*100)%, Budget Percentage for Expected Value: $(((ev+outputs_mp["Inv_cost"])*settings["Scaling factor cost"])/budgets["System_Expected"]*100)%")
+                unfix_capacities!(MP)
                 temp_df_cap, temp_df_syscost, temp_df_emissions = make_results_mapping_dfs(outputs_mp, outputs_sp, cvar, ev, inputs, settings)
                 push!(results_cap, temp_df_cap)
                 push!(results_syscost, temp_df_syscost)

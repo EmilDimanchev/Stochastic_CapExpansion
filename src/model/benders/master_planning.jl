@@ -402,13 +402,18 @@ function qtr_regularization(MP, stab_cent_cap, stab_cent_line, gamma_qtr, settin
     # Sets
     R = length(MP[:x])
     L = length(MP[:x_line])
+    @info("Adding trust region constraint with gamma: ", gamma_qtr)
+    if settings["Solver"] == "HiGHS"
+        set_silent(MP)
+        set_optimizer(MP, Ipopt.Optimizer)
+    end
 
     @constraint(MP, cTrust_region, sum((MP[:x][r]-stab_cent_cap[r])^2 for r in 1:R) + sum((MP[:x_line][l]-stab_cent_line[l])^2 for l in 1:L) <= gamma_qtr)
-
+    
     optimize!(MP)
 
     if termination_status(MP) != MOI.OPTIMAL
-        @warn("Model did not solve to optimality. Status: ", termination_status(MP))
+        #@warn("Model did not solve to optimality. Status: ", termination_status(MP))
     end
     if termination_status(MP) == MOI.INFEASIBLE
         @warn("Model did not solve to optimality. Status: ", termination_status(MP))
@@ -430,6 +435,7 @@ function qtr_regularization(MP, stab_cent_cap, stab_cent_line, gamma_qtr, settin
 
     delete(MP,MP[:cTrust_region])
     unregister(MP,:cTrust_region)
+    set_optimizer(MP, settings["Solver"] == "HiGHS" ? HiGHS.Optimizer : Gurobi.Optimizer)
     return output
 end
 
@@ -438,7 +444,7 @@ function set_gamma_qtr(gamma_qtr, phi, U_unst, U_prev, x_vector)
     phi_min = 0.1
     kappa = 0.5
     if abs(1- (U_unst/U_prev)) < 0.01
-        phi = max(phi_min, kappa*phi)
+        phi = min(phi_min, kappa*phi)
     end
 
     gamma_qtr = phi^2 * norm(x_vector, 1)^2
@@ -591,17 +597,16 @@ end
 
 function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String})
     for cut_name in cuts_to_deactivate
-        set_normalized_rhs(constraint_by_name(MP, cut_name), 1e6) # effectively deactivate the cut by setting a very large RHS
+        set_normalized_rhs(constraint_by_name(MP, cut_name), -1e6) # effectively deactivate the cut by setting a very large RHS
     end
 end
 
 function reactivate_cuts(MP::Model, cuts_to_reactivate::Vector{String}, original_rhs::Dict{String, Float64})
     for cut_name in cuts_to_reactivate
-        if haskey(MP, Symbol(cut_name)) && haskey(original_rhs, cut_name) && normalized_rhs(MP[Symbol(cut_name)]) >= 1e6
-            set_normalized_rhs(MP[Symbol(cut_name)], original_rhs[cut_name]) # reactivate the cut by restoring original RHS
-        else
-            @warn("Cut ", cut_name, " not found in model or original RHS not recorded. Cannot reactivate.")
+        if normalized_rhs(constraint_by_name(MP, cut_name)) <= -1e5
+            set_normalized_rhs(constraint_by_name(MP, cut_name), original_rhs[cut_name]) # reactivate the cut by restoring original RHS
         end
+    
     end
 end
 

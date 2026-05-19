@@ -59,4 +59,4 @@ Cut deactivation threshold: 8
 
 Mapping: true
 Mapping Gap Threshold: 0.15
-Interior Samples: 100
+Interior Samples: 5000

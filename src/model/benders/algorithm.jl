@@ -224,7 +224,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     indicator_written = false
     last_iteration_cuts = Dict{String, Int64}()
     rhs_values = Dict{String, Float64}()
-    removed_cuts = []
+    removed_cuts = String[]
 
     if mapping
         @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
@@ -367,8 +367,10 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 results["Expected Value hist"] = evs[first_write:j]
                 results["All SP outputs per iteration"] = all_outputs_sp[first_write:j]
                 results["All MP outputs per iteration"] = all_outputs_mp[first_write:j]
-                results["first_write"] = first_write
+                results["first_write"] = first_write 
             end
+            results["Removed cuts"] = removed_cuts
+            results["RHS Values"] = rhs_values
 
             # Evaluate MP sol on Eval SPs if needed
             if Eval_SPs !== nothing
@@ -384,17 +386,16 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             break
         else
             if mapping && gap <= settings["Mapping Gap Threshold"]
-                @info("Gap $(gap*100)% is within mapping threshold; will save iteration data and turn off regularization for feasible space mapping.")
-                settings["Regularization flag"] = false
                 all_outputs_sp[j] = outputs_sp
                 cvars[j] = cvar_estimate*settings["Scaling factor cost"]
                 evs[j] = expected_value*settings["Scaling factor cost"]
                 all_outputs_mp[j] = output_mp
 
                 if indicator_written == false
-                    @info("Gap $(gap*100)% is within mapping threshold; will save iteration data and turn off regularization for feasible space mapping starting next iteration.")
                     indicator_written = true
                     first_write = j
+                    @info("Gap $(gap*100)% is within mapping threshold; will save iteration data and turn off regularization for feasible space mapping.")
+                    settings["Regularization flag"] = false
                 end
             end
 
@@ -489,7 +490,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
     # Report results
     @info("Final capacity mix:" * string(results["Capacity per iteration"]))
-    return results, rhs_values
+    return results
 
 end
 
@@ -574,6 +575,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     # Initializing new bound settings
     LB_hist = []
     UB_hist = []
+    removed_cuts = String[]
 
 
     budget_types = collect(keys(budgets))
@@ -733,6 +735,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             #results["Lower bounds"] = lower_bounds
             results["UB_hist"] = UB_hist
             results["Gaps"] = gap_hist
+            results["RHS Values"] = rhs_values
+            results["Removed cuts"] = removed_cuts
 
             println("Gaps at convergence: ", gap_hist[end])
             
@@ -779,20 +783,25 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 "gap_hist" => gap_hist,
             ])
 
-            all_cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+            all_cuts = [string(name(con)) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+            cuts_to_remove = String[]
             for cut in all_cuts
                 if !haskey(last_iteration_cuts, cut) 
                     # catalog and update last iteration
                     last_iteration_cuts[cut] = j
-                    rhs_values[cut] = constraint_by_name(MP, cut).rhs
-                elseif output_mp_unst["Cut Duals"][cut] >= 0.0001
+                    rhs_values[cut] = normalized_rhs(constraint_by_name(MP, cut))
+                elseif output_mp["Cut Duals"][cut] >= 0.0001
                     # only update
                     last_iteration_cuts[cut] = j
-                elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold
+                elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold && !(cut in removed_cuts)
                     # deactivate
-                    @info("Deactivating cut $(cut) due to inactivity.")
-                    deactivate_constraint(MP, cut)
+                    #@info("Deactivating cut $(cut) due to inactivity.")
+                    push!(cuts_to_remove, cut)
                 end
+            end
+            if length(cuts_to_remove) >= 1
+                deactivate_cuts(MP, cuts_to_remove)
+                append!(removed_cuts, cuts_to_remove)
             end
 
         end
@@ -803,6 +812,6 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     # Report results
     @info("Final capacity mix:" * string(results["Capacity per iteration"]))
     @info("Final line expansion:" * string(results["Line expansion per iteration"]))
-    return results, rhs_values
+    return results
 
 end
