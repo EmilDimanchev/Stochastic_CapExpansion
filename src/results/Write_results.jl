@@ -486,7 +486,8 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
     else
         names = ["Gap"; names]
     end
-    CSV.write(joinpath(results_folder, "Convergence.csv"), DataFrame(hcat(stack(gaps, dims=1), stack(results["Capacity per iteration"], dims=1)), names))
+    names = [names; "MP Solve Time"; "SP Solve Time"; "Reg Solve Time"]
+    CSV.write(joinpath(results_folder, "Convergence.csv"), DataFrame(hcat(stack(gaps, dims=1), stack(results["Capacity per iteration"], dims=1), stack(results["Time MP hist"], dims=1), stack(results["Time SP hist"], dims=1), stack(results["Time Reg hist"], dims=1)), names))
 
     if settings["Write all scenarios flag"]
         # Write output files

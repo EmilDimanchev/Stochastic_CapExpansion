@@ -56,6 +56,7 @@ Seed: 1234
 Budget convergence tolerance: 0.000001
 Cuts retained: 50000
 Cut deactivation threshold: 8
+MGA cut deactivation threshold: 8
 
 Mapping: true
 Mapping Gap Threshold: 0.15

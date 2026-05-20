@@ -100,6 +100,7 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
     gap_cvar = output_cvar["Gaps"]
     push!(run_labels, "System_Weighted_CVaR")
     push!(gaps, gap_cvar)
+    avg_time_mp_base = mean(output_cvar["Time MP hist"])
      # Write results
     results_destination = joinpath(results_folder,"System_Weighted_CVaR")
     df_cap, df_syscost, df_emissions = write_results_benders(output_cvar, inputs, settings, results_destination)
@@ -128,23 +129,23 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
         budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["CVaR"])/settings["Scaling factor cost"]), "CVaR", budgets)
         budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/settings["Scaling factor cost"])*(budget_multiplier), "System_Expected", budgets)
         cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
-        #cuts_to_keep = copy(cuts)
+        cuts_to_keep = copy(cuts)
         rhs_values = output_cvar["RHS Values"]
         removed_cuts = output_cvar["Removed cuts"]
         if mapping
-            #cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output_cvar["first_write"] + 10, cuts_to_keep)
+            cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output_cvar["first_write"] + 10, cuts_to_keep)
         end
         vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Vector Type"], settings)
         #@info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
-            #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             # other option - reactivate all cuts then let alg deactivate those that are not useful
-            reactivate_cuts(MP, removed_cuts, rhs_values)
+            #reactivate_cuts(MP, removed_cuts, rhs_values)
 
             output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs, mapping = mapping)
             log_result_memory!("Random_"*string(iteration)*" output", output_random)
-            
+            avg_time_mp = mean(output_random["Time MP hist"])
             gap = output_random["Gaps"]
             push!(run_labels, "Random_"*string(iteration))
             push!(gaps, gap)
@@ -165,9 +166,9 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
             rhs_values = output_random["RHS Values"]
             removed_cuts = output_random["Removed cuts"]
             
-            #if length(cuts_to_keep) < settings["Cuts retained"] && !mapping
-             #   push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
-           # end
+            if length(cuts_to_keep) < settings["Cuts retained"] && !mapping && avg_time_mp < 3*avg_time_mp_base
+                push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
+            end
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
 
@@ -176,7 +177,7 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
             all_caps = Matrix(vcat(results_cap...))
             @time samples = sample_interior(all_caps, n_samples, settings)
             outputs_mp = run_distributed_sampling(samples)
-            for (i, sample) in enumerate(samples)
+            @time for (i, sample) in enumerate(samples)
                 outputs_sp = run_all_subproblems(SPs, inputs, settings, sample[1:R], sample[R+1:end]; minimal_payload=false)
                 ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
                 @info("Sample $i: Investment cost = $(outputs_mp[i]["Inv_cost"]), Expected value = $ev, CVaR = $(cvar)")

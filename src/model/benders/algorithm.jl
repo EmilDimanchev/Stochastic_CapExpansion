@@ -194,6 +194,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     LB_hist = [-Inf]
     UB_hist = [Inf]
     inv_cost_hist = []
+    time_mp_hist = []
+    time_sp_hist = []
+    time_reg_hist = []
     
     UB = Inf
     P = inputs["Demand scenario probabilities"]
@@ -231,8 +234,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         minimal_payload = false
     end
 
-    
+    time_mp = time()
     output_mp = run_planning_model(MP, settings)
+    time_mp = time() - time_mp
     alpha_ev = output_mp["Expected alpha"]/settings["Scaling factor cost"]
 
     if risk_aversion_flag
@@ -248,7 +252,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     push!(line_expansion, line_expansion_initial)
     stab_cent_cap = capacity_mix_initial
     stab_cent_line = line_expansion_initial
-    push!(inv_cost_hist, output_mp["Inv_cost"]/settings["Scaling factor cost"]) 
+    push!(inv_cost_hist, output_mp["Inv_cost"]/settings["Scaling factor cost"])
+    push!(time_mp_hist, time_mp)
 
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -273,12 +278,13 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         sp_all_results = Array{Any}(undef, S, F, K)
 
 
-        set_capacity_parameters!(SPs, capacity_mix[j], line_expansion[j])
+        #set_capacity_parameters!(SPs, capacity_mix[j], line_expansion[j])
 
     
-            
+        time_sp = time()
         outputs_sp = run_all_subproblems(SPs, inputs, settings, capacity_mix[j], line_expansion[j], minimal_payload=minimal_payload)
-        
+        time_sp = time() - time_sp
+        push!(time_sp_hist, time_sp)
 
         sp_all_results = outputs_sp
 
@@ -334,7 +340,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         gap = (min_UB - LB)/abs(LB)
         push!(gaps, gap)
         @info("Gap: $(gap * 100)%")
-        @info("LB: $(LB), UB: $(min_UB)")
+        @info("LB: $(round(LB; digits=2)), UB: $(round(min_UB; digits=2)), Time MP: $(round(time_mp; digits=2)) seconds, Time SP: $(round(time_sp; digits=2)) seconds")
         if gap < 0 && abs(gap) > 1e-6
             @warn("Negative gap detected; check model formulation.")
         end
@@ -343,7 +349,6 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         #if maximum(abs.(gaps)) <= conv_tol
         if gap <= conv_tol    
             @info("Convergence achieved with maximum percentage gap of $((gap) * 100)%")
-
             output_mp = run_planning_model(MP, settings)
             #set_capacity_parameters!(SPs, output_mp["Capacity"])
             sp_all_results = run_all_subproblems(SPs, inputs, settings, output_mp["Capacity"], output_mp["Line expansion"]; minimal_payload=false)
@@ -351,7 +356,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             all_outputs_sp[j] = sp_all_results
             evs[j] = sum(P[s]*P_f[f]*P_k[k]*sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K)
             cvars[j] = compute_cvar(reshape([sp_all_results[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K)), P, P_f, P_k, VaR_Percent)
-
+            push!(time_reg_hist, 0.0)
             results["MP"] = output_mp
             results["SPs"] = sp_all_results
             results["CVaR"] = cvar_estimate*settings["Scaling factor cost"]
@@ -361,6 +366,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             #results["Lower bounds"] = lower_bounds
             results["LB_hist"] = LB_hist
             results["UB_hist"] = UB_hist
+            results["Time MP hist"] = time_mp_hist
+            results["Time SP hist"] = time_sp_hist
+            results["Time Reg hist"] = time_reg_hist
             results["Gaps"] = gaps
             if mapping
                 results["CVaR_hist"] = cvars[first_write:j]
@@ -401,7 +409,10 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
             add_optimality_cuts!(MP, sp_obj_per_iter, capacity_duals_sp_per_iter, line_duals_sp_per_iter, capacity_mix[j], line_expansion[j], coeffs, inputs,settings, j, case_name)
             @info("Running investment problem")
+            time_mp = time()
             output_mp_unst = run_planning_model(MP, settings)
+            time_mp = time() - time_mp
+            push!(time_mp_hist, time_mp)
             alpha_ev = output_mp_unst["Expected alpha"]/settings["Scaling factor cost"]
             if risk_aversion_flag
                 u_cvar = output_mp_unst["CVaR term"]/settings["Scaling factor cost"]
@@ -440,8 +451,11 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             if settings["Regularization flag"]
                 if settings["Regularization strategy"] == "Level Set"
                     @info("Applying level set regularization to master problem")
-                    gamma = adjust_gamma(UB_hist[end-1], min_UB, LB, gamma)
+                    #gamma = adjust_gamma(UB_hist[end-1], min_UB, LB, gamma)
+                    time_reg = time()
                     output_mp = level_set_regularization(MP, min_UB, LB, gamma, settings)
+                    time_reg = time() - time_reg
+                    @info("Regularization solve time: $(round(time_reg; digits=2)) seconds")
                     alpha_ev_stb = output_mp["Expected alpha"]/settings["Scaling factor cost"]
                     if risk_aversion_flag
                         u_cvar_stb = output_mp["CVaR term"]/settings["Scaling factor cost"]
@@ -451,6 +465,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                         #LB = alpha_ev_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
                     end
                     #@info("Pre-reg LB: $LB_unst, Post-reg LB: $LB")
+                    push!(time_reg_hist, time_reg)
                 elseif settings["Regularization strategy"] == "QTR"
                     x_vector = vcat(vec(output_mp_unst["Capacity"]), vec(output_mp_unst["Line expansion"]))
                     gamma, phi = set_gamma_qtr(gamma, phi, inv_cost_unst, inv_cost_hist[end], x_vector)
@@ -468,10 +483,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 end
             else
                 output_mp = output_mp_unst
+                push!(time_reg_hist, 0.0)
             end
-
-            
-        
 
             # Update MP solution outputs
             push!(capacity_mix, output_mp["Capacity"])
@@ -601,14 +614,15 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     first_write = 0
     last_iteration_cuts = Dict{String, Int64}()
     rhs_values = Dict{String, Float64}()
-    cut_deactivation_threshold = settings["Cut deactivation threshold"]
+    cut_deactivation_threshold = settings["MGA cut deactivation threshold"]
 
     if mapping
         @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
     end
-
+    time_mp = time()
     output_mp = run_planning_model(MP, settings)
-
+    time_mp = time() - time_mp
+     
     capacity_mix_initial = output_mp["Capacity"]
     line_expansion_initial = output_mp["Line expansion"]
     push!(capacity_mix, capacity_mix_initial)
@@ -644,9 +658,10 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
         #set_capacity_parameters!(SPs, capacity_mix[j])
 
     
-            
+        time_sp = time()
         outputs_sp = run_all_subproblems(SPs, inputs, settings, capacity_mix[j], line_expansion[j], minimal_payload=minimal_payload)
-        
+        time_sp = time() - time_sp
+
         sp_all_results = outputs_sp
 
         sp_obj_per_iter = reshape([outputs_sp[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K))
@@ -702,7 +717,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
 
         for (i, type) in enumerate(budget_types)
             gaps[i] = (min_UBs[i] - LBs[i])/abs(LBs[i])
-            @info("Budget type: $(type), Gap: $(gaps[i] * 100)%, LB: $(LBs[i]), UB: $(min_UBs[i])")
+            @info("Budget type: $(type), Gap: $(round(gaps[i], digits=4) * 100)%, LB: $(round(LBs[i], digits=2)), UB: $(round(min_UBs[i], digits=2)), Time MP: $(round(time_mp; digits=2)) seconds, Time SP: $(round(time_sp; digits=2)) seconds")
         end
         push!(gap_hist, deepcopy(gaps))
         #if maximum(abs.(gaps)) <= conv_tol
@@ -769,7 +784,9 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
 
             add_optimality_cuts!(MP, sp_obj_per_iter, capacity_duals_sp_per_iter, line_duals_sp_per_iter, capacity_mix[j], line_expansion[j], coeffs, inputs,settings, j, case_name)
             @info("Running investment problem")
+            time_mp = time()
             output_mp = run_planning_model(MP, settings)
+            time_mp = time() - time_mp
 
             # Update MP solution outputs
             push!(capacity_mix, output_mp["Capacity"])
