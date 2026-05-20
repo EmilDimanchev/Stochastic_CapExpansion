@@ -589,6 +589,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     LB_hist = []
     UB_hist = []
     removed_cuts = String[]
+    time_MP_hist = []
+    time_SP_hist = []
 
 
     budget_types = collect(keys(budgets))
@@ -627,6 +629,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     line_expansion_initial = output_mp["Line expansion"]
     push!(capacity_mix, capacity_mix_initial)
     push!(line_expansion, line_expansion_initial)
+    push!(time_MP_hist, time_mp)
     
     minimal_payload = true
     if mapping
@@ -661,6 +664,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
         time_sp = time()
         outputs_sp = run_all_subproblems(SPs, inputs, settings, capacity_mix[j], line_expansion[j], minimal_payload=minimal_payload)
         time_sp = time() - time_sp
+        push!(time_SP_hist, time_sp)
 
         sp_all_results = outputs_sp
 
@@ -717,7 +721,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
 
         for (i, type) in enumerate(budget_types)
             gaps[i] = (min_UBs[i] - LBs[i])/abs(LBs[i])
-            @info("Budget type: $(type), Gap: $(round(gaps[i], digits=4) * 100)%, LB: $(round(LBs[i], digits=2)), UB: $(round(min_UBs[i], digits=2)), Time MP: $(round(time_mp; digits=2)) seconds, Time SP: $(round(time_sp; digits=2)) seconds")
+            @info("Budget type: $(type), Gap: $(round(gaps[i], digits=4) * 100)%, LB: $(round(LBs[i], digits=6)), UB: $(round(min_UBs[i], digits=6)), Time MP: $(round(time_mp; digits=2)) seconds, Time SP: $(round(time_sp; digits=2)) seconds")
         end
         push!(gap_hist, deepcopy(gaps))
         #if maximum(abs.(gaps)) <= conv_tol
@@ -739,7 +743,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 results["All MP outputs per iteration"] = all_outputs_mp[first_write:j]
                 results["first_write"] = first_write
             end
-
+            results["Time MP hist"] = time_MP_hist
+            results["Time SP hist"] = time_SP_hist
             results["MP"] = output_mp
             results["SPs"] = sp_all_results
             results["Expected Value"] = expected_value*settings["Scaling factor cost"]
@@ -787,6 +792,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             time_mp = time()
             output_mp = run_planning_model(MP, settings)
             time_mp = time() - time_mp
+            push!(time_MP_hist, time_mp)
 
             # Update MP solution outputs
             push!(capacity_mix, output_mp["Capacity"])

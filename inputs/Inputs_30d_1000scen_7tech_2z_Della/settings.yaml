@@ -50,7 +50,7 @@ Workers: 64
 Memory debug flag: false
 
 Vector Type: random
-Iterations: 100
+Iterations: 50
 Capacity Exploration: true
 Seed: 1234
 Budget convergence tolerance: 0.000001
