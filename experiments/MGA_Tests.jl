@@ -70,7 +70,7 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
 
     #configure_parallel_workers!(settings)
 
-      # Result containers
+    # Result containers
     results_cap = []
     results_syscost = []
     results_emissions = []
@@ -149,13 +149,13 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
             push!(run_labels, "Random_"*string(iteration))
             push!(gaps, gap)
             results_destination = joinpath(results_folder,"Random_"*string(iteration))
+            df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
             if mapping
                 temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output_random, inputs, settings)
                 push!(results_cap, temp_df_cap)
                 push!(results_syscost, temp_df_syscost)
                 push!(results_emissions, temp_df_emissions)
             else
-                df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
                 push!(results_cap, df_cap)
                 push!(results_syscost, df_syscost)
                 push!(results_emissions, df_emissions)
@@ -175,17 +175,13 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
         if mapping
             all_caps = Matrix(vcat(results_cap...))
             @time samples = sample_interior(all_caps, n_samples, settings)
-            MP = build_planning_model(inputs, settings)
+            outputs_mp = run_distributed_sampling(samples)
             for (i, sample) in enumerate(samples)
-                @info("Sample $i: Evaluating interior point with capacities: $sample")
-                fix_capacities!(MP, sample[1:R], sample[R+1:end])
-                outputs_mp = run_planning_model(MP, settings)
                 outputs_sp = run_all_subproblems(SPs, inputs, settings, sample[1:R], sample[R+1:end]; minimal_payload=false)
                 ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
-                @info("Sample $i: Investment cost = $(outputs_mp["Inv_cost"]), Expected value = $ev, CVaR = $(cvar)")
-                @info("Sample $i: Budget Percentage for CVaR: $((cvar*settings["Scaling factor cost"])/budgets["CVaR"]*100)%, Budget Percentage for Expected Value: $(((ev+outputs_mp["Inv_cost"])*settings["Scaling factor cost"])/budgets["System_Expected"]*100)%")
-                unfix_capacities!(MP)
-                temp_df_cap, temp_df_syscost, temp_df_emissions = make_results_mapping_dfs(outputs_mp, outputs_sp, cvar, ev, inputs, settings)
+                @info("Sample $i: Investment cost = $(outputs_mp[i]["Inv_cost"]), Expected value = $ev, CVaR = $(cvar)")
+                @info("Sample $i: Budget Percentage for CVaR: $(((cvar)/(budgets["CVaR"]*settings["Scaling factor cost"])*100)*100)%, Budget Percentage for Expected Value: $((((ev+outputs_mp[i]["Inv_cost"])/(budgets["System_Expected"]*settings["Scaling factor cost"]))*100)-100)%")
+                temp_df_cap, temp_df_syscost, temp_df_emissions = make_results_mapping_dfs(sample[1:R], sample[R+1:end], outputs_sp, outputs_mp[i]["Inv_cost"], outputs_mp[i]["Inv cost by zone"], cvar, ev, inputs, settings)
                 push!(results_cap, temp_df_cap)
                 push!(results_syscost, temp_df_syscost)
                 push!(results_emissions, temp_df_emissions)
@@ -258,15 +254,16 @@ function mapping_test_laptop(test_index)
     Eval_SPs = nothing
     mapping = true
     budget_multiplier = 1.001
+    n_samples = 10
 
-    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, results_folder, summary_folder; budget_multiplier = 1.005, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping = true, n_samples = 50)
-
+    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, results_folder, summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping = true, n_samples = 50)
+    rmprocs(workers())
 
 end
 
 function mapping_test_della(test_index)
 
-     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)

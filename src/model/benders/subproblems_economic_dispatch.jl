@@ -4,6 +4,7 @@ using Distributed, DistributedArrays, JuMP, Gurobi
 const WORKER_SP_CACHE = Dict{Tuple{Int, Int, Int}, Model}()
 const WORKER_DATA_CACHE = Dict{Symbol, Any}()
 const WORKER_MGCA_CACHE = Dict{Symbol, Any}()
+const WORKER_MODEL_CACHE = Dict{Symbol, Any}()
 const MASTER_WORKER_SP_KEYS = Dict{Int, Set{Tuple{Int, Int, Int}}}()
 const MASTER_SCENARIO_TO_WORKER = Dict{Tuple{Int, Int, Int}, Int}()
 const WORKER_SOLVE_COUNTER = Ref(0)

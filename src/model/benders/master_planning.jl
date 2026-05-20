@@ -617,6 +617,7 @@ function fix_capacities!(MP::Model, new_caps::Vector{Float64}, new_line_caps::Ve
     end
     for l in 1:length(new_line_caps)
         fix(MP[:x_line][l], new_line_caps[l], force = true)
+        #println("Fixing line ", l, " to capacity ", new_line_caps[l])
     end
 end
 
@@ -627,4 +628,59 @@ function unfix_capacities!(MP::Model)
     for l in 1:length(MP[:x_line])
         unfix(MP[:x_line][l])
     end
+end
+
+#================
+
+Distributed Sampling Functions
+
+===================#
+
+function _build_mps_for_samples()
+    MP = build_planning_model(WORKER_DATA_CACHE[:inputs], WORKER_DATA_CACHE[:settings])
+    WORKER_MODEL_CACHE[:MP] = MP
+    return nothing
+end
+
+function _run_planning_model_for_sample(sample::Vector{Float64})
+    MP = WORKER_MODEL_CACHE[:MP]
+    sample_caps = sample[1:length(MP[:x])]
+    sample_line_caps = sample[length(MP[:x])+1:end]
+    fix_capacities!(MP, sample_caps, sample_line_caps)
+    output = run_planning_model(MP, WORKER_DATA_CACHE[:settings])
+    unfix_capacities!(MP)
+    return output
+end
+
+function _clear_worker_mp_cache!()
+    if WORKER_MODEL_CACHE[:MP] !== nothing
+        empty!(WORKER_MODEL_CACHE[:MP])
+    end
+end
+
+function run_distributed_sampling(samples::Vector{Vector{Float64}})
+    # Build model on each worker
+    
+    @info("Building master problem on each worker...")
+    pids = workers()
+    n_samples = length(samples)
+    samples_per_worker = ceil(Int, n_samples / length(pids))
+    if samples_per_worker < 1
+        pids = pids[1:n_samples]
+    end
+    # Build models on workers
+    @sync for pid in pids
+        @async remotecall_wait(_build_mps_for_samples, pid)
+    end
+    # Sync and run samples on workers
+    outputs = Vector{Dict{String, Any}}(undef, n_samples)
+    @sync for (i, sample) in enumerate(samples)
+        pid = pids[mod1(i, length(pids))]
+        @async begin
+            outputs[i] = @fetchfrom pid _run_planning_model_for_sample(sample)
+        end
+    end
+    #@everywhere _clear_worker_mp_cache!()
+    @everywhere GC.gc()
+    return outputs
 end

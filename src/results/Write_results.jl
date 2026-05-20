@@ -555,6 +555,8 @@ function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs:
 
     # Variables
     cap = MP_output["Capacity"]
+    line_cap = MP_output["Line expansion"]
+    all_caps = vcat(cap, line_cap)
  
     shed = nothing
     gen = nothing
@@ -565,7 +567,7 @@ function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs:
     price = nothing
     # Settings
     resources = inputs["Generation resources"]
-    all_resources = inputs["Resources"]
+    gen_and_storage = inputs["Resources"]
     storage_flag = inputs["Storage flag"]
 
     # Sets
@@ -578,6 +580,8 @@ function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs:
     R = G + O 
     L = inputs["Number of lines"]
     Z = inputs["Number of zones"]
+    line_names = collect("Line " .* string.(1:L))
+    all_resources = vcat(gen_and_storage, line_names)
 
 
     #if storage_flag
@@ -587,7 +591,7 @@ function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs:
     #end
 
     # Collect results
-    df_cap = DataFrame(cap', all_resources)
+    df_cap = DataFrame(all_caps', all_resources)
     # VaR
     if settings["Risk sharing flag"]
         value_at_risk = MP_output["VaR"] # VaR is a vector indexed by technology
@@ -731,11 +735,11 @@ function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs:
                     for k in 1:size(P_k)[1]
                         # Collect CO2 emissions
                         col_name_Emissions = string("Emissions_D_",string(s),"_F_",string(f),"_W_",string(k))
-                        insertcols!(df_co2_all, col_name_Emissions => SPs_output[s,f,k]["Emissions"])
+                        insertcols!(df_emissions, col_name_Emissions => SPs_output[s,f,k]["Emissions"])
                         # Collect operating cost
                         col_name_OpCost = string("OperatingCost_D_",string(s),"_F_",string(f),"_W_",string(k))
                         insertcols!(df_syscost, col_name_OpCost => SPs_output[s,f,k]["SP objective"])
-                        # Collect power prices
+                        # Collect power prices 
                         col_name_PowerPrice = string("avgPowerPrice_D_",string(s),"_F_",string(f),"_W_",string(k))
                         insertcols!(df_syscost, col_name_PowerPrice => sum(SPs_output[s,f,k]["Power price"])/length(SPs_output[1,1,1]["Power price"]))
                     end
@@ -903,6 +907,7 @@ function make_results_mapping_dfs(capacities::AbstractVector, line_capacities::A
     R = G + O 
     L = inputs["Number of lines"]
     Z = inputs["Number of zones"]
+    line_names = collect("Line " .* string.(1:L))
 
 
     #if storage_flag
@@ -913,7 +918,7 @@ function make_results_mapping_dfs(capacities::AbstractVector, line_capacities::A
 
     # Collect results
     all_cap = vcat(cap, line_capacities)
-    all_names = vcat(all_resources, inputs["Line names"])
+    all_names = vcat(all_resources, line_names)
     df_cap = DataFrame(all_cap', all_names)
     
     
