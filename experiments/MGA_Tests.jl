@@ -303,15 +303,20 @@ function evaluate_interpolates(SPs::Array{Model, 3}, inputs::Dict, settings::Dic
     VaR_percent = settings["Value-at-Risk percent"]
     Z = inputs["Number of zones"]
     costs_by_resource = inputs["Investment costs"]
+    cost_of_lines = inputs["CAPEX per MW"]
+    n_lines = length(cost_of_lines)
 
     # isolate capacity vectors
     index_indx = findfirst(==("Index"), names(interpolate_df))
     labels = Vector(interpolate_df[:, index_indx])
     select!(interpolate_df, Not(:Index))
     investment_indx = findfirst(==("Investment_Cost"), names(interpolate_df))
-    cap_vectors = interpolate_df[:, 1:investment_indx-1]
+    cap_vectors = interpolate_df[:, 1:investment_indx-n_lines-1]
+    line_vectors = interpolate_df[:, investment_indx-n_lines:investment_indx-1]
     # get costs
-    inv_costs = cap_vectors .* reshape(costs_by_resource, 1, :)
+    cap_inv_costs = cap_vectors .* reshape(costs_by_resource, 1, :)
+    line_inv_costs = line_vectors .* reshape(cost_of_lines, 1, :)
+    inv_costs = hcat(cap_inv_costs, line_inv_costs)
     tot_inv_costs = sum.(eachrow(Matrix(inv_costs)))
     
     col_by_zone = collect(findall(x -> occursin("z"*string(z), x), names(inv_costs)) for z in 1:Z)
@@ -320,7 +325,8 @@ function evaluate_interpolates(SPs::Array{Model, 3}, inputs::Dict, settings::Dic
     for i in 1:nrow(interpolate_df)
         @info("Evaluating interpolate ", labels[i])
         caps = Vector(cap_vectors[i, :])
-        outputs_sp = run_all_subproblems(SPs, inputs, settings, caps, minimal_payload=false)
+        lines = Vector(line_vectors[i, :])
+        outputs_sp = run_all_subproblems(SPs, inputs, settings, caps, lines; minimal_payload=false)
         ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
 
         costs_by_zone_it = [cost_by_zone[z][i] for z in 1:Z]
