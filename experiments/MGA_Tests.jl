@@ -331,7 +331,7 @@ function evaluate_interpolates(SPs::Array{Model, 3}, inputs::Dict, settings::Dic
 
         costs_by_zone_it = [cost_by_zone[z][i] for z in 1:Z]
 
-        df_cap, df_syscost, df_emissions = make_results_mapping_dfs(caps, outputs_sp, tot_inv_costs[i], costs_by_zone_it, cvar, ev, inputs, settings)
+        df_cap, df_syscost, df_emissions = make_results_mapping_dfs(caps, lines, outputs_sp, tot_inv_costs[i], costs_by_zone_it, cvar, ev, inputs, settings)
         push!(results_cap, df_cap)
         push!(results_syscost, df_syscost)
         push!(results_emissions, df_emissions)
