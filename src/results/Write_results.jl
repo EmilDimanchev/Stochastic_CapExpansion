@@ -413,8 +413,10 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
                         col_name_OpCost = string("OperatingCost_D_",string(s),"_F_",string(f),"_W_",string(k))
                         insertcols!(df_syscost, col_name_OpCost => SPs_output[s,f,k]["SP objective"])
                         # Collect power prices
-                        col_name_PowerPrice = string("avgPowerPrice_D_",string(s),"_F_",string(f),"_W_",string(k))
-                        insertcols!(df_syscost, col_name_PowerPrice => sum(SPs_output[s,f,k]["Power price"])/length(SPs_output[1,1,1]["Power price"]))
+                        for z in 1:Z
+                            col_name_price_zone = string("avgPowerPrice_by_zone_D_",string(s),"_F_",string(f),"_W_",string(k), "_Zone", string(z))
+                            insertcols!(df_syscost, col_name_price_zone => sum(SPs_output[s,f,k]["Power price"][:,z])/length(SPs_output[1,1,1]["Power price"][:,z]))
+                        end
                     end
                 end
             end
@@ -742,8 +744,10 @@ function make_results_mapping_dfs(MP_output::Dict, SPs_output, cvar, ev, inputs:
                         col_name_OpCost = string("OperatingCost_D_",string(s),"_F_",string(f),"_W_",string(k))
                         insertcols!(df_syscost, col_name_OpCost => SPs_output[s,f,k]["SP objective"])
                         # Collect power prices 
-                        col_name_PowerPrice = string("avgPowerPrice_D_",string(s),"_F_",string(f),"_W_",string(k))
-                        insertcols!(df_syscost, col_name_PowerPrice => sum(SPs_output[s,f,k]["Power price"])/length(SPs_output[1,1,1]["Power price"]))
+                        for z in 1:Z
+                            col_name_price_zone = string("avgPowerPrice_by_zone_D_",string(s),"_F_",string(f),"_W_",string(k), "_Zone", string(z))
+                            insertcols!(df_syscost, col_name_price_zone => sum(SPs_output[s,f,k]["Power price"][:,z])/length(SPs_output[1,1,1]["Power price"][:,z]))
+                        end
                     end
                 end
             end
@@ -1045,7 +1049,7 @@ function make_results_mapping_dfs(capacities::AbstractVector, line_capacities::A
         CO2_by_zone_base = collect(SPs_output[s,f,k]["Emissions by zone"] for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])
         cost_by_zone_exp = sum(P_s[s]*P_f[f]*P_k[k]*cost_by_zone_base[s,f,k] for s in 1:S, f in 1:F, k in 1:K)
         co2_by_zone_exp = sum(P_s[s]*P_f[f]*P_k[k]*CO2_by_zone_base[s,f,k] for s in 1:S, f in 1:F, k in 1:K)
-        prices_by_zone_exp = sum(P_s[s]*P_f[f]*P_k[k]*sum(prices[s,f,K][t,:] for t in 1:T) for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])/length(prices[1,1,1][:,1])
+        prices_by_zone_exp = sum(P_s[s]*P_f[f]*P_k[k]*sum(prices[s,f,k][t,:] for t in 1:T) for s in 1:size(P_s)[1], f in 1:size(P_f)[1], k in 1:size(P_k)[1])/length(prices[1,1,1][:,1])
 
         
        
@@ -1072,8 +1076,10 @@ function make_results_mapping_dfs(capacities::AbstractVector, line_capacities::A
                         col_name_OpCost = string("OperatingCost_D_",string(s),"_F_",string(f),"_W_",string(k))
                         insertcols!(df_syscost, col_name_OpCost => SPs_output[s,f,k]["SP objective"])
                         # Collect power prices
-                        col_name_PowerPrice = string("avgPowerPrice_D_",string(s),"_F_",string(f),"_W_",string(k))
-                        insertcols!(df_syscost, col_name_PowerPrice => sum(SPs_output[s,f,k]["Power price"])/length(SPs_output[1,1,1]["Power price"]))
+                        for z in 1:Z
+                            col_name_price_zone = string("avgPowerPrice_by_zone_D_",string(s),"_F_",string(f),"_W_",string(k), "_Zone", string(z))
+                            insertcols!(df_syscost, col_name_price_zone => sum(SPs_output[s,f,k]["Power price"][:,z])/length(SPs_output[1,1,1]["Power price"][:,z]))
+                        end
                     end
                 end
             end
