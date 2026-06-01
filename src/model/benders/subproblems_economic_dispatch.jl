@@ -107,11 +107,37 @@ function _run_cached_mgca_sample!(target::Vector{Float64})
     return max.(value.(model[:x]), 0.0)
 end
 
+##### TODO: Make better sampling methods - specifically want to try centroidal voronoi tessellations (CVT) which are designed to produce well-distributed samples in high-dimensional spaces. The current method of sampling random points and projecting them onto the convex hull of the original points is a simple approach but may not yield the best distribution of samples, especially as the dimensionality increases. CVT can help in generating samples that are more representative of the underlying distribution of the data, which could lead to better performance in downstream tasks that rely on these samples.
+# try on both weights and original points
+# also can try monte carlo markov chain type sampling methods that are designed to sample uniformly from convex polytopes, such as the hit-and-run algorithm or the Dikin walk. These methods can be more efficient and effective in high-dimensional spaces compared to simple random sampling followed by projection.
+function cvt_sampler(points, num_samples; max_iters = 100)
+    k = num_samples
+    (n_points, n_vars) = size(points)
+    num_initials = k * 10 
+    max_point = maximum(points, dims=1)[:]
+    initial_centers = Matrix([rand(length(max_point)) .* max_point for _ in 1:num_initials])
+    R = kmeans(initial_centers', k; maxiter=max_iters)
+    samples = collect(col for col in eachcol(R.centers))
+    return samples
+end
+
 function sample_interior_distributed(points, num_samples, settings)
     samples = Vector{Vector{Float64}}(undef, num_samples)
     solver = settings["Solver"]
+    sample_method = settings["Sample method"]
     if nworkers() > 0
         pids = workers()
+        if sample_method == "CVT"
+            @info "Sampling using CVT method with $num_samples samples across $(length(pids)) workers..."
+            sample_targets = cvt_sampler(points, num_samples)
+        elseif sample_method == "Random"
+            @info "Sampling using random projection method with $num_samples samples across $(length(pids)) workers..."
+            max_point = maximum(points, dims=1)[:]
+            sample_targets = [rand(length(max_point)) .* max_point for _ in 1:num_samples]
+        else
+            error("Unsupported sample method: $sample_method. Supported methods are: CVT, Random")
+        end
+
         @sync for pid in pids
             @async begin
                 remotecall_wait(_clear_worker_mgca_cache!, pid)
@@ -119,9 +145,6 @@ function sample_interior_distributed(points, num_samples, settings)
                 remotecall_wait(_build_and_cache_mgca_problem!, pid)
             end
         end
-
-        max_point = maximum(points, dims=1)[:]
-        sample_targets = [rand(length(max_point)) .* max_point for _ in 1:num_samples]
 
         @sync for (idx, target) in enumerate(sample_targets)
             @async begin
@@ -147,13 +170,20 @@ function sample_interior_distributed(points, num_samples, settings)
         @objective(model, Min, 0)
         set_silent(model)
 
-        max_point = maximum(points, dims=1)[:]
-        for idx in 1:num_samples
-            optimize!(model)
-            samples[idx] = max.(value.(model[:x]), 0.0)
+        if sample_method == "CVT"
+            @info "Sampling using CVT method with $num_samples samples across $(length(pids)) workers..."
+            sample_targets = cvt_sampler(points, num_samples)
+        elseif sample_method == "Random"
+            @info "Sampling using random projection method with $num_samples samples across $(length(pids)) workers..."
+            max_point = maximum(points, dims=1)[:]
+            sample_targets = [rand(length(max_point)) .* max_point for _ in 1:num_samples]
+        else
+            error("Unsupported sample method: $sample_method. Supported methods are: CVT, Random")
+        end
 
-            target = rand(length(max_point)) .* max_point
+        for (idx, target) in enumerate(sample_targets)
             @objective(model, Min, sum((model[:x][i] - target[i])^2 for i in 1:length(model[:x])))
+            optimize!(model)
         end
     end
 

@@ -1,6 +1,6 @@
 module Stochastic_CapExpansion
     using Revise, JuMP, Ipopt, Gurobi, DataFrames, CSV, YAML, Random, LinearAlgebra, Ipopt, Combinatorics, Dates, Distributed, DistributedArrays, Distributions, Surrogates
-
+    using Clustering
    function include_all_in_folder(folder_path::String)
         files = readdir(folder_path, join=true)
         for file in files
