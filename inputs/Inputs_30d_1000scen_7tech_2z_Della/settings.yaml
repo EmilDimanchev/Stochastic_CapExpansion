@@ -61,3 +61,4 @@ MGA cut deactivation threshold: 8
 Mapping: true
 Mapping Gap Threshold: 0.15
 Interior Samples: 8000
+Sample Method: "CVT"

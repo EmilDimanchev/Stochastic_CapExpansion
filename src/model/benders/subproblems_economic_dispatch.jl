@@ -124,7 +124,7 @@ end
 function sample_interior_distributed(points, num_samples, settings)
     samples = Vector{Vector{Float64}}(undef, num_samples)
     solver = settings["Solver"]
-    sample_method = settings["Sample method"]
+    sample_method = settings["Sample Method"]
     if nworkers() > 0
         pids = workers()
         if sample_method == "CVT"
