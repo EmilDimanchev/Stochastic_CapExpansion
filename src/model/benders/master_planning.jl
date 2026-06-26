@@ -204,10 +204,6 @@ function build_planning_model(inputs, settings)
         add_risk_terms!(MP, inputs, settings)
     end
 
-    if crm_flag
-        add_crm_requirements!(MP, inputs)
-    end
-
     @expression(MP, inv_cost_by_zone[z in 1:Z], sum(x[r]*cost_inv[r]*inputs["Resource zone map"][r,z] for r in 1:R))
 
     # ~~~
@@ -251,27 +247,6 @@ function add_risk_terms!(MP::Model, inputs, settings)
     # Accounting for risk in the objective function
     @expression(MP, cvar_term, ζ + 1/Ψ*sum(P[s]*P_f[f]*P_k[k]*u[s,f,k] for s in 1:S, f in 1:F, k in 1:K))
     @expression(MP, risk_adjusted_sys_cost, MP[:inv_cost] + Ω*MP[:expected_alpha] + (1-Ω)*MP[:cvar_term])
-
-end
-
-function add_crm_requirements!(MP, inputs)
-    # zonal crm constraints to ensure sufficient capacity to meet zonal demand plus reserve margin requirements, 
-    # accounting for the contributions of different resource types to capacity and reserve requirements 
-    # as well as any derating factors specified in the inputs (e.g., for VRE or demand response resources).
-    # ToDo: Add transmission and storage consideration
-    T = inputs["Time index"]
-    Z = inputs["Zones"]
-    G = inputs["Number of generation resources"]
-    O = inputs["Number of storage resources"]
-    derate_factors = inputs["CRM Derating Factors"]
-    max_dispatch = inputs["Availability CRM"] # this is the expected availability of generation resources for CRM purposes, accounting for forced outages during supply constrained periods
-    demand_crm = inputs["Demand CRM"] # this is the expected demand in each zone for CRM purposes
-    crm_price_cap = inputs["CRM Price Cap"] # this is the price cap to apply to any CRM slack variables, which should be set equal to the value of lost load or the price cap in the energy market to avoid perverse incentives for the CRM slack to be used in place of demand response or other resources that can provide capacity during supply constrained periods.
-    zone_map = inputs["Resource zone map"]
-    
-    # expression to calculate total, derated, available capacity in each zone in each time step
-    @expression(MP, eCRM_in_resources[t in 1:T, z in 1:Z], sum(MP[:x,r] * derate_factors[r] * max_dispatch[r,t] * zone_map[r,z] for r in 1:G))
-    @expression(MP, eCRM_in_storage[t in 1:T, z in 1:Z], sum(MP[:x,r] * derate_factors[r] * max_dispatch[r,t] * zone_map[r,z] for r in G+1:G+O))
 
 end
 
