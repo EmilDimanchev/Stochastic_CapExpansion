@@ -152,6 +152,7 @@ function build_planning_model(inputs, settings)
 
     # Sets and flags
     risk_aversion_flag = settings["Risk aversion flag"]
+    crm_flag = settings["CRM"]
 
     cost_inv = inputs["Investment costs"]
     P = inputs["Demand scenario probabilities"]

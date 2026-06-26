@@ -67,6 +67,7 @@ function load_input_data(inputs_path, settings)
     inputs["Number of storage resources"] = size(storage_input)[1]
     inputs["Number of resources"] = inputs["Number of generation resources"] + inputs["Number of storage resources"]
 
+
     # Stochasticities
     probabilities_input_demand = CSV.read(string(inputs_path,"/","Scenario_probabilities_demand.csv"), DataFrame, header=true)
     probabilities_input_fuel = CSV.read(string(inputs_path,"/","Scenario_probabilities_fuel.csv"), DataFrame, header=true)
@@ -88,6 +89,7 @@ function load_input_data(inputs_path, settings)
         Matrix{Float64}(df[:, zone_cols])   # T × Z matrix for this scenario
     end
     
+    
     time_index = Array(CSV.read(demand_scen_files[1], DataFrame, header=true)[:, 1])
     
     inputs["Time index"] = time_index
@@ -95,7 +97,9 @@ function load_input_data(inputs_path, settings)
 
     demand_add_input = CSV.read(string(inputs_path,"/","Demand_adders.csv"), DataFrame, header=true)
 
-    inputs["Demand"] = round.(sum(demand_scen_data) ./ length(demand_scen_data), digits=1)
+    inputs["Demand"] = round.(sum(demand_scen_data) ./ length(demand_scen_data), digits=1) #### Why is this the average demand profile?
+
+    
 
     # Demand shift uncertainty
     if settings["Demand uncertainty"]
@@ -151,6 +155,17 @@ function load_input_data(inputs_path, settings)
         inputs["Variable costs"] = Array(var_cost_input[1:end, 2])
         # Deterministic case uses expected fuel price
         inputs["Gas price scenario probabilities"] = [1]
+    end
+
+    if settings["CRM flag"]
+        crm_system = CSV.read(string(inputs_path,"/","CRM_System.csv"), DataFrame, header=true)
+        crm_resources = CSV.read(string(inputs_path,"/","CRM_Resources.csv"), DataFrame, header=true)
+
+        inputs["CRM Margin"] = Array(crm_system[:, "Margin"])
+        inputs["CRM Price Cap"] = Array(crm_system[:, "PriceCap"])
+        inputs["CRM Derating Factors"] = Dict(crm_resources[:, "Resource"] => crm_resources[:, "Derating_Factor"])
+        inputs["Availability CRM"] = mean(inputs["Generation availability"], dims=3)  # Average availability across weather scenarios for CRM derating
+        inputs["Demand CRM"] = inputs["Demand"]  # Average demand across scenarios for CRM requirements
     end
     
     # Keep track of number of scenarios

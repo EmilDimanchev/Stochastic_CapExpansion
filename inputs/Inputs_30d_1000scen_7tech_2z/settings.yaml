@@ -34,6 +34,9 @@ Carbon cap: 25000
 Contracts: false
 Search equilibria: false
 
+# CRM
+CRM flag: true
+
 Scaling factor cost: 1e5
 Scaling factor demand: 1
 Convergence tolerance: 1e-5

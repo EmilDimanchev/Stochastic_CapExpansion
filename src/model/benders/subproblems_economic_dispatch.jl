@@ -545,6 +545,11 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
         @constraint(ED, transmission_limit_negative[t in 1:T, l in 1:L], flow[t,l] >= -x_line[l]/scaling_factor_demand)
     end
 
+    # Hourly Zonal CRM
+    if settings["CRM flag"]
+    
+
+    end
 
     # Power balance constraint
     @expression(ED, supply[t in 1:T, z in 1:Z], sum(g[r,t]*res_zone_map[r,z] for r in 1:G))
