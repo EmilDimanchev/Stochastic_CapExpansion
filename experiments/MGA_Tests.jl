@@ -194,6 +194,140 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
 end
 
 
+function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100)
+
+    #configure_parallel_workers!(settings)
+
+    # Result containers
+    results_cap = []
+    results_syscost = []
+    results_emissions = []
+    run_labels = []
+    gaps = []
+    cuts_to_keep = []
+    anchor_output = Dict{String, Any}()
+
+    # Model Settings
+    iterations = settings["Iterations"]
+    risk_aversion_weights = [i for i in 0.0:0.1:1.0]
+    risk_aversion_weight = settings["Risk aversion weight"] ### set as anchor point
+    VaR_percent = settings["Value-at-Risk percent"] ### Currently set consistently across runs and ahead of time
+    # Create and set expected value model
+    settings["Risk aversion flag"] = true
+
+    P_s = inputs["Demand scenario probabilities"]
+    P_f = inputs["Gas price scenario probabilities"]
+    P_k = inputs["Weather scenario probabilities"]
+    R = length(inputs["Resources"])
+    
+
+    MP = build_planning_model(inputs, settings)
+    for risk in risk_aversion_weights
+        # Base Runs
+        set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk)
+        output_cvar = benders_algorithm(inputs, settings, MP, SPs, "System_Weighted_CVaR"; Eval_SPs = Eval_SPs, mapping = mapping)
+        log_result_memory!("System_Weighted_CVaR output", output_cvar)
+        gap_cvar = output_cvar["Gaps"]
+        push!(run_labels, "System_Weighted_CVaR")
+        push!(gaps, gap_cvar)
+        avg_time_mp_base = mean(output_cvar["Time MP hist"])
+        # Write results
+        results_destination = joinpath(results_folder,"System_Weighted_CVaR")
+        df_cap, df_syscost, df_emissions = write_results_benders(output_cvar, inputs, settings, results_destination)
+        if mapping
+            temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output_cvar, inputs, settings)
+            push!(results_cap, temp_df_cap)
+            push!(results_syscost, temp_df_syscost)
+            push!(results_emissions, temp_df_emissions)
+        else 
+            push!(results_cap, df_cap)
+            push!(results_syscost, df_syscost)
+            push!(results_emissions, df_emissions)
+        end
+        if risk == risk_aversion_weight
+            anchor_output = deepcopy(output_cvar)
+        end
+        
+        release_heavy_payload!(output_cvar)
+        
+        @info("Risk weight $risk solution has investment cost of $(output_cvar["MP"]["Inv_cost"])")
+        @info("Expected value system cost of " * "Risk weight $risk" * " solution: $(output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])")
+        @info("Risk adjusted system cost of " * "Risk weight $risk" * " solution: $((1-risk_aversion_weight)*output_cvar["CVaR"] + risk_aversion_weight*output_cvar["Expected Value"]+ output_cvar["MP"]["Inv_cost"])")
+    end
+
+
+    if settings["Capacity Exploration"]
+        budgets = Dict()
+        # Set budgets? ------- budget set = set with budgets same percent greater than least cost solution for each metric
+        budgets = add_budget_constraint_bendersMP(MP, ((anchor_output["CVaR"])/settings["Scaling factor cost"]), "CVaR", budgets)
+        budgets = add_budget_constraint_bendersMP(MP, ((anchor_output["Expected Value"] + anchor_output["MP"]["Inv_cost"])/settings["Scaling factor cost"])*(budget_multiplier), "System_Expected", budgets)
+        cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
+        cuts_to_keep = copy(cuts)
+        rhs_values = output_cvar["RHS Values"]
+        removed_cuts = output_cvar["Removed cuts"]
+        if mapping
+            cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output_cvar["first_write"] + 10, cuts_to_keep)
+        end
+        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Vector Type"], settings)
+        #@info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
+        for iteration in 1:iterations
+            set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
+            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            # other option - reactivate all cuts then let alg deactivate those that are not useful
+            #reactivate_cuts(MP, removed_cuts, rhs_values)
+
+            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs, mapping = mapping)
+            log_result_memory!("Random_"*string(iteration)*" output", output_random)
+            avg_time_mp = mean(output_random["Time MP hist"])
+            gap = output_random["Gaps"]
+            push!(run_labels, "Random_"*string(iteration))
+            push!(gaps, gap)
+            results_destination = joinpath(results_folder,"Random_"*string(iteration))
+            df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
+            if mapping
+                temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output_random, inputs, settings)
+                push!(results_cap, temp_df_cap)
+                push!(results_syscost, temp_df_syscost)
+                push!(results_emissions, temp_df_emissions)
+            else
+                push!(results_cap, df_cap)
+                push!(results_syscost, df_syscost)
+                push!(results_emissions, df_emissions)
+            end
+            
+            release_heavy_payload!(output_random)
+            rhs_values = output_random["RHS Values"]
+            removed_cuts = output_random["Removed cuts"]
+            
+            if length(cuts_to_keep) < settings["Cuts retained"] && !mapping && avg_time_mp < 3*avg_time_mp_base
+                push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
+            end
+        end
+        #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
+
+        # Map interior after exterior mapping
+        if mapping
+            all_caps = Matrix(vcat(results_cap...))
+            @time samples = sample_interior(all_caps, n_samples, settings)
+            outputs_mp = run_distributed_sampling(samples)
+            @time for (i, sample) in enumerate(samples)
+                outputs_sp = run_all_subproblems(SPs, inputs, settings, sample[1:R], sample[R+1:end]; minimal_payload=false)
+                ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
+                @info("Sample $i: Investment cost = $(outputs_mp[i]["Inv_cost"]), Expected value = $ev, CVaR = $(cvar)")
+                @info("Sample $i: Budget Percentage for CVaR: $(((cvar)/(budgets["CVaR"]*settings["Scaling factor cost"]))*100)%, Budget Percentage for Expected Value: $((((ev+outputs_mp[i]["Inv_cost"])/(budgets["System_Expected"]*settings["Scaling factor cost"]))*100)-100)%")
+                temp_df_cap, temp_df_syscost, temp_df_emissions = make_results_mapping_dfs(sample[1:R], sample[R+1:end], outputs_sp, outputs_mp[i]["Inv_cost"], outputs_mp[i]["Inv cost by zone"], cvar, ev, inputs, settings)
+                push!(results_cap, temp_df_cap)
+                push!(results_syscost, temp_df_syscost)
+                push!(results_emissions, temp_df_emissions)
+            end
+        end
+        write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
+    end
+    return vectors
+end
+
+
+
 #======================
 
 Interior sampling functions
