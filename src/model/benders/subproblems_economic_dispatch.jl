@@ -115,7 +115,7 @@ function cvt_sampler(points, num_samples; max_iters = 100)
     (n_points, n_vars) = size(points)
     num_initials = k * 10 
     max_point = maximum(points, dims=1)[:]
-    initial_centers = Matrix([rand(length(max_point)) .* max_point for _ in 1:num_initials])
+    initial_centers = stack([rand(length(max_point)) .* max_point for _ in 1:num_initials])
     R = kmeans(initial_centers', k; maxiter=max_iters)
     samples = collect(col for col in eachcol(R.centers))
     return samples
