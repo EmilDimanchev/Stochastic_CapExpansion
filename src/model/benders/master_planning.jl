@@ -356,6 +356,7 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
     #@constraint(MP, cLevel_set, MP[:eObj] >= LB + gamma*(UB-LB))
     if settings["Solver"] == "HiGHS"
         set_optimizer_attribute(MP, "solver", "ipm")
+        set_optimizer_attribute(MP, "presolve", "off")
     elseif settings["Solver"] == "Gurobi"
         set_optimizer_attribute(MP, "Method", 2)
     end
@@ -366,8 +367,8 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
     if termination_status(MP) != MOI.OPTIMAL
         @warn("Model did not solve to optimality. Status: ", termination_status(MP))
     end
-    if termination_status(MP) == MOI.INFEASIBLE
-        @warn("Model did not solve to optimality. Status: ", termination_status(MP))
+    if termination_status(MP) == MOI.INFEASIBLE || termination_status(MP) == MOI.INFEASIBLE_OR_UNBOUNDED
+        #@warn("Model did not solve to optimality. Status: ", termination_status(MP))
         compute_conflict!(MP)
         list_of_conflicting_constraints = ConstraintRef[];
         for (F, S) in list_of_constraint_types(MP)
@@ -389,6 +390,7 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
     @objective(MP,Min, MP[:eObj])
     if settings["Solver"] == "HiGHS"
         set_optimizer_attribute(MP, "solver", "choose")
+        set_optimizer_attribute(MP, "presolve", "on")
     elseif settings["Solver"] == "Gurobi"
         set_optimizer_attribute(MP, "Method", -1)
     end

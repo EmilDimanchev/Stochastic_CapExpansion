@@ -35,7 +35,7 @@ Contracts: false
 Search equilibria: false
 
 # CRM
-CRM flag: true
+CRM flag: false
 
 Scaling factor cost: 1e5
 Scaling factor demand: 1
@@ -63,3 +63,4 @@ MGA cut deactivation threshold: 8
 
 Mapping: true
 Mapping Gap Threshold: 0.2
+Interior Samples: 2
