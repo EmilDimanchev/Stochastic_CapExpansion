@@ -205,7 +205,6 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     run_labels = []
     gaps = []
     cuts_to_keep = []
-    anchor_output = Dict{String, Any}()
 
     # Model Settings
     iterations = settings["Iterations"]
@@ -219,40 +218,18 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     P_f = inputs["Gas price scenario probabilities"]
     P_k = inputs["Weather scenario probabilities"]
     R = length(inputs["Resources"])
-    
-    
-    MP = build_planning_model(inputs, settings)
-    # Base Runs
-    case_name = "Risk_Weight_"*string(0)
-    set_objective_bendersMP!(MP, "System_Expected", inputs, settings)
-    output = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping)
-    log_result_memory!("System_Expected", output)
-    gap_exp = output["Gaps"]
-    push!(run_labels, "System_Expected")
-    push!(gaps, gap_exp)
-    avg_time_mp_base = mean(output["Time MP hist"])
-    # Write results
-    results_destination = joinpath(results_folder,"System_Expected")
-    df_cap, df_syscost, df_emissions = write_results_benders(output, inputs, settings, results_destination)
-    if mapping
-        temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output, inputs, settings)
-        push!(results_cap, temp_df_cap)
-        push!(results_syscost, temp_df_syscost)
-        push!(results_emissions, temp_df_emissions)
-    else 
-        push!(results_cap, df_cap)
-        push!(results_syscost, df_syscost)
-        push!(results_emissions, df_emissions)
-    end
 
-    
-    release_heavy_payload!(output)
-    
-    @info("Risk weight $risk solution has investment cost of $(output["MP"]["Inv_cost"])")
-    @info("Expected value system cost of " * "Risk weight $risk" * " solution: $(output["Expected Value"] + output["MP"]["Inv_cost"])")
-    #@info("Risk adjusted system cost of " * "Risk weight $risk" * " solution: $((1-risk_aversion_weight)*output_exp["CVaR"] + risk_aversion_weight*output_exp["Expected Value"]+ output_cvar["MP"]["Inv_cost"])")
+    MP = build_planning_model(inputs, settings; risk_aversion_weight = risk_aversion_weight)
 
-    settings["Risk aversion flag"] = true
+    # Reference values pulled from the fully expected-value (risk weight 1), fully risk-averse
+    # (risk weight 0), and balanced (risk weight 0.5) solutions, used to form the MGA budget below.
+    cvar_at_ev_optimum = nothing        # CVaR of the risk weight 1 (expected-value-only) solution
+    ev_at_cvar_optimum = nothing        # Expected value of the risk weight 0 (fully risk-averse) solution
+    balanced_inv_cost = nothing         # Inv_cost/Expected Value/CVaR of the risk weight 0.5 solution
+    balanced_ev = nothing
+    balanced_cvar = nothing
+    balanced_avg_time_mp = nothing
+
     for risk in risk_aversion_weights
         cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
         cuts_to_keep = copy(cuts)
@@ -262,56 +239,74 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         # Base Runs
         case_name = "Risk_Weight_"*string(risk)
         set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk)
-        output = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping)
-        log_result_memory!("System_Weighted_CVaR output", output)
-        gap_cvar = output["Gaps"]
+        output_cvar = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping, risk_aversion_weight = risk)
+        log_result_memory!(case_name*" output", output_cvar)
+        gap_cvar = output_cvar["Gaps"]
         push!(run_labels, case_name)
         push!(gaps, gap_cvar)
-        avg_time_mp_base = mean(output["Time MP hist"])
         # Write results
-        results_destination = joinpath(results_folder,case_name)
-        df_cap, df_syscost, df_emissions = write_results_benders(output, inputs, settings, results_destination)
+        results_destination = joinpath(results_folder, case_name)
+        df_cap, df_syscost, df_emissions = write_results_benders(output_cvar, inputs, settings, results_destination)
         if mapping
             temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output, inputs, settings)
             push!(results_cap, temp_df_cap)
             push!(results_syscost, temp_df_syscost)
             push!(results_emissions, temp_df_emissions)
-        else 
+        else
             push!(results_cap, df_cap)
             push!(results_syscost, df_syscost)
             push!(results_emissions, df_emissions)
         end
-        if risk == risk_aversion_weight
-            anchor_output = deepcopy(output)
-        end
-        
-        release_heavy_payload!(output)
-        
-        @info("Risk weight $risk solution has investment cost of $(output["MP"]["Inv_cost"])")
-        @info("Expected value system cost of " * "Risk weight $risk" * " solution: $(output["Expected Value"] + output["MP"]["Inv_cost"])")
-        @info("Risk adjusted system cost of " * "Risk weight $risk" * " solution: $((1-risk_aversion_weight)*output["CVaR"] + risk_aversion_weight*output["Expected Value"]+ output_cvar["MP"]["Inv_cost"])")
-    end
 
+        if risk == 1.0
+            cvar_at_ev_optimum = output_cvar["CVaR"]
+        end
+        if risk == 0.0
+            ev_at_cvar_optimum = output_cvar["Expected Value"]
+        end
+        if risk == 0.5
+            balanced_inv_cost = output_cvar["MP"]["Inv_cost"]
+            balanced_ev = output_cvar["Expected Value"]
+            balanced_cvar = output_cvar["CVaR"]
+            balanced_avg_time_mp = mean(output_cvar["Time MP hist"])
+        end
+
+        @info("Risk weight $risk solution has investment cost of $(output_cvar["MP"]["Inv_cost"])")
+        @info("Expected value system cost of " * "Risk weight $risk" * " solution: $(output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])")
+        @info("Risk adjusted system cost of " * "Risk weight $risk" * " solution: $((1-risk_aversion_weight)*output_cvar["CVaR"] + risk_aversion_weight*output_cvar["Expected Value"]+ output_cvar["MP"]["Inv_cost"])")
+
+        release_heavy_payload!(output_cvar)
+    end
 
     if settings["Capacity Exploration"]
         budgets = Dict()
-        # Set budgets? ------- budget set = set with budgets same percent greater than least cost solution for each metric
-        budgets = add_budget_constraint_bendersMP(MP, ((anchor_output["CVaR"])/settings["Scaling factor cost"]), "CVaR", budgets)
-        budgets = add_budget_constraint_bendersMP(MP, ((anchor_output["Expected Value"] + anchor_output["MP"]["Inv_cost"])/settings["Scaling factor cost"])*(budget_multiplier), "System_Expected", budgets)
+        # CVaR budget: the CVaR achieved by the risk-neutral (expected-value-only) solution
+        budgets = add_budget_constraint_bendersMP(MP, cvar_at_ev_optimum/settings["Scaling factor cost"], "CVaR", budgets)
+        # Expected value budget: the EV achieved by the fully risk-averse (CVaR-only) solution
+        budgets = add_budget_constraint_bendersMP(MP, ev_at_cvar_optimum/settings["Scaling factor cost"], "Expected", budgets)
+        # Combined budget: keep inv_cost + 0.5*EV + 0.5*CVaR within (1+budget_multiplier) of the
+        # balanced (risk weight 0.5) solution's own optimal value.
+        # mga_benders tracks this budget's upper bound using settings["Risk aversion weight"]
+        # (algorithm.jl:608/706), not the risk_aversion passed here, so it must be kept at 0.5
+        # to match the constraint actually being enforced on MP.
+        settings["Risk aversion weight"] = 0.5
+        balanced_optimum = balanced_inv_cost + 0.5*balanced_ev + 0.5*balanced_cvar
+        budgets = add_budget_constraint_bendersMP(MP, (balanced_optimum/settings["Scaling factor cost"])*(1+budget_multiplier), "System_Weighted_CVaR", budgets; risk_aversion = 0.5)
+
         cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
         cuts_to_keep = copy(cuts)
+
         rhs_values = output["RHS Values"]
         removed_cuts = output["Removed cuts"]
         if mapping
             cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output["first_write"] + 10, cuts_to_keep)
         end
+
         vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Vector Type"], settings)
         #@info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
             cuts_to_keep = manage_cuts(MP, cuts_to_keep)
-            # other option - reactivate all cuts then let alg deactivate those that are not useful
-            #reactivate_cuts(MP, removed_cuts, rhs_values)
 
             output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs, mapping = mapping)
             log_result_memory!("Random_"*string(iteration)*" output", output_random)
@@ -331,12 +326,10 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                 push!(results_syscost, df_syscost)
                 push!(results_emissions, df_emissions)
             end
-            
+
             release_heavy_payload!(output_random)
-            rhs_values = output_random["RHS Values"]
-            removed_cuts = output_random["Removed cuts"]
-            
-            if length(cuts_to_keep) < settings["Cuts retained"] && !mapping && avg_time_mp < 3*avg_time_mp_base
+
+            if length(cuts_to_keep) < settings["Cuts retained"] && !mapping && avg_time_mp < 3*balanced_avg_time_mp
                 push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
             end
         end
@@ -351,7 +344,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                 outputs_sp = run_all_subproblems(SPs, inputs, settings, sample[1:R], sample[R+1:end]; minimal_payload=false)
                 ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
                 @info("Sample $i: Investment cost = $(outputs_mp[i]["Inv_cost"]), Expected value = $ev, CVaR = $(cvar)")
-                @info("Sample $i: Budget Percentage for CVaR: $(((cvar)/(budgets["CVaR"]*settings["Scaling factor cost"]))*100)%, Budget Percentage for Expected Value: $((((ev+outputs_mp[i]["Inv_cost"])/(budgets["System_Expected"]*settings["Scaling factor cost"]))*100)-100)%")
+                @info("Sample $i: Budget Percentage for CVaR: $(((cvar)/(budgets["CVaR"]*settings["Scaling factor cost"]))*100)%, Budget Percentage for Expected Value: $((((ev+outputs_mp[i]["Inv_cost"])/(budgets["Expected"]*settings["Scaling factor cost"]))*100)-100)%")
                 temp_df_cap, temp_df_syscost, temp_df_emissions = make_results_mapping_dfs(sample[1:R], sample[R+1:end], outputs_sp, outputs_mp[i]["Inv_cost"], outputs_mp[i]["Inv cost by zone"], cvar, ev, inputs, settings)
                 push!(results_cap, temp_df_cap)
                 push!(results_syscost, temp_df_syscost)
@@ -359,8 +352,8 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             end
         end
         write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
+        return vectors
     end
-    return vectors
 end
 
 

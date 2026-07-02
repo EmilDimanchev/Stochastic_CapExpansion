@@ -158,7 +158,7 @@ end
 
 ####TODO - modify containers to be preallocated sizes to avoid memory over runs from push! and append!
 
-function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing, mapping = false)
+function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5)
     # Iterations
     J_max = 150
 
@@ -203,7 +203,6 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     P_f = inputs["Gas price scenario probabilities"]
     P_k = inputs["Weather scenario probabilities"]
     VaR_Percent = settings["Value-at-Risk percent"] 
-    risk_aversion_weight = settings["Risk aversion weight"]
     risk_aversion_flag = settings["Risk aversion flag"]
     expected_value = 0.0
     cvar_estimate = 0.0
@@ -301,8 +300,6 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         ])
         expected_value = sum(P[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"] 
         cvar_estimate = 0.0
-
-        println("Power Price:")
     
         if all(size(SPs) .>= (1,1,1))
             cvar_estimate = compute_cvar(sp_obj_per_iter, P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
@@ -706,6 +703,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 UBs[i] = risk_aversion_weight*expected_value + (1-risk_aversion_weight)*cvar_estimate + output_mp["Inv_cost"]/settings["Scaling factor cost"]
             elseif budget_type == "CVaR"
                 UBs[i] = cvar_estimate
+            elseif budget_type == "Expected"
+                UBs[i] = expected_value
             else
                 error("Budget type $(budget_type) not recognized for UB calculation.")
             end
