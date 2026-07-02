@@ -134,7 +134,7 @@ Constructors
 
 =====================================#
 
-function build_planning_model(inputs, settings)
+function build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
     # Model
     MP = Model()
     set_silent(MP)
@@ -178,7 +178,7 @@ function build_planning_model(inputs, settings)
     Z = inputs["Number of zones"]
     L = inputs["Number of lines"]
 
-    Ω = settings["Risk aversion weight"]
+    Ω = risk_aversion_weight
     x_ub = 1e6
 
     # ~~~
@@ -223,7 +223,7 @@ end
 
 function add_risk_terms!(MP::Model, inputs, settings)
     # Sets and flags
-    risk_aversion_weight = settings["Risk aversion weight"]
+    #risk_aversion_weight = #settings["Risk aversion weight"]
 
     P = inputs["Demand scenario probabilities"]
     P_f = inputs["Gas price scenario probabilities"]
@@ -235,7 +235,6 @@ function add_risk_terms!(MP::Model, inputs, settings)
 
     # CVaR parameters
     Ψ = settings["Value-at-Risk percent"] 
-    Ω = risk_aversion_weight
 
     # Auxiliary varliables for CVaR
     @variable(MP, u[s in 1:S, f in 1:F, k in 1:K] >= 0) # loss relative to VaR, $/MW
@@ -246,7 +245,7 @@ function add_risk_terms!(MP::Model, inputs, settings)
     
     # Accounting for risk in the objective function
     @expression(MP, cvar_term, ζ + 1/Ψ*sum(P[s]*P_f[f]*P_k[k]*u[s,f,k] for s in 1:S, f in 1:F, k in 1:K))
-    @expression(MP, risk_adjusted_sys_cost, MP[:inv_cost] + Ω*MP[:expected_alpha] + (1-Ω)*MP[:cvar_term])
+    #@expression(MP, risk_adjusted_sys_cost, MP[:inv_cost] + Ω*MP[:expected_alpha] + (1-Ω)*MP[:cvar_term])
 
 end
 
@@ -351,6 +350,7 @@ end
 
 
 function level_set_regularization(MP, UB, LB, gamma, settings)
+    println("UB: ", UB, " LB: ", LB, " Level-set: ", LB + 0.5*(UB-LB))
 
     @constraint(MP, cLevel_set, MP[:eObj] <= LB + 0.5*(UB-LB))
     #@constraint(MP, cLevel_set, MP[:eObj] >= LB + gamma*(UB-LB))
@@ -465,7 +465,7 @@ Outputs
 =====================================#
 
 
-function write_outputs(MP, settings; reg=false)
+function write_outputs(MP, settings; reg=false, risk_aversion_weight=0.5)
     scaling_factor_cost = settings["Scaling factor cost"]
     output = Dict{String, Any}()
     output["Planning objective"] = value(MP[:eObj])*scaling_factor_cost
@@ -484,7 +484,7 @@ function write_outputs(MP, settings; reg=false)
         output["CVaR Loss"] = value.(MP[:u]).*scaling_factor_cost
         output["VaR"] = value.(MP[:ζ]).*scaling_factor_cost
         output["CVaR term"] = value(MP[:cvar_term])*scaling_factor_cost
-        output["Risk adjusted system cost"] = value(MP[:risk_adjusted_sys_cost])*scaling_factor_cost
+        output["Risk adjusted system cost"] = (value(MP[:inv_cost]) + risk_aversion_weight*value(MP[:expected_alpha]) + (1 - risk_aversion_weight)*value(MP[:cvar_term]))*scaling_factor_cost
     else
         output["CVaR Loss"] = 0
         output["VaR"] = 0

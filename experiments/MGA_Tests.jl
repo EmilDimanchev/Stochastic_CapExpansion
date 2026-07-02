@@ -219,7 +219,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     P_k = inputs["Weather scenario probabilities"]
     R = length(inputs["Resources"])
 
-    MP = build_planning_model(inputs, settings)
+    MP = build_planning_model(inputs, settings; risk_aversion_weight = risk_aversion_weight)
 
     # Reference values pulled from the fully expected-value (risk weight 1), fully risk-averse
     # (risk weight 0), and balanced (risk weight 0.5) solutions, used to form the MGA budget below.
@@ -234,7 +234,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         # Base Runs
         case_name = "Risk_Weight_"*string(risk)
         set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk)
-        output_cvar = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping)
+        output_cvar = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping, risk_aversion_weight = risk)
         log_result_memory!(case_name*" output", output_cvar)
         gap_cvar = output_cvar["Gaps"]
         push!(run_labels, case_name)
