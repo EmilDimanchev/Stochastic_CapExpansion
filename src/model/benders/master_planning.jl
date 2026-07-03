@@ -284,7 +284,7 @@ Runner
 =====================================#
 
 # Multiple dispatch run_planning_model with and without SP outputs for cuts
-function run_planning_model(MP, settings)
+function run_planning_model(MP, settings, risk_aversion_weight)
 
     optimize!(MP)
     if termination_status(MP) != MOI.OPTIMAL
@@ -306,7 +306,7 @@ function run_planning_model(MP, settings)
     end
 
     # Write outputs
-    output = write_outputs(MP, settings)
+    output = write_outputs(MP, settings, risk_aversion_weight = risk_aversion_weight)
 
     return output
 
@@ -350,18 +350,17 @@ end
 
 
 function level_set_regularization(MP, UB, LB, gamma, settings)
-    println("UB: ", UB, " LB: ", LB, " Level-set: ", LB + 0.5*(UB-LB))
 
     @constraint(MP, cLevel_set, MP[:eObj] <= LB + 0.5*(UB-LB))
     #@constraint(MP, cLevel_set, MP[:eObj] >= LB + gamma*(UB-LB))
     if settings["Solver"] == "HiGHS"
         set_optimizer_attribute(MP, "solver", "ipm")
-        set_optimizer_attribute(MP, "presolve", "off")
+        #set_optimizer_attribute(MP, "presolve", "off")
     elseif settings["Solver"] == "Gurobi"
         set_optimizer_attribute(MP, "Method", 2)
     end
+    unset_silent(MP)
     @objective(MP, Min, 0.0)
-
     optimize!(MP)
 
     if termination_status(MP) != MOI.OPTIMAL
@@ -390,10 +389,11 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
     @objective(MP,Min, MP[:eObj])
     if settings["Solver"] == "HiGHS"
         set_optimizer_attribute(MP, "solver", "choose")
-        set_optimizer_attribute(MP, "presolve", "on")
+        #set_optimizer_attribute(MP, "presolve", "on")
     elseif settings["Solver"] == "Gurobi"
         set_optimizer_attribute(MP, "Method", -1)
     end
+    set_silent(MP)
 
     return output
 

@@ -211,8 +211,8 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     risk_aversion_weights = [i for i in 0.1:0.1:1.0]
     risk_aversion_weight = settings["Risk aversion weight"] ### set as anchor point
     VaR_percent = settings["Value-at-Risk percent"] ### Currently set consistently across runs and ahead of time
+    settings["Risk aversion flag"] = true
     # Create and set expected value model
-    settings["Risk aversion flag"] = false
 
     P_s = inputs["Demand scenario probabilities"]
     P_f = inputs["Gas price scenario probabilities"]
@@ -231,11 +231,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     balanced_avg_time_mp = nothing
 
     for risk in risk_aversion_weights
-        cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
-        cuts_to_keep = copy(cuts)
-        if mapping
-            cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output["first_write"] + 10, cuts_to_keep)
-        end
+        
         # Base Runs
         case_name = "Risk_Weight_"*string(risk)
         set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk)
@@ -274,6 +270,12 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         @info("Risk weight $risk solution has investment cost of $(output_cvar["MP"]["Inv_cost"])")
         @info("Expected value system cost of " * "Risk weight $risk" * " solution: $(output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])")
         @info("Risk adjusted system cost of " * "Risk weight $risk" * " solution: $((1-risk_aversion_weight)*output_cvar["CVaR"] + risk_aversion_weight*output_cvar["Expected Value"]+ output_cvar["MP"]["Inv_cost"])")
+
+        cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
+        cuts_to_keep = copy(cuts)
+        if mapping
+            cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output["first_write"] + 10, cuts_to_keep)
+        end
 
         release_heavy_payload!(output_cvar)
     end

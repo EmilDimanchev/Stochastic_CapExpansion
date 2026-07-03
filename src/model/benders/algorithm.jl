@@ -234,7 +234,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     end
 
     time_mp = time()
-    output_mp = run_planning_model(MP, settings)
+    output_mp = run_planning_model(MP, settings, risk_aversion_weight)
     time_mp = time() - time_mp
     alpha_ev = output_mp["Expected alpha"]/settings["Scaling factor cost"]
 
@@ -341,14 +341,14 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         @info("Gap: $(gap * 100)%")
         @info("LB: $(round(LB; digits=2)), UB: $(round(min_UB; digits=2)), Time MP: $(round(time_mp; digits=2)) seconds, Time SP: $(round(time_sp; digits=2)) seconds")
         if gap < 0 && abs(gap) > 1e-6
-            @warn("Negative gap detected; check model formulation.")
+            error("Negative gap detected; check model formulation.")
         end
 
 
         #if maximum(abs.(gaps)) <= conv_tol
         if gap <= conv_tol    
             @info("Convergence achieved with maximum percentage gap of $((gap) * 100)%")
-            output_mp = run_planning_model(MP, settings)
+            output_mp = run_planning_model(MP, settings, risk_aversion_weight)
             #set_capacity_parameters!(SPs, output_mp["Capacity"])
             sp_all_results = run_all_subproblems(SPs, inputs, settings, output_mp["Capacity"], output_mp["Line expansion"]; minimal_payload=false)
             all_outputs_mp[j] = output_mp
@@ -409,7 +409,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             add_optimality_cuts!(MP, sp_obj_per_iter, capacity_duals_sp_per_iter, line_duals_sp_per_iter, capacity_mix[j], line_expansion[j], coeffs, inputs,settings, j, case_name)
             @info("Running investment problem")
             time_mp = time()
-            output_mp_unst = run_planning_model(MP, settings)
+            output_mp_unst = run_planning_model(MP, settings, risk_aversion_weight)
             time_mp = time() - time_mp
             push!(time_mp_hist, time_mp)
             alpha_ev = output_mp_unst["Expected alpha"]/settings["Scaling factor cost"]
@@ -621,7 +621,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
         @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
     end
     time_mp = time()
-    output_mp = run_planning_model(MP, settings)
+    output_mp = run_planning_model(MP, settings, risk_aversion_weight)
     time_mp = time() - time_mp
      
     capacity_mix_initial = output_mp["Capacity"]
