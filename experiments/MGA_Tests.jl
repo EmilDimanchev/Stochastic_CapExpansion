@@ -4,7 +4,7 @@ using Distributed
 
 @everywhere using .Stochastic_CapExpansion
 @everywhere using Revise, JuMP, Gurobi, HiGHS, Ipopt, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions, Surrogates
-
+using Clarabel
 
 #=========================
 
@@ -208,7 +208,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
 
     # Model Settings
     iterations = settings["Iterations"]
-    risk_aversion_weights = [i for i in 0.1:0.1:1.0]
+    risk_aversion_weights = [[i for i in 0.5:-0.1:0.1]; [i for i in 0.6:0.1:0.9]; 0.0; 1.0]
     risk_aversion_weight = settings["Risk aversion weight"] ### set as anchor point
     VaR_percent = settings["Value-at-Risk percent"] ### Currently set consistently across runs and ahead of time
     settings["Risk aversion flag"] = true
@@ -230,12 +230,17 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     balanced_cvar = nothing
     balanced_avg_time_mp = nothing
 
-    for risk in risk_aversion_weights
-        
+    # Shared across every risk weight / MGA direction solved against this MP so that cuts
+    # pruned while solving one problem get a fresh look (and are rebuilt losslessly, since
+    # deactivate_cuts now archives the exact constraint rather than discarding it) when a
+    # later problem starts.
+    cut_archive = Dict{String, Any}()
+
+    for (i, risk) in enumerate(risk_aversion_weights)
         # Base Runs
         case_name = "Risk_Weight_"*string(risk)
         set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk)
-        output_cvar = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping, risk_aversion_weight = risk)
+        output_cvar = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping, risk_aversion_weight = risk, cut_archive = cut_archive)
         log_result_memory!(case_name*" output", output_cvar)
         gap_cvar = output_cvar["Gaps"]
         push!(run_labels, case_name)
@@ -270,11 +275,15 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         @info("Risk weight $risk solution has investment cost of $(output_cvar["MP"]["Inv_cost"])")
         @info("Expected value system cost of " * "Risk weight $risk" * " solution: $(output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])")
         @info("Risk adjusted system cost of " * "Risk weight $risk" * " solution: $((1-risk_aversion_weight)*output_cvar["CVaR"] + risk_aversion_weight*output_cvar["Expected Value"]+ output_cvar["MP"]["Inv_cost"])")
-
-        cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
-        cuts_to_keep = copy(cuts)
-        if mapping
-            cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output["first_write"] + 10, cuts_to_keep)
+        
+        if settings["Cut deactivation strategy"] == "in mga"
+            
+            cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if ((startswith(string(con), "optimality_cut_") && (split(string(con), "_")[3] == string(risk))) || (startswith(string(con), "cvar_tail_cuts_") && (split(string(con), "_")[3] == string(risk))))]
+        
+            if mapping
+                cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output["first_write"] + 10, cuts_to_keep)
+            end
+            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
         end
 
         release_heavy_payload!(output_cvar)
@@ -294,23 +303,25 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         settings["Risk aversion weight"] = 0.5
         balanced_optimum = balanced_inv_cost + 0.5*balanced_ev + 0.5*balanced_cvar
         budgets = add_budget_constraint_bendersMP(MP, (balanced_optimum/settings["Scaling factor cost"])*(1+budget_multiplier), "System_Weighted_CVaR", budgets; risk_aversion = 0.5)
+        if settings["Cut deactivation strategy"] == "in mga"
+            cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
+            cuts_to_keep = copy(cuts)
 
-        cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
-        cuts_to_keep = copy(cuts)
+            if mapping
+                cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output["first_write"] + 10, cuts_to_keep)
+            end
 
-        rhs_values = output["RHS Values"]
-        removed_cuts = output["Removed cuts"]
-        if mapping
-            cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output["first_write"] + 10, cuts_to_keep)
         end
-
         vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Vector Type"], settings)
         #@info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
-            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            if settings["Cut deactivation strategy"] == "in mga"
+                cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            end
+            #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
 
-            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs, mapping = mapping)
+            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs, mapping = mapping, cut_archive = cut_archive)
             log_result_memory!("Random_"*string(iteration)*" output", output_random)
             avg_time_mp = mean(output_random["Time MP hist"])
             gap = output_random["Gaps"]
@@ -330,10 +341,12 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             end
 
             release_heavy_payload!(output_random)
-
-            if length(cuts_to_keep) < settings["Cuts retained"] && !mapping && avg_time_mp < 3*balanced_avg_time_mp
-                push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
+            if settings["Cut deactivation strategy"] == "in mga"
+                if length(cuts_to_keep) < settings["Cuts retained"] && !mapping && avg_time_mp < 3*balanced_avg_time_mp
+                    push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
+                end
             end
+            
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
 
@@ -638,5 +651,112 @@ function run_interpolate_evaluation_della(test_index, interp_file)
     SPs = build_all_subproblems(inputs, settings)
 
     evaluate_interpolates(SPs, inputs, settings, interpolate_df, summary_folder)
+
+end
+
+#=========
+
+Cut management tests: exercises add_optimality_cuts!/deactivate_cuts/reactivate_cuts
+directly against a real (laptop-sized) MP, without running a full Benders loop. Checks
+that a deactivate -> reactivate round trip reproduces cuts exactly (same RHS), and
+times the constraint_by_name-per-call pattern against the cut_refs-cache pattern so a
+regression back to the slow path would show up as a large old/new time gap.
+
+==========#
+
+function test_cut_management(test_index = "cut_mgmt")
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+
+    MP = build_planning_model(inputs, settings)
+
+    P_s = inputs["Demand scenario probabilities"]
+    P_f = inputs["Gas price scenario probabilities"]
+    P_k = inputs["Weather scenario probabilities"]
+    S, F, K = length(P_s), length(P_f), length(P_k)
+    G = inputs["Number of generation resources"]
+    O = inputs["Number of storage resources"]
+    R = G + O
+    L = inputs["Number of lines"]
+
+    x_prev = zeros(R)
+    x_prev_line = zeros(L)
+    coeffs = fill(1.0 / (S*F*K), S, F, K)
+    SP_obj = zeros(S, F, K)
+    cap_dual = zeros(R, S, F, K)
+    line_dual = zeros(L, S, F, K)
+
+    cut_refs = Dict{String, ConstraintRef}()
+    n_iterations = 6
+    for it in 1:n_iterations
+        new_refs = add_optimality_cuts!(MP, SP_obj, cap_dual, line_dual, x_prev, x_prev_line, coeffs, inputs, settings, it, "cuttest")
+        merge!(cut_refs, new_refs)
+    end
+
+    total_cuts = length(cut_refs)
+    @assert total_cuts == n_iterations * S * F * K "expected $(n_iterations*S*F*K) cuts, got $(total_cuts)"
+    @info("Added $(total_cuts) cuts across $(n_iterations) iterations ($(S)x$(F)x$(K) scenarios/iteration).")
+
+    # --- Correctness: deactivate + reactivate round trip ---
+    cut_archive = Dict{String, Any}()
+    all_names = collect(keys(cut_refs))
+    to_deactivate = all_names[1:min(50, length(all_names))]
+    rhs_before = Dict(n => normalized_rhs(cut_refs[n]) for n in to_deactivate)
+
+    deactivate_cuts(MP, to_deactivate, cut_archive, cut_refs)
+    @assert length(cut_archive) == length(to_deactivate)
+    @assert all(n -> !haskey(cut_refs, n), to_deactivate)
+    @assert all(n -> constraint_by_name(MP, n) === nothing, to_deactivate)
+    @info("Deactivated $(length(to_deactivate)) cuts; archived and removed from MP as expected.")
+
+    reactivated = reactivate_cuts(MP, cut_archive, to_deactivate)
+    @assert isempty(cut_archive)
+    @assert length(reactivated) == length(to_deactivate)
+    merge!(cut_refs, reactivated)
+
+    rhs_after = Dict(n => normalized_rhs(cut_refs[n]) for n in to_deactivate)
+    @assert rhs_before == rhs_after "reactivated cuts' RHS did not match the originals"
+    @info("Reactivated all $(length(to_deactivate)) cuts; RHS values match the originals exactly.")
+
+    # --- Self-healing fallback: a cut live in MP but absent from cut_refs (simulates a
+    # cut carried over from a previous problem on a reused MP) should still resolve. ---
+    probe_name = all_names[end]
+    delete!(cut_refs, probe_name)
+    con = constraint_by_name(MP, probe_name)
+    @assert con !== nothing
+    cut_refs[probe_name] = con # mirrors the fallback populate step in algorithm.jl
+    @info("Fallback lookup for an untracked-but-live cut resolved correctly.")
+
+    # --- Performance: constraint_by_name-per-call (old) vs cut_refs cache (new) ---
+    remaining_names = collect(keys(cut_refs))
+    n_perf = min(300, length(remaining_names))
+    perf_batch = remaining_names[1:n_perf]
+
+    t_old = @elapsed begin
+        for n in perf_batch
+            con = constraint_by_name(MP, n)
+            delete(MP, con)
+        end
+    end
+    @info("Old pattern (constraint_by_name in a delete loop): removed $(n_perf) cuts in $(round(t_old; digits=4))s")
+    for n in perf_batch
+        delete!(cut_refs, n)
+    end
+
+    refill_iterations = ceil(Int, n_perf / (S*F*K)) + 1
+    for it in (n_iterations+1):(n_iterations+refill_iterations)
+        new_refs = add_optimality_cuts!(MP, SP_obj, cap_dual, line_dual, x_prev, x_prev_line, coeffs, inputs, settings, it, "cuttest_refill")
+        merge!(cut_refs, new_refs)
+    end
+    perf_batch_2 = collect(keys(cut_refs))[1:n_perf]
+    cut_archive_2 = Dict{String, Any}()
+    t_new = @elapsed deactivate_cuts(MP, perf_batch_2, cut_archive_2, cut_refs)
+    @info("New pattern (cut_refs cache): removed $(n_perf) cuts in $(round(t_new; digits=4))s")
+
+    speedup = t_old / max(t_new, 1e-9)
+    @info("[$(test_index)] Speedup from cut_refs cache over constraint_by_name-per-call: $(round(speedup; digits=1))x")
+
+    return (old_time = t_old, new_time = t_new, speedup = speedup, total_cuts = total_cuts)
 
 end

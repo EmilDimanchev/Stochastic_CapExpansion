@@ -60,6 +60,7 @@ Budget convergence tolerance: 0.0001
 Cuts retained: 50000
 Cut deactivation threshold: 8
 MGA cut deactivation threshold: 8
+Cut deactivation strategy: "in benders" # options are "in benders" and "in mga"
 
 Mapping: true
 Mapping Gap Threshold: 0.2

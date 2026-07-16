@@ -20,7 +20,7 @@ function _log_iteration_memory!(settings::Dict, label::String, iteration::Int, M
     ], ", ")
 
     n_cuts = count(
-        con -> startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"),
+        con -> startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_"),
         all_constraints(MP, include_variable_in_set_constraints = false),
     )
     free_mem_mb = round(Sys.free_memory() / 1024^2; digits = 2)
@@ -158,7 +158,7 @@ end
 
 ####TODO - modify containers to be preallocated sizes to avoid memory over runs from push! and append!
 
-function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5)
+function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_archive::Dict{String, Any} = Dict{String, Any}())
     # Iterations
     J_max = 150
 
@@ -210,7 +210,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     unst_LB = -Inf
     inv_cost_unst = 0.0
     cut_deactivation_threshold = settings["Cut deactivation threshold"]
-    gamma = 0.001 # Initial regularization parameter; will be adjusted based on gap
+    gamma = 0.25 # Initial regularization parameter; will be adjusted based on gap. Starts
+                 # loose (few/unreliable cuts early on) and adjust_gamma tightens it down
+                 # to a floor of 0.05 as iterations prove the cut model trustworthy.
     phi = 0.5
     if settings["Regularization strategy"] == "QTR"
         gamma = 0.5
@@ -226,11 +228,17 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     indicator_written = false
     last_iteration_cuts = Dict{String, Int64}()
     rhs_values = Dict{String, Float64}()
-    removed_cuts = String[]
+    cut_refs = Dict{String, ConstraintRef}() # name => ConstraintRef cache; avoids constraint_by_name in the hot loop below
 
     if mapping
         @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
         minimal_payload = false
+    end
+
+    if !isempty(cut_archive)
+        reactivated = reactivate_cuts(MP, cut_archive)
+        merge!(cut_refs, reactivated)
+        @info("Reactivated $(length(reactivated)) previously-pruned cuts for this problem; will re-prune whichever don't bind within $(cut_deactivation_threshold) iterations.")
     end
 
     time_mp = time()
@@ -376,8 +384,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 results["All MP outputs per iteration"] = all_outputs_mp[first_write:j]
                 results["first_write"] = first_write 
             end
-            results["Removed cuts"] = removed_cuts
+            results["Removed cuts"] = collect(keys(cut_archive))
             results["RHS Values"] = rhs_values
+            results["Cut archive"] = cut_archive
 
             # Evaluate MP sol on Eval SPs if needed
             if Eval_SPs !== nothing
@@ -406,7 +415,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 end
             end
 
-            add_optimality_cuts!(MP, sp_obj_per_iter, capacity_duals_sp_per_iter, line_duals_sp_per_iter, capacity_mix[j], line_expansion[j], coeffs, inputs,settings, j, case_name)
+            new_cut_refs = add_optimality_cuts!(MP, sp_obj_per_iter, capacity_duals_sp_per_iter, line_duals_sp_per_iter, capacity_mix[j], line_expansion[j], coeffs, inputs,settings, j, case_name)
+            merge!(cut_refs, new_cut_refs)
             @info("Running investment problem")
             time_mp = time()
             output_mp_unst = run_planning_model(MP, settings, risk_aversion_weight)
@@ -424,46 +434,59 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             LB = max(LB, LB_unst)
             push!(LB_hist, LB)
 
-            all_cuts = [string(name(con)) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+            all_cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_")]
+
             cuts_to_remove = String[]
             for cut in all_cuts
-                if !haskey(last_iteration_cuts, cut) 
+                if !haskey(last_iteration_cuts, cut)
                     # catalog and update last iteration
                     last_iteration_cuts[cut] = j
-                    rhs_values[cut] = normalized_rhs(constraint_by_name(MP, cut))
+                    if !haskey(cut_refs, cut)
+                        # Cut is live in MP but wasn't created or reactivated by this call
+                        # (e.g. carried over, still active, from a previous problem that
+                        # reused this same MP). Fall back once to constraint_by_name and
+                        # cache the ref so it's O(1) from here on.
+                        cut_refs[cut] = constraint_by_name(MP, cut)
+                    end
+                    rhs_values[cut] = normalized_rhs(cut_refs[cut])
                 elseif output_mp_unst["Cut Duals"][cut] >= 0.0001
                     # only update
                     last_iteration_cuts[cut] = j
-                elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold && !(cut in removed_cuts)
+                elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold
                     # deactivate
-                    #@info("Deactivating cut $(cut) due to inactivity.")
                     push!(cuts_to_remove, cut)
                 end
             end
             if length(cuts_to_remove) >= 1
-                deactivate_cuts(MP, cuts_to_remove)
-                append!(removed_cuts, cuts_to_remove)
+                deactivate_cuts(MP, cuts_to_remove, cut_archive, cut_refs)
             end
 
-
-            
-            if settings["Regularization flag"]
+            if settings["Regularization flag"] && (gap*100) >= 1
                 if settings["Regularization strategy"] == "Level Set"
-                    @info("Applying level set regularization to master problem")
                     #gamma = adjust_gamma(UB_hist[end-1], min_UB, LB, gamma)
+                    @info("Applying level set regularization to master problem") #(gamma=$(round(gamma; digits=3)))")
                     time_reg = time()
                     output_mp = level_set_regularization(MP, min_UB, LB, gamma, settings)
                     time_reg = time() - time_reg
                     @info("Regularization solve time: $(round(time_reg; digits=2)) seconds")
-                    alpha_ev_stb = output_mp["Expected alpha"]/settings["Scaling factor cost"]
-                    if risk_aversion_flag
-                        u_cvar_stb = output_mp["CVaR term"]/settings["Scaling factor cost"]
-                        risk_adjusted_LB_stb = risk_aversion_weight*alpha_ev_stb + (1-risk_aversion_weight)*u_cvar_stb
-                        #LB = risk_adjusted_LB_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+                    if output_mp === nothing
+                        # Level-set solve hit a (numerical, not logical - see the warning
+                        # logged inside level_set_regularization) infeasibility. Rather than
+                        # crash the whole run over one bad iteration, keep the unstabilized
+                        # solution we already have and move on; the next iteration's cuts
+                        # will likely shift the level enough for it to solve cleanly again.
+                        output_mp = output_mp_unst
                     else
-                        #LB = alpha_ev_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+                        alpha_ev_stb = output_mp["Expected alpha"]/settings["Scaling factor cost"]
+                        if risk_aversion_flag
+                            u_cvar_stb = output_mp["CVaR term"]/settings["Scaling factor cost"]
+                            risk_adjusted_LB_stb = risk_aversion_weight*alpha_ev_stb + (1-risk_aversion_weight)*u_cvar_stb
+                            #LB = risk_adjusted_LB_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+                        else
+                            #LB = alpha_ev_stb + output_mp["Inv_cost"]/settings["Scaling factor cost"]
+                        end
+                        #@info("Pre-reg LB: $LB_unst, Post-reg LB: $LB")
                     end
-                    #@info("Pre-reg LB: $LB_unst, Post-reg LB: $LB")
                     push!(time_reg_hist, time_reg)
                 elseif settings["Regularization strategy"] == "QTR"
                     x_vector = vcat(vec(output_mp_unst["Capacity"]), vec(output_mp_unst["Line expansion"]))
@@ -499,6 +522,13 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     end
     elapsed = time() - algorithm_start_time
     @info("Total elapsed time for algorithm: $(elapsed) seconds")
+
+    if isempty(results)
+        # Never hit the convergence branch, so `results` was never populated. Fail loudly
+        # and specifically here rather than let the caller crash on a confusing
+        # KeyError several frames away when it reads e.g. output["Gaps"].
+        error("Benders algorithm for case \"$(case_name)\" did not converge within $(J_max) iterations (final gap: $(round(gaps[end]*100; digits=4))%, target: $(round(conv_tol*100; digits=4))%).")
+    end
 
     # Report results
     @info("Final capacity mix:" * string(results["Capacity per iteration"]))
@@ -552,7 +582,7 @@ function compute_cvar(SP_obj, P, P_f, P_k, VaR_Percent)
     return tail_weighted_sum / alpha
 end
 
-function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing, mapping = false)
+function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing, mapping = false, cut_archive::Dict{String, Any} = Dict{String, Any}())
     # Iterations 
     J_max = 150
 
@@ -587,7 +617,6 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     # Initializing new bound settings
     LB_hist = []
     UB_hist = []
-    removed_cuts = String[]
     time_MP_hist = []
     time_SP_hist = []
 
@@ -616,10 +645,18 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     last_iteration_cuts = Dict{String, Int64}()
     rhs_values = Dict{String, Float64}()
     cut_deactivation_threshold = settings["MGA cut deactivation threshold"]
+    cut_refs = Dict{String, ConstraintRef}() # name => ConstraintRef cache; avoids constraint_by_name in the hot loop below
 
     if mapping
         @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
     end
+
+    if !isempty(cut_archive)
+        reactivated = reactivate_cuts(MP, cut_archive)
+        merge!(cut_refs, reactivated)
+        @info("Reactivated $(length(reactivated)) previously-pruned cuts for this problem; will re-prune whichever don't bind within $(cut_deactivation_threshold) iterations.")
+    end
+
     time_mp = time()
     output_mp = run_planning_model(MP, settings, risk_aversion_weight)
     time_mp = time() - time_mp
@@ -757,7 +794,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             results["UB_hist"] = UB_hist
             results["Gaps"] = gap_hist
             results["RHS Values"] = rhs_values
-            results["Removed cuts"] = removed_cuts
+            results["Removed cuts"] = collect(keys(cut_archive))
+            results["Cut archive"] = cut_archive
 
             println("Gaps at convergence: ", gap_hist[end])
             
@@ -788,7 +826,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 end
             end
 
-            add_optimality_cuts!(MP, sp_obj_per_iter, capacity_duals_sp_per_iter, line_duals_sp_per_iter, capacity_mix[j], line_expansion[j], coeffs, inputs,settings, j, case_name)
+            new_cut_refs = add_optimality_cuts!(MP, sp_obj_per_iter, capacity_duals_sp_per_iter, line_duals_sp_per_iter, capacity_mix[j], line_expansion[j], coeffs, inputs,settings, j, case_name)
+            merge!(cut_refs, new_cut_refs)
             @info("Running investment problem")
             time_mp = time()
             output_mp = run_planning_model(MP, settings)
@@ -807,31 +846,43 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 "gap_hist" => gap_hist,
             ])
 
-            all_cuts = [string(name(con)) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+            all_cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_")]
             cuts_to_remove = String[]
             for cut in all_cuts
-                if !haskey(last_iteration_cuts, cut) 
+                if !haskey(last_iteration_cuts, cut)
                     # catalog and update last iteration
                     last_iteration_cuts[cut] = j
-                    rhs_values[cut] = normalized_rhs(constraint_by_name(MP, cut))
+                    if !haskey(cut_refs, cut)
+                        # Cut is live in MP but wasn't created or reactivated by this call
+                        # (e.g. carried over, still active, from a previous problem that
+                        # reused this same MP). Fall back once to constraint_by_name and
+                        # cache the ref so it's O(1) from here on.
+                        cut_refs[cut] = constraint_by_name(MP, cut)
+                    end
+                    rhs_values[cut] = normalized_rhs(cut_refs[cut])
                 elseif output_mp["Cut Duals"][cut] >= 0.0001
                     # only update
                     last_iteration_cuts[cut] = j
-                elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold && !(cut in removed_cuts)
+                elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold
                     # deactivate
-                    #@info("Deactivating cut $(cut) due to inactivity.")
                     push!(cuts_to_remove, cut)
                 end
             end
             if length(cuts_to_remove) >= 1
-                deactivate_cuts(MP, cuts_to_remove)
-                append!(removed_cuts, cuts_to_remove)
+                deactivate_cuts(MP, cuts_to_remove, cut_archive, cut_refs)
             end
 
         end
     end
     elapsed = time() - algorithm_start_time
     @info("Total elapsed time for algorithm: $(elapsed) seconds")
+
+    if isempty(results)
+        # Never hit the convergence branch, so `results` was never populated. Fail loudly
+        # and specifically here rather than let the caller crash on a confusing
+        # KeyError several frames away.
+        error("MGA benders algorithm for case \"$(case_name)\" did not converge within $(J_max) iterations (final gaps: $(round.(gap_hist[end].*100; digits=4))%).")
+    end
 
     # Report results
     @info("Final capacity mix:" * string(results["Capacity per iteration"]))

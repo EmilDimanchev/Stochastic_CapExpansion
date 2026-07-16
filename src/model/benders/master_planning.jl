@@ -140,9 +140,8 @@ function build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
     set_silent(MP)
 
     if settings["Solver"] == "HiGHS"
-        set_optimizer(MP, HiGHS.Optimizer)
-        set_optimizer_attribute(MP, "solver", "choose")
-        set_optimizer_attribute(MP, "run_crossover", "off")
+        my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "off")
+        set_optimizer(MP, my_optimizer)
     elseif settings["Solver"] == "Gurobi"
         set_optimizer(MP, Gurobi.Optimizer)
         set_optimizer_attribute(MP, "OptimalityTol", 1e-5)
@@ -270,11 +269,23 @@ function add_optimality_cuts!(MP, SP_obj, cap_dual, line_dual, x_prev, x_prev_li
     SP_obj = SP_obj./scaling_factor_cost
     cap_dual = cap_dual./scaling_factor_cost
     line_dual = line_dual./scaling_factor_cost
+
+    # Capture the ConstraintRefs JuMP hands back from constraint creation so callers can
+    # cache them (name => ConstraintRef) instead of later paying for constraint_by_name,
+    # which forces MathOptInterface to rebuild its entire name index (see deactivate_cuts).
+    new_cut_refs = Dict{String, ConstraintRef}()
     if cvar_tail
-        @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:u][s,f,k] >= SP_obj[s,f,k] + sum(cap_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) + sum(line_dual[l,s,f,k]*(MP[:x_line][l]-x_prev_line[l]) for l in 1:L) - MP[:ζ], base_name = "cvar_tail_cuts_"*case*"_"*string(iteration)*"_")
+        cvar_cuts = @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:u][s,f,k] >= SP_obj[s,f,k] + sum(cap_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) + sum(line_dual[l,s,f,k]*(MP[:x_line][l]-x_prev_line[l]) for l in 1:L) - MP[:ζ], base_name = "cvar_tail_cuts_"*case*"_"*string(iteration)*"_")
+        for con in cvar_cuts
+            new_cut_refs[name(con)] = con
+        end
     end
-    
-    @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:alpha][s,f,k] >= SP_obj[s,f,k] + sum(cap_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) + sum(line_dual[l,s,f,k]*(MP[:x_line][l]-x_prev_line[l]) for l in 1:L), base_name = "optimality_cut_"*case*"_"*string(iteration)*"_")
+
+    opt_cuts = @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:alpha][s,f,k] >= SP_obj[s,f,k] + sum(cap_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) + sum(line_dual[l,s,f,k]*(MP[:x_line][l]-x_prev_line[l]) for l in 1:L), base_name = "optimality_cut_"*case*"_"*string(iteration)*"_")
+    for con in opt_cuts
+        new_cut_refs[name(con)] = con
+    end
+    return new_cut_refs
 end
 
 #=====================================
@@ -325,22 +336,23 @@ function adjust_gamma(prev_UB, UBnew, LB, gamma)
 	ω = 0.5;
 	η₁ = 0.1;
 	η₂ = 0.9;
-    max_gamma = 0.25
+    max_gamma = 0.75
+    min_gamma = 0.05 # keeps the level-set band from shrinking to a numerically fragile sliver
 	if Ia>=0 && Ip>0
 
 		r = Ia/Ip
-		
+
 		if r <=η₁
 			#bad iteration: there wasn't enough improvement, we increase γ because we are less confident in the piecewise approximation in the master model
-			gamma = gamma*1.2;
+			gamma = gamma/ω;
 		elseif η₁ <= r <= η₂
 			#okish iteration
 			#do nothing
 		else
 			#good iteration, we are feeling confident in the piecewise approximation in the master model and so we reduce γ
-			gamma = gamma/1.2;
+			gamma = gamma*ω;
 		end
-        gamma = min(gamma, max_gamma)
+        gamma = clamp(gamma, min_gamma, max_gamma)
 
 	else
 		#do nothing
@@ -350,24 +362,36 @@ end
 
 
 function level_set_regularization(MP, UB, LB, gamma, settings)
+    gamma = 0.5
+    @constraint(MP, cLevel_set, MP[:eObj] <= LB + gamma*(UB-LB))
 
-    @constraint(MP, cLevel_set, MP[:eObj] <= LB + 0.5*(UB-LB))
-    #@constraint(MP, cLevel_set, MP[:eObj] >= LB + gamma*(UB-LB))
     if settings["Solver"] == "HiGHS"
-        set_optimizer_attribute(MP, "solver", "ipm")
+        set_optimizer(MP, () -> Clarabel.Optimizer())
+        #set_optimizer(MP, Ipopt.Optimizer)
+        #set_optimizer_attribute(MP, "solver", "ipm")
+        # Crossover is left off for every other solve in this algorithm (see
+        # build_planning_model), so master solves are IPM-only, non-vertex points. That's
+        # fine for a plain min-cost solve, but this level-set solve has a degenerate
+        # objective (Min 0.0) subject to a tight eObj cap, which is exactly the shape of
+        # LP HiGHS's IPM-without-crossover has been observed to spuriously report
+        # INFEASIBLE on (confirmed via compute_conflict! finding zero conflicting
+        # constraints when this happens - i.e. not a real infeasibility). Turning
+        # crossover on for just this solve gets an exact vertex/basic solution instead.
+        #set_optimizer_attribute(MP, "run_crossover", "on")
         #set_optimizer_attribute(MP, "presolve", "off")
+        set_silent(MP)
     elseif settings["Solver"] == "Gurobi"
         set_optimizer_attribute(MP, "Method", 2)
     end
-    unset_silent(MP)
+    #unset_silent(MP)
     @objective(MP, Min, 0.0)
     optimize!(MP)
 
-    if termination_status(MP) != MOI.OPTIMAL
-        @warn("Model did not solve to optimality. Status: ", termination_status(MP))
+    if termination_status(MP) != MOI.OPTIMAL && termination_status(MP) != MOI.LOCALLY_SOLVED
+        @warn("Regularization problem did not solve to optimality. Status: ", termination_status(MP))
     end
-    if termination_status(MP) == MOI.INFEASIBLE || termination_status(MP) == MOI.INFEASIBLE_OR_UNBOUNDED
-        #@warn("Model did not solve to optimality. Status: ", termination_status(MP))
+    infeasible = termination_status(MP) == MOI.INFEASIBLE || termination_status(MP) == MOI.INFEASIBLE_OR_UNBOUNDED
+    if infeasible
         compute_conflict!(MP)
         list_of_conflicting_constraints = ConstraintRef[];
         for (F, S) in list_of_constraint_types(MP)
@@ -377,18 +401,24 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
                 end
             end
         end
-        display(list_of_conflicting_constraints)
-        error("Model infeasible. See conflicting constraints above.")
+        if isempty(list_of_conflicting_constraints)
+            @warn("Level-set solve reported infeasible with no conflicting constraints identified - treating as a numerical solver failure rather than a real infeasibility, and falling back to the unstabilized solution for this iteration.")
+        else
+            display(list_of_conflicting_constraints)
+            @warn("Level-set solve is infeasible with identified conflicting constraints (see above); falling back to the unstabilized solution for this iteration.")
+        end
     end
-    
-    # Write outputs
-    output = write_outputs(MP, settings)
+
+    # Write outputs (only meaningful if the level-set solve actually succeeded)
+    output = infeasible ? nothing : write_outputs(MP, settings)
 
     delete(MP,MP[:cLevel_set])
     unregister(MP,:cLevel_set)
     @objective(MP,Min, MP[:eObj])
     if settings["Solver"] == "HiGHS"
-        set_optimizer_attribute(MP, "solver", "choose")
+        my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "off")
+        set_optimizer(MP, my_optimizer)
+        #set_optimizer_attribute(MP, "run_crossover", "off")
         #set_optimizer_attribute(MP, "presolve", "on")
     elseif settings["Solver"] == "Gurobi"
         set_optimizer_attribute(MP, "Method", -1)
@@ -492,7 +522,7 @@ function write_outputs(MP, settings; reg=false, risk_aversion_weight=0.5)
     end
     
     if !reg
-        cuts = [con for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut") || startswith(string(con), "cvar_tail_cuts")]
+        cuts = [con for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(name(con), "optimality_cut") || startswith(name(con), "cvar_tail_cuts")]
         cut_names = [name(con) for con in cuts]
         cut_duals = [dual(con) for con in cuts]
         output["Cut Duals"] = Dict(zip(cut_names, cut_duals))
@@ -587,9 +617,11 @@ function add_budget_constraint_bendersMP(model::Model, budget::Float64, budget_t
 end
 
 function manage_cuts(MP::Model, cuts_to_keep::Vector{String})
-    # Get all cut constraints in the model
-    all_cuts = [con for con in all_constraints(MP, include_variable_in_set_constraints = false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
-    
+    # Get all cut constraints in the model. Filter on name(con), not string(con): the latter
+    # pretty-prints the full constraint (every term), which is far more expensive than the
+    # O(1) name lookup and runs over every constraint in the model.
+    all_cuts = [con for con in all_constraints(MP, include_variable_in_set_constraints = false) if startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_")]
+
     for cut in all_cuts
         if !(name(cut) in cuts_to_keep)
             delete(MP, cut)
@@ -598,19 +630,71 @@ function manage_cuts(MP::Model, cuts_to_keep::Vector{String})
     return cuts_to_keep
 end
 
-function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String})
+
+# Deactivating a cut now means removing it from the model entirely, rather than masking
+# it with a huge RHS (-1e6 rows sitting next to ~1e5-scale rows is exactly the kind of
+# bad row-bound ratio that was driving level-set regularization to numerical infeasibility).
+# Each removed cut's exact constraint (function + set, i.e. its original coefficients and
+# RHS) is archived under its name in cut_archive so it can be rebuilt losslessly later via
+# reactivate_cuts, instead of being lost.
+#
+# cut_refs is a name => ConstraintRef cache (populated by add_optimality_cuts! and
+# reactivate_cuts) that the caller maintains across iterations. Looking a cut up there is
+# O(1); calling constraint_by_name here instead would force MathOptInterface to rebuild its
+# entire name index from scratch (it's invalidated on every delete), turning this loop
+# quadratic in the number of constraints in MP. Entries are consumed (deleted) as each cut
+# is deactivated, so the cache only ever tracks currently-active cuts.
+function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_archive::Dict{String, Any}, cut_refs::Dict{String, ConstraintRef})
+    @info("Deactivating $(length(cuts_to_deactivate)) cuts")
+    time_1 = time()
     for cut_name in cuts_to_deactivate
-        set_normalized_rhs(constraint_by_name(MP, cut_name), -1e6) # effectively deactivate the cut by setting a very large RHS
+        con = get(cut_refs, cut_name, nothing)
+        if con === nothing
+            con = constraint_by_name(MP, cut_name) # fallback for cuts not tracked in cut_refs
+        end
+        if con === nothing
+            continue # already removed (e.g. via manage_cuts)
+        end
+        cut_archive[cut_name] = constraint_object(con)
+        delete(MP, con)
+        delete!(cut_refs, cut_name)
+        #unregister(MP, Symbol(cut_name)) # They aren't registered in the first place bc of anonymous + base name construction! That's a new thing I've learned today - thanks, Claude!
     end
+    time_1 = time() - time_1
+    @info("Deactivated $(length(cuts_to_deactivate)) cuts in $(round(time_1, digits=2)) seconds")
+    return cut_archive
 end
 
-function reactivate_cuts(MP::Model, cuts_to_reactivate::Vector{String}, original_rhs::Dict{String, Float64})
-    for cut_name in cuts_to_reactivate
-        if normalized_rhs(constraint_by_name(MP, cut_name)) <= -1e5
-            set_normalized_rhs(constraint_by_name(MP, cut_name), original_rhs[cut_name]) # reactivate the cut by restoring original RHS
+# Rebuilds cuts from cut_archive and re-adds them to MP under their original names,
+# removing each from the archive as it's restored. Pass `cut_names` to reactivate a
+# specific subset; omit it to reactivate everything currently archived. Returns a
+# name => ConstraintRef map of everything that was reactivated, so the caller can merge it
+# into its cut_refs cache (see deactivate_cuts) instead of relying on constraint_by_name to
+# find these constraints again later.
+#
+# Intended use: at the start of a new problem (e.g. a new risk weight or MGA direction)
+# that reuses the same MP, reactivate everything that was pruned while solving previous
+# problems so it gets a fresh look. Since reactivated cuts are new to MP again, the normal
+# per-iteration cataloguing in benders_algorithm/mga_benders treats them as brand new cuts
+# and gives them the usual `cut_deactivation_threshold` iterations of grace before they're
+# eligible to be pruned again - so only the ones that still don't bind for the new problem
+# get re-removed.
+function reactivate_cuts(MP::Model, cut_archive::Dict{String, Any}, cut_names::Union{Vector{String}, Nothing} = nothing)
+    @info("Reactivating $(cut_names === nothing ? length(cut_archive) : length(cut_names)) cuts")
+    time_1 = time()
+    names_to_reactivate = cut_names === nothing ? collect(keys(cut_archive)) : cut_names
+    reactivated = Dict{String, ConstraintRef}()
+    for cut_name in names_to_reactivate
+        if !haskey(cut_archive, cut_name)
+            continue
         end
-    
+        con = add_constraint(MP, cut_archive[cut_name], cut_name)
+        delete!(cut_archive, cut_name)
+        reactivated[cut_name] = con
     end
+    time_1 = time() - time_1
+    @info("Reactivated $(length(reactivated)) cuts in $(round(time_1, digits=2)) seconds")
+    return reactivated
 end
 
 
