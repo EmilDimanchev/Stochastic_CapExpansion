@@ -545,12 +545,6 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
         @constraint(ED, transmission_limit_negative[t in 1:T, l in 1:L], flow[t,l] >= -x_line[l]/scaling_factor_demand)
     end
 
-    # Hourly Zonal CRM
-    if settings["CRM flag"]
-    
-
-    end
-
     # Power balance constraint
     @expression(ED, supply[t in 1:T, z in 1:Z], sum(g[r,t]*res_zone_map[r,z] for r in 1:G))
     if storage_flag
@@ -564,6 +558,13 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
         end
     end
     @constraint(ED, power_balance[t in 1:T, z in 1:Z], supply[t,z] + total_nse[t,z] - demand[t,z] == 0)
+
+    # Hourly Zonal CRM
+    if settings["CRM flag"]
+        
+    
+
+    end
 
 
     @expression(ED, cost_by_zone[z in 1:Z], sum(g[r,t]*res_zone_map[r,z]*cost_var[r] for r in 1:G, t in 1:T) + sum(cost_nse[t,z] for t in 1:T))

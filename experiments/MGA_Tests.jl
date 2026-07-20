@@ -208,11 +208,13 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
 
     # Model Settings
     iterations = settings["Iterations"]
-    risk_aversion_weights = [[i for i in 0.5:-0.1:0.1]; [i for i in 0.6:0.1:0.9]; 0.0; 1.0]
+    risk_aversion_weights = [0.5, 0.0, 1.0]#[[i for i in 0.5:-0.1:0.1]; [i for i in 0.6:0.1:0.9]; 0.0; 1.0]
     risk_aversion_weight = settings["Risk aversion weight"] ### set as anchor point
     VaR_percent = settings["Value-at-Risk percent"] ### Currently set consistently across runs and ahead of time
     settings["Risk aversion flag"] = true
+    scaling = settings["Scaling factor cost"]
     # Create and set expected value model
+    extreme_values = Dict()
 
     P_s = inputs["Demand scenario probabilities"]
     P_f = inputs["Gas price scenario probabilities"]
@@ -220,15 +222,6 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     R = length(inputs["Resources"])
 
     MP = build_planning_model(inputs, settings; risk_aversion_weight = risk_aversion_weight)
-
-    # Reference values pulled from the fully expected-value (risk weight 1), fully risk-averse
-    # (risk weight 0), and balanced (risk weight 0.5) solutions, used to form the MGA budget below.
-    cvar_at_ev_optimum = nothing        # CVaR of the risk weight 1 (expected-value-only) solution
-    ev_at_cvar_optimum = nothing        # Expected value of the risk weight 0 (fully risk-averse) solution
-    balanced_inv_cost = nothing         # Inv_cost/Expected Value/CVaR of the risk weight 0.5 solution
-    balanced_ev = nothing
-    balanced_cvar = nothing
-    balanced_avg_time_mp = nothing
 
     # Shared across every risk weight / MGA direction solved against this MP so that cuts
     # pruned while solving one problem get a fresh look (and are rebuilt losslessly, since
@@ -258,19 +251,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             push!(results_syscost, df_syscost)
             push!(results_emissions, df_emissions)
         end
-
-        if risk == 1.0
-            cvar_at_ev_optimum = output_cvar["CVaR"]
-        end
-        if risk == 0.0
-            ev_at_cvar_optimum = output_cvar["Expected Value"]
-        end
-        if risk == 0.5
-            balanced_inv_cost = output_cvar["MP"]["Inv_cost"]
-            balanced_ev = output_cvar["Expected Value"]
-            balanced_cvar = output_cvar["CVaR"]
-            balanced_avg_time_mp = mean(output_cvar["Time MP hist"])
-        end
+        extreme_values[risk] = Dict("CVaR" => output_cvar["CVaR"]/scaling, "System Expected" => (output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/scaling)
 
         @info("Risk weight $risk solution has investment cost of $(output_cvar["MP"]["Inv_cost"])")
         @info("Expected value system cost of " * "Risk weight $risk" * " solution: $(output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])")
@@ -292,17 +273,20 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     if settings["Capacity Exploration"]
         budgets = Dict()
         # CVaR budget: the CVaR achieved by the risk-neutral (expected-value-only) solution
-        budgets = add_budget_constraint_bendersMP(MP, cvar_at_ev_optimum/settings["Scaling factor cost"], "CVaR", budgets)
+        budgets = add_budget_constraint_bendersMP(MP, extreme_values[1.0]["CVaR"]/settings["Scaling factor cost"], "CVaR", budgets)
         # Expected value budget: the EV achieved by the fully risk-averse (CVaR-only) solution
-        budgets = add_budget_constraint_bendersMP(MP, ev_at_cvar_optimum/settings["Scaling factor cost"], "Expected", budgets)
+        budgets = add_budget_constraint_bendersMP(MP, (extreme_values[0.0]["System Expected"] + extreme_values[0.0]["System Expected"])/settings["Scaling factor cost"], "System_Expected", budgets)
         # Combined budget: keep inv_cost + 0.5*EV + 0.5*CVaR within (1+budget_multiplier) of the
         # balanced (risk weight 0.5) solution's own optimal value.
         # mga_benders tracks this budget's upper bound using settings["Risk aversion weight"]
         # (algorithm.jl:608/706), not the risk_aversion passed here, so it must be kept at 0.5
         # to match the constraint actually being enforced on MP.
-        settings["Risk aversion weight"] = 0.5
-        balanced_optimum = balanced_inv_cost + 0.5*balanced_ev + 0.5*balanced_cvar
-        budgets = add_budget_constraint_bendersMP(MP, (balanced_optimum/settings["Scaling factor cost"])*(1+budget_multiplier), "System_Weighted_CVaR", budgets; risk_aversion = 0.5)
+        #settings["Risk aversion weight"] = 0.5
+        #transform_cvar = 1/(extreme_values[1.0]["CVaR"] - extreme_values[0.0]["CVaR"])
+       # transform_sys = 1/(extreme_values[0.0]["System Expected"] - extreme_values[1.0]["System Expected"])
+        #budget_val_transform = transform_cvar*extreme_values[0.0]["CVaR"] + transform_sys*extreme_values[1.0]["System Expected"] + 1 + budget_multiplier
+        #budgets = add_budget_constraint_bendersMP(MP, budget_val_transform, "Transformed", budgets; extreme_values = extreme_values)
+        #budgets = add_budget_constraint_bendersMP(MP, (balanced_optimum/settings["Scaling factor cost"])*(1+budget_multiplier), "System_Weighted_CVaR", budgets; risk_aversion = settings["Risk aversion weight"])
         if settings["Cut deactivation strategy"] == "in mga"
             cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
             cuts_to_keep = copy(cuts)

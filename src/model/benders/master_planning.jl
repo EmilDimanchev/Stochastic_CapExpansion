@@ -572,7 +572,8 @@ end
 
 
 
-function add_budget_constraint_bendersMP(model::Model, budget::Float64, budget_type::String, existing_budgets::Dict; risk_aversion::Float64 = -1.0)
+
+function add_budget_constraint_bendersMP(model::Model, budget::Float64, budget_type::String, existing_budgets::Dict; risk_aversion::Float64 = -1.0, extreme_values::Dict = Dict())
     budget_added = Symbol[]
     if budget_type == "Investment"
         @constraint(model, c_budget_inv, model[:inv_cost] <= budget)
@@ -607,6 +608,15 @@ function add_budget_constraint_bendersMP(model::Model, budget::Float64, budget_t
         end
         @constraint(model, c_budget_sys_cvar, model[:inv_cost] + (risk_aversion)*model[:expected_alpha] + (1-risk_aversion)*model[:cvar_term]<= budget)
         push!(budget_added, :c_budget_sys_cvar)
+        existing_budgets[budget_type] = budget
+    elseif budget_type == "Transformed"
+        if !haskey(model, :u) || !haskey(model, :cvar_term)
+            error("Cannot run Transformed budget constraint without risk terms. Please initialize risk terms first.")
+        end
+        transform_cvar = 1/(extreme_values[1.0]["CVaR"] - extreme_values[0.0]["CVaR"])
+        transform_sys = 1/(extreme_values[0.0]["System Expected"] - extreme_values[1.0]["System Expected"])
+        @constraint(model, c_budget_transformed, transform_sys*(model[:exp_sys_cost]) + transform_cvar*(model[:cvar_term]) <= budget)
+        push!(budget_added, :c_budget_transformed)
         existing_budgets[budget_type] = budget
     else
         error("Unsupported budget type. Please choose from 'Investment', 'Expected', 'CVaR', 'System_Expected', or 'System_CVaR'.")

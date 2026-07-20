@@ -766,7 +766,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
         if isapprox(maximum(gaps), 0; atol = settings["Budget convergence tolerance"]) || all(gaps .<= conv_tol)    
             @info("Convergence achieved with maximum percentage gap of $((maximum(gaps)) * 100)%")
 
-            output_mp = run_planning_model(MP, settings)
+            output_mp = run_planning_model(MP, settings, risk_aversion_weight)
             #set_capacity_parameters!(SPs, output_mp["Capacity"], output_mp["Line expansion"])
             sp_all_results = run_all_subproblems(SPs, inputs, settings, output_mp["Capacity"], output_mp["Line expansion"]; minimal_payload=false)
             if mapping 
@@ -830,7 +830,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             merge!(cut_refs, new_cut_refs)
             @info("Running investment problem")
             time_mp = time()
-            output_mp = run_planning_model(MP, settings)
+            output_mp = run_planning_model(MP, settings, risk_aversion_weight)
             time_mp = time() - time_mp
             push!(time_MP_hist, time_mp)
 
