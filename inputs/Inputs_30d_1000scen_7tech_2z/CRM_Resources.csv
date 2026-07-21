@@ -1,8 +1,8 @@
 Resource,Derating_Factor
 Gas-z1,0.93
 Gas-z2,0.93
-Gas Turbine-z1,0.93
-Gas Turbine-z2,0.93
+Gas turbine-z1,0.93
+Gas turbine-z2,0.93
 Wind-z1,0.8
 Wind-z2,0.8
 Solar-z1,0.8

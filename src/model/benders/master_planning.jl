@@ -140,12 +140,12 @@ function build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
     set_silent(MP)
 
     if settings["Solver"] == "HiGHS"
-        my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "off")
+        my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "off", "primal_feasibility_tolerance" => 1e-3, "optimality_tolerance" => 1e-3)
         set_optimizer(MP, my_optimizer)
     elseif settings["Solver"] == "Gurobi"
         set_optimizer(MP, Gurobi.Optimizer)
         set_optimizer_attribute(MP, "OptimalityTol", 1e-5)
-        set_optimizer_attribute(MP, "FeasibilityTol", 1e-5)
+        set_optimizer_attribute(MP, "FeasibilityTol", 1e-3)
         set_optimizer_attribute(MP, "Crossover", 0)
     end
 

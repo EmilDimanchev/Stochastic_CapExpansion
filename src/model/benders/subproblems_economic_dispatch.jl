@@ -418,6 +418,8 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     ED.ext[:Demand_adder_scenario] = demand_adder_scenario
     if settings["Solver"] == "HiGHS"
         set_optimizer(ED, HiGHS.Optimizer)
+        set_optimizer_attribute(ED, "primal_feasibility_tolerance", 1e-3)
+        set_optimizer_attribute(ED, "optimality_tolerance", 1e-3)
     elseif settings["Solver"] == "Gurobi"
         set_optimizer(ED, Gurobi.Optimizer)
         set_optimizer_attribute(ED, "OutputFlag", 0)
@@ -435,11 +437,12 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
 
     # Settings
     storage_flag = inputs["Storage flag"]
+    crm_flag = settings["CRM flag"]
 
     # Parameters
     availability = availability_scenario
     co2_factors = inputs["CO2 emission intensities"]
-    
+
     # Storage specific
     if storage_flag
         N = inputs["Storage power to energy ratio"]
@@ -560,10 +563,35 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     @constraint(ED, power_balance[t in 1:T, z in 1:Z], supply[t,z] + total_nse[t,z] - demand[t,z] == 0)
 
     # Hourly Zonal CRM
-    if settings["CRM flag"]
-        
-    
+    if crm_flag
+        crm_margin = inputs["CRM Margin"]
+        crm_price_cap = inputs["CRM Price Cap"]./scaling_factor_cost
+        crm_derate = inputs["CRM Derating Factors"]
+        gen_resource_names = inputs["Generation resources"]
+        derate_gen = [crm_derate[gen_resource_names[r]] for r in 1:G]
 
+        # Eligible capacity: derated generation availability, derated storage net discharge,
+        # derated import/export flows, and voluntary curtailment (segments 2+, excludes emergency shedding)
+        @expression(ED, eCapResMargin[t in 1:T, z in 1:Z],
+            sum(derate_gen[r]*x[r]*availability[t,r]*res_zone_map[r,z] for r in 1:G)
+            + sum(y[seg,t,z] for seg in 2:nse_segs))
+        if storage_flag
+            for t in 1:T, z in 1:Z
+                add_to_expression!(eCapResMargin[t,z], res_zone_map[G+1,z]*(z_dch[t] - z_ch[t]))
+            end
+        end
+        if Z > 1
+            for t in 1:T, z in 1:Z
+                add_to_expression!(eCapResMargin[t,z], sum(flow[t,l]*zone_map[l,z] for l in 1:L))
+            end
+        end
+
+        @variable(ED, vCRMSlack[t in 1:T, z in 1:Z] >= 0)
+        @constraint(ED, cCapacityResMargin[t in 1:T, z in 1:Z],
+            eCapResMargin[t,z] + vCRMSlack[t,z] >= (1 + crm_margin[z])*demand[t,z])
+        @expression(ED, crm_slack_cost, sum(t_weights[t]*crm_price_cap[z]*vCRMSlack[t,z] for t in 1:T, z in 1:Z))
+    else
+        @expression(ED, crm_slack_cost, AffExpr(0.0))
     end
 
 
@@ -571,9 +599,9 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     @expression(ED, emissions_by_zone[z in 1:Z], sum(t_weights[t]*sum(g[r,t]*res_zone_map[r,z]*co2_factors[r] for r in 1:G) for t in 1:T))
     # ~~~
     # Objective function
-    # ~~~ 
+    # ~~~
 
-    @objective(ED, Min, sum(t_weights[t]*g[r,t]*cost_var[r] for r in 1:G, t in 1:T) + sum(t_weights[t]*cost_nse[t,z] for t in 1:T, z in 1:Z))
+    @objective(ED, Min, sum(t_weights[t]*g[r,t]*cost_var[r] for r in 1:G, t in 1:T) + sum(t_weights[t]*cost_nse[t,z] for t in 1:T, z in 1:Z) + crm_slack_cost)
 
     return ED
 end
@@ -649,6 +677,7 @@ function write_subproblem_results(ED::Model, inputs, settings; minimal_payload::
 
     # Settings
     storage_flag = inputs["Storage flag"]
+    crm_flag = settings["CRM flag"]
 
     # Parameters
     co2_factors = inputs["CO2 emission intensities"]
@@ -686,6 +715,10 @@ function write_subproblem_results(ED::Model, inputs, settings; minimal_payload::
     output["Emissions"] = sum(t_weights[t]*generation[r,t]*co2_factors[r] for r in 1:G, t in 1:T)
     output["Load shedding"] = value.(ED[:total_nse])
     output["Net Flow"] = value.(ED[:flow])
+    if crm_flag
+        output["CRM dual"] = dual.(ED[:cCapacityResMargin]).*settings["Scaling factor cost"]./t_weights
+        output["CRM slack"] = value.(ED[:vCRMSlack])
+    end
     sd = value.(ED[:served_demand]).*settings["Scaling factor demand"]
     tb = value.(ED[:total_benefit]).*(settings["Scaling factor cost"]*settings["Scaling factor demand"])
     #output["Consumer surplus"] = sum(t_weights[t]*(tb[t] - output["Power price"][t]*sum(sd[seg,t] for seg in 1:nse_segs)) for t in 1:T)

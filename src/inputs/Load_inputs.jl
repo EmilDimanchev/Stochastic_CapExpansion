@@ -163,7 +163,7 @@ function load_input_data(inputs_path, settings)
 
         inputs["CRM Margin"] = Array(crm_system[:, "Margin"])
         inputs["CRM Price Cap"] = Array(crm_system[:, "PriceCap"])
-        inputs["CRM Derating Factors"] = Dict(crm_resources[:, "Resource"] => crm_resources[:, "Derating_Factor"])
+        inputs["CRM Derating Factors"] = Dict(crm_resources[:, "Resource"] .=> crm_resources[:, "Derating_Factor"])
         inputs["Availability CRM"] = mean(inputs["Generation availability"], dims=3)  # Average availability across weather scenarios for CRM derating
         inputs["Demand CRM"] = inputs["Demand"]  # Average demand across scenarios for CRM requirements
     end
