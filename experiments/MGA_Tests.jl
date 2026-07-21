@@ -520,7 +520,14 @@ function risk_pareto_test_laptop_5(test_index)
     
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Pareto5"), summary_folder; budget_multiplier = 1.05, vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping=false, n_samples = settings["Interior Samples"])
+    results_folder = joinpath(results_folder, "Pareto5")
+    budget_multiplier = 1.05
+    vector_set = nothing
+    summary_name = "pareto"
+    Eval_SPs = nothing
+    mapping=false
+    n_samples = settings["Interior Samples"]
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder , summary_folder; budget_multiplier = budget_multiplier, vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping=false, n_samples = settings["Interior Samples"])
 
 end
 

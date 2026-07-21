@@ -9,3 +9,4 @@
 # General instructions:
  - Please make tests for your functions, and make them runable with a similar command structure as above
  - Please only use the "laptop" variant of functions using inputs from Stochastic_CapExpansion/inputs/Inputs_30d_1000scen_7tech_2z
+ - If a rapid test is needed, please feel free to disable one of the uncertainty sets for the model construction. Please leave one on though to maintain stochasticity.
