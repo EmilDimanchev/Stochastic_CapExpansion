@@ -272,10 +272,19 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
 
     if settings["Capacity Exploration"]
         budgets = Dict()
-        # CVaR budget: the CVaR achieved by the risk-neutral (expected-value-only) solution
-        budgets = add_budget_constraint_bendersMP(MP, extreme_values[1.0]["CVaR"]/settings["Scaling factor cost"], "CVaR", budgets)
-        # Expected value budget: the EV achieved by the fully risk-averse (CVaR-only) solution
-        budgets = add_budget_constraint_bendersMP(MP, (extreme_values[0.0]["System Expected"] + extreme_values[0.0]["System Expected"])/settings["Scaling factor cost"], "System_Expected", budgets)
+        # CVaR budget: the CVaR achieved by the risk-neutral (expected-value-only) solution.
+        # extreme_values[...] is already in cost-scaled units (divided by "Scaling factor
+        # cost" once above, when it was populated) - dividing again here shrank the budget
+        # by another 1e5x, making it essentially unsatisfiable against any real cut. That
+        # was the actual cause of "numerical issues" reported for the MGA phase: not a
+        # conditioning problem, a budget that was ~1e5x too tight by construction.
+        budgets = add_budget_constraint_bendersMP(MP, extreme_values[1.0]["CVaR"], "CVaR", budgets)
+        # Expected value budget: the EV achieved by the fully risk-averse (CVaR-only)
+        # solution, with budget_multiplier headroom (mirrors the working pattern in
+        # run_stochastic_exploration_separate_budgets above). The previous line added
+        # extreme_values[0.0]["System Expected"] to itself instead of applying
+        # budget_multiplier, which this function accepts but never used.
+        budgets = add_budget_constraint_bendersMP(MP, extreme_values[0.0]["System Expected"]*budget_multiplier, "System_Expected", budgets)
         # Combined budget: keep inv_cost + 0.5*EV + 0.5*CVaR within (1+budget_multiplier) of the
         # balanced (risk weight 0.5) solution's own optimal value.
         # mga_benders tracks this budget's upper bound using settings["Risk aversion weight"]
@@ -743,4 +752,74 @@ function test_cut_management(test_index = "cut_mgmt")
 
     return (old_time = t_old, new_time = t_new, speedup = speedup, total_cuts = total_cuts)
 
+end
+
+#=========
+
+Capacity bound tightening test: build_planning_model previously bounded every resource's
+capacity variable by an arbitrary global x_ub = 1e6, unrelated to the input data (every
+resource's own real Capacity_UB in Resources.csv/Resources_storage.csv is far smaller,
+~1e5-2e5 for the laptop inputs) and needlessly widened the master problem's RHS/bound
+coefficient range. build_planning_model now bounds each x[r] by its own
+inputs["Capacity upper bounds"][r] instead. This test checks that binding is actually
+wired up correctly (JuMP's upper_bound matches the real per-resource data, not 1e6) and
+that the master problem still solves normally under a realistic synthetic cut with the
+tighter bounds in place.
+
+Note: an earlier version of this fix tried to additionally rescale the x/x_line
+variables themselves (dividing their values while multiplying every cost coefficient
+that touches them back up to compensate) to bring their magnitude closer to the
+already-scaled cost terms. That was reverted: compensating a coefficient by exactly the
+factor used to shrink the variable is a wash for any row that also contains other,
+differently-scaled terms (e.g. probability-weighted alpha/cvar terms in budget
+constraints and cuts) - it does not shrink the row's coefficient range, and in some rows
+widens it. It also introduced a real bug (the small "avoid exact zero" lower bound on x
+got divided down to 1e-8, which is exactly what HiGHS's "excessively small column
+bounds" warning was flagging). Bound-tightening against real data has none of those
+failure modes since it never touches a matrix coefficient, only a box bound.
+
+==========#
+
+function test_capacity_bound_tightening(test_index = "cap_bound")
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+
+    P_s = inputs["Demand scenario probabilities"]
+    P_f = inputs["Gas price scenario probabilities"]
+    P_k = inputs["Weather scenario probabilities"]
+    S, F, K = length(P_s), length(P_f), length(P_k)
+    G = inputs["Number of generation resources"]
+    O = inputs["Number of storage resources"]
+    R = G + O
+    L = inputs["Number of lines"]
+    cost_inv = inputs["Investment costs"]
+    x_ub_real = inputs["Capacity upper bounds"]
+
+    MP = build_planning_model(inputs, settings)
+
+    bounds = [normalized_rhs(MP[:max_capacity][r]) for r in 1:R]
+    @assert bounds == x_ub_real "max_capacity bound does not match inputs[\"Capacity upper bounds\"]: $(bounds) vs $(x_ub_real)"
+    @assert all(bounds .< 1e6) "Expected every per-resource bound to be tighter than the old arbitrary 1e6 constant, got $(bounds)"
+    @info("[$(test_index)] Confirmed max_capacity bounds match real per-resource Capacity_UB data (max $(maximum(bounds)), previously a flat 1e6 for every resource).")
+
+    Random.seed!(1234)
+    # Synthetic cut shaped like a real Benders cut: capacity duals centered on investment
+    # cost (economically meaningful rather than degenerate) plus a baseline dispatch cost,
+    # so the master problem actually trades off inv_cost against alpha instead of just
+    # collapsing to a bound.
+    x_prev = zeros(R)
+    x_prev_line = zeros(L)
+    cap_dual = (cost_inv .* (0.9 .+ 0.2 .* rand(R))) .* ones(R, S, F, K)
+    line_dual = 100 .* rand(L, S, F, K)
+    SP_obj = 1e6 .* (0.9 .+ 0.2 .* rand(S, F, K))
+    coeffs = fill(1.0, S, F, K)
+
+    add_optimality_cuts!(MP, SP_obj, cap_dual, line_dual, x_prev, x_prev_line, coeffs, inputs, settings, 1, "boundtest")
+    output = run_planning_model(MP, settings, 0.5)
+
+    @assert all(output["Capacity"] .<= x_ub_real .+ 1e-6) "Solved capacity exceeds the tightened per-resource bound"
+    @info("[$(test_index)] PASSED: master problem solves normally with data-driven per-resource bounds.")
+
+    return (bounds = bounds, capacity = output["Capacity"])
 end

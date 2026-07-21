@@ -140,7 +140,7 @@ function build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
     set_silent(MP)
 
     if settings["Solver"] == "HiGHS"
-        my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "off", "primal_feasibility_tolerance" => 1e-3, "optimality_tolerance" => 1e-3)
+        my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "off", "primal_feasibility_tolerance" => 1e-3, "optimality_tolerance" => 1e-3, "user_bound_scale" => -6)
         set_optimizer(MP, my_optimizer)
     elseif settings["Solver"] == "Gurobi"
         set_optimizer(MP, Gurobi.Optimizer)
@@ -178,7 +178,13 @@ function build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
     L = inputs["Number of lines"]
 
     Ω = risk_aversion_weight
-    x_ub = 1e6
+    # Per-resource upper bound from the input data (Capacity_UB in Resources.csv/
+    # Resources_storage.csv) rather than an arbitrary global 1e6: that constant had no
+    # relationship to the data (it's ~5x every resource's own real UB) and inflated the
+    # model's RHS/bound coefficient range for no reason. Tightening it to the real,
+    # per-resource bound only shrinks that range - it never removes a solution that was
+    # reachable before, since 1e6 was never actually binding.
+    x_ub = inputs["Capacity upper bounds"]
 
     # ~~~
     # Model formulation
@@ -186,14 +192,14 @@ function build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
 
     # Capacity
     @variable(MP, x[r in 1:R] >= 1e-5) # Capacity, MW
-    @constraint(MP, max_capacity[r in 1:R], x[r] <= x_ub)
+    @constraint(MP, max_capacity[r in 1:R], x[r] <= x_ub[r])
 
     @variable(MP, x_line[l in 1:L] >= 0) # Transmission line expansion, MW
     @constraint(MP, max_line_expansion[l in 1:L], x_line[l] <= inputs["Max expansion"][l])
 
     # Cuts
     @variable(MP, alpha[s in 1:S, f in 1:F, k in 1:K] >= 0)
-    
+
 
     # Cost Expressions
     @expression(MP, inv_cost, sum(x[r]*cost_inv[r] for r in 1:R) + sum(x_line[l]*capex_line[l] for l in 1:L))
@@ -300,6 +306,8 @@ function run_planning_model(MP, settings, risk_aversion_weight)
     optimize!(MP)
     if termination_status(MP) != MOI.OPTIMAL
         @warn("Model did not solve to optimality. Status: ", termination_status(MP))
+        unset_silent(MP)
+        optimize!(MP)
     end
     if termination_status(MP) == MOI.INFEASIBLE_OR_UNBOUNDED || termination_status(MP) == MOI.INFEASIBLE
         @warn("Model did not solve to optimality. Status: ", termination_status(MP))
@@ -389,6 +397,8 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
 
     if termination_status(MP) != MOI.OPTIMAL && termination_status(MP) != MOI.LOCALLY_SOLVED
         @warn("Regularization problem did not solve to optimality. Status: ", termination_status(MP))
+        unset_silent(MP)
+        optimize!(MP)
     end
     infeasible = termination_status(MP) == MOI.INFEASIBLE || termination_status(MP) == MOI.INFEASIBLE_OR_UNBOUNDED
     if infeasible
