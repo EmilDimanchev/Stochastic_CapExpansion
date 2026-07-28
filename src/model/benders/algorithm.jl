@@ -625,8 +625,17 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     UBs = [Inf for _ in budget_types]
     min_UBs = [Inf for _ in budget_types]
     gaps = [Inf for _ in budget_types]
-    LBs = [budgets[type] for type in budget_types]
+    LBs = [0.0 for _ in budget_types]
+
+    for (i, budget_entry) in enumerate(budget_types)
+        if budget_entry == "Transformed"
+            LBs[i] = budgets[budget_entry]["budget"]
+        else
+            LBs[i] = budgets[budget_entry]
+        end
+    end
     
+
     P = inputs["Demand scenario probabilities"]
     P_f = inputs["Gas price scenario probabilities"]
     P_k = inputs["Weather scenario probabilities"]
@@ -742,6 +751,9 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 UBs[i] = cvar_estimate
             elseif budget_type == "Expected"
                 UBs[i] = expected_value
+            elseif budget_type == "Transformed"
+                UBs[i] = budgets["Transformed"]["transform_cvar"]*cvar_estimate + budgets["Transformed"]["transform_sys"]*(expected_value + output_mp["Inv_cost"]/settings["Scaling factor cost"])
+                print(UBs[i])
             else
                 error("Budget type $(budget_type) not recognized for UB calculation.")
             end

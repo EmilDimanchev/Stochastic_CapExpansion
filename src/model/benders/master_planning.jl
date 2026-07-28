@@ -627,7 +627,8 @@ function add_budget_constraint_bendersMP(model::Model, budget::Float64, budget_t
         transform_sys = 1/(extreme_values[0.0]["System Expected"] - extreme_values[1.0]["System Expected"])
         @constraint(model, c_budget_transformed, transform_sys*(model[:exp_sys_cost]) + transform_cvar*(model[:cvar_term]) <= budget)
         push!(budget_added, :c_budget_transformed)
-        existing_budgets[budget_type] = budget
+        tranformed_dict = Dict("budget" => budget, "transform_cvar" => transform_cvar, "transform_sys" => transform_sys)
+        existing_budgets[budget_type] = tranformed_dict
     else
         error("Unsupported budget type. Please choose from 'Investment', 'Expected', 'CVaR', 'System_Expected', or 'System_CVaR'.")
     end

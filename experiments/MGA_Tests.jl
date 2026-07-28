@@ -278,23 +278,23 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         # by another 1e5x, making it essentially unsatisfiable against any real cut. That
         # was the actual cause of "numerical issues" reported for the MGA phase: not a
         # conditioning problem, a budget that was ~1e5x too tight by construction.
-        budgets = add_budget_constraint_bendersMP(MP, extreme_values[1.0]["CVaR"], "CVaR", budgets)
+        #budgets = add_budget_constraint_bendersMP(MP, extreme_values[1.0]["CVaR"], "CVaR", budgets)
         # Expected value budget: the EV achieved by the fully risk-averse (CVaR-only)
         # solution, with budget_multiplier headroom (mirrors the working pattern in
         # run_stochastic_exploration_separate_budgets above). The previous line added
         # extreme_values[0.0]["System Expected"] to itself instead of applying
         # budget_multiplier, which this function accepts but never used.
-        budgets = add_budget_constraint_bendersMP(MP, extreme_values[0.0]["System Expected"]*budget_multiplier, "System_Expected", budgets)
+        #budgets = add_budget_constraint_bendersMP(MP, extreme_values[0.0]["System Expected"]*budget_multiplier, "System_Expected", budgets)
         # Combined budget: keep inv_cost + 0.5*EV + 0.5*CVaR within (1+budget_multiplier) of the
         # balanced (risk weight 0.5) solution's own optimal value.
         # mga_benders tracks this budget's upper bound using settings["Risk aversion weight"]
         # (algorithm.jl:608/706), not the risk_aversion passed here, so it must be kept at 0.5
         # to match the constraint actually being enforced on MP.
         #settings["Risk aversion weight"] = 0.5
-        #transform_cvar = 1/(extreme_values[1.0]["CVaR"] - extreme_values[0.0]["CVaR"])
-       # transform_sys = 1/(extreme_values[0.0]["System Expected"] - extreme_values[1.0]["System Expected"])
-        #budget_val_transform = transform_cvar*extreme_values[0.0]["CVaR"] + transform_sys*extreme_values[1.0]["System Expected"] + 1 + budget_multiplier
-        #budgets = add_budget_constraint_bendersMP(MP, budget_val_transform, "Transformed", budgets; extreme_values = extreme_values)
+        transform_cvar = 1/(extreme_values[1.0]["CVaR"] - extreme_values[0.0]["CVaR"])
+        transform_sys = 1/(extreme_values[0.0]["System Expected"] - extreme_values[1.0]["System Expected"])
+        budget_val_transform = transform_cvar*extreme_values[0.0]["CVaR"] + transform_sys*extreme_values[1.0]["System Expected"] + 1 + budget_multiplier
+        budgets = add_budget_constraint_bendersMP(MP, budget_val_transform, "Transformed", budgets; extreme_values = extreme_values)
         #budgets = add_budget_constraint_bendersMP(MP, (balanced_optimum/settings["Scaling factor cost"])*(1+budget_multiplier), "System_Weighted_CVaR", budgets; risk_aversion = settings["Risk aversion weight"])
         if settings["Cut deactivation strategy"] == "in mga"
             cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
