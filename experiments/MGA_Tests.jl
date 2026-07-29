@@ -194,7 +194,7 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
 end
 
 
-function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100)
+function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100, budget_type = "Transformed")
 
     #configure_parallel_workers!(settings)
 
@@ -291,10 +291,17 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         # (algorithm.jl:608/706), not the risk_aversion passed here, so it must be kept at 0.5
         # to match the constraint actually being enforced on MP.
         #settings["Risk aversion weight"] = 0.5
-        transform_cvar = 1/(extreme_values[1.0]["CVaR"] - extreme_values[0.0]["CVaR"])
-        transform_sys = 1/(extreme_values[0.0]["System Expected"] - extreme_values[1.0]["System Expected"])
-        budget_val_transform = transform_cvar*extreme_values[0.0]["CVaR"] + transform_sys*extreme_values[1.0]["System Expected"] + 1 + budget_multiplier
-        budgets = add_budget_constraint_bendersMP(MP, budget_val_transform, "Transformed", budgets; extreme_values = extreme_values)
+        if budget_type == "Transformed"
+            transform_cvar = 1/(extreme_values[1.0]["CVaR"] - extreme_values[0.0]["CVaR"])
+            transform_sys = 1/(extreme_values[0.0]["System Expected"] - extreme_values[1.0]["System Expected"])
+            budget_val_transform = transform_cvar*extreme_values[0.0]["CVaR"] + transform_sys*extreme_values[1.0]["System Expected"] + 1 + budget_multiplier
+            budgets = add_budget_constraint_bendersMP(MP, budget_val_transform, "Transformed", budgets; extreme_values = extreme_values)
+        elseif budget_type == "Box"
+            budgets = add_budget_constraint_bendersMP(MP, extreme_values[1.0]["CVaR"], "CVaR", budgets)
+            budgets = add_budget_constraint_bendersMP(MP, extreme_values[0.0]["System Expected"]*budget_multiplier, "System_Expected", budgets)
+        else
+            error("Unknown budget type: $budget_type")
+        end
         #budgets = add_budget_constraint_bendersMP(MP, (balanced_optimum/settings["Scaling factor cost"])*(1+budget_multiplier), "System_Weighted_CVaR", budgets; risk_aversion = settings["Risk aversion weight"])
         if settings["Cut deactivation strategy"] == "in mga"
             cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
@@ -362,6 +369,69 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
         return vectors
     end
+end
+
+function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::String, summary_folder::String; budget_multiplier::Float64 = 1.1, vector_set::Union{AbstractVector, Nothing} = nothing, scenario::Int = -1)
+    configure_parallel_workers!(settings)
+
+    # Result containers
+    outputs = []
+    labels = [] 
+    results_cap = []
+    results_syscost = []
+    results_emissions = []
+    gaps = []
+    budget = 0.0
+
+    # Model Settings
+    iterations = settings["Iterations"]
+    
+
+    
+
+    MP = build_planning_model(new_inputs, settings) #### When loaded with one scenario weighted, this is equivalent to a deterministic model with that scenario selected
+    SP_one_scen = build_all_subproblems(new_inputs, settings)
+    output = benders_algorithm(new_inputs, settings, MP, SP_one_scen, "OneScenarioLC"; Eval_SPs = SPs)
+    log_result_memory!("OneScenarioLC output", output)
+    gap = output["Gaps"]
+    push!(labels, "OneScenarioLC")
+    push!(gaps, gap)
+    results_destination = joinpath(results_path,"CostOptimal")
+    df_cap, df_syscost, df_emissions = write_results_benders(output, new_inputs, settings, results_destination)
+    release_heavy_payload!(output)
+    push!(results_cap, df_cap)
+    push!(results_syscost, df_syscost)
+    push!(results_emissions, df_emissions)
+    lc_value = df_syscost[1, :SingleScenario_SystemCost]
+    if budget_multiplier <= 10
+        budget = (lc_value) * (budget_multiplier)
+    end
+    
+    vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x]), settings["Vector Type"], settings)
+    @info("Using budget of ", budget, " for Base MGA test")
+    percent_over_lc = round((budget - lc_value)/lc_value * 100, digits=2)
+    @info("This budget is ", percent_over_lc, "% over the cost optimal solution")
+    budgets = Dict()
+    budgets = add_budget_constraint_bendersMP(MP, budget/settings["Scaling factor cost"], "System_Expected", budgets)
+    cuts_to_keep = [name(con) for (F, S) in list_of_constraint_types(MP) for con in all_constraints(MP, F, S) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
+
+    for iteration in 1:iterations
+        set_objective_bendersMP!(MP, "Capacity", new_inputs, settings; set_coeffs = vectors[iteration])
+        output_random = mga_benders(new_inputs, settings, MP, SP_one_scen, budgets, "Base_MGA_"*string(iteration); Eval_SPs = SPs)
+        log_result_memory!("Base_MGA_"*string(iteration)*" output", output_random)
+        #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+        gap = output_random["Gaps"]
+        results_destination = joinpath(results_path,"Base_MGA_"*string(iteration))
+        df_cap, df_syscost, df_emissions = write_results_benders(output_random, new_inputs, settings, results_destination; budgets = budgets)
+        release_heavy_payload!(output_random)
+        push!(results_cap, df_cap)
+        push!(results_syscost, df_syscost)
+        push!(results_emissions, df_emissions)
+        push!(labels, "Random_"*string(iteration))
+        push!(gaps, gap)
+    end
+    #write_gaps!(gaps, labels, joinpath(results_path, "Gaps"))
+    write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, labels, string(scenario))
 end
 
 
@@ -478,7 +548,7 @@ function mapping_test_della_001(test_index)
 
 end
 
-function risk_pareto_test_della_5(test_index)
+function risk_pareto_test_della(test_index, budget_type)
 
     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
@@ -497,7 +567,44 @@ function risk_pareto_test_della_5(test_index)
     
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Pareto5"), summary_folder; budget_multiplier = 1.05, vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping=false, n_samples = settings["Interior Samples"])
+    results_folder = joinpath(results_folder, "Pareto5")
+    budget_multiplier = 1.00
+    vector_set = nothing
+    summary_name = "pareto"
+    Eval_SPs = nothing
+    mapping=false
+    n_samples = settings["Interior Samples"]
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder , summary_folder; budget_multiplier = budget_multiplier, vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping=false, n_samples = settings["Interior Samples"], budget_type = budget_type)
+
+end
+
+function risk_pareto_test_della_deterministic(test_index, budget_type)
+
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+
+    configure_parallel_workers!(settings)
+
+    
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+    results_folder = joinpath(results_folder, "Pareto5")
+    budget_multiplier = 1.00
+    vector_set = nothing
+    summary_name = "pareto"
+    Eval_SPs = nothing
+    mapping=false
+    n_samples = settings["Interior Samples"]
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder , summary_folder; budget_multiplier = budget_multiplier, vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping=false, n_samples = settings["Interior Samples"], budget_type = budget_type)
 
 end
 
@@ -521,13 +628,58 @@ function risk_pareto_test_laptop_5(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
     results_folder = joinpath(results_folder, "Pareto5")
-    budget_multiplier = 1.05
+    budget_multiplier = 1.00
     vector_set = nothing
     summary_name = "pareto"
     Eval_SPs = nothing
     mapping=false
     n_samples = settings["Interior Samples"]
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder , summary_folder; budget_multiplier = budget_multiplier, vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping=false, n_samples = settings["Interior Samples"])
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder , summary_folder; budget_multiplier = budget_multiplier, vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping=false, n_samples = settings["Interior Samples"], budget_type = "Transformed")
+
+end
+
+
+function simple_comp(test_index)
+    inputs_folder = joinpath("inputs","Inputs_30d_1000scen_7tech_2z_Della")
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+    
+    inputs["Output Demand scenario probabilities"] = inputs["Demand scenario probabilities"] #Establish base weights ahead of time
+    inputs["Output Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
+    inputs["Output Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
+
+    configure_parallel_workers!(settings)
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+
+    #outputs_mixed, vectors = run_stochastic_exploration(SPs, inputs, settings, joinpath(results_folder, "Both_Flipped"), summary_folder; budget_multiplier=1.10, vector_set=nothing)#vectors
+    #outputs_exp, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "Expected"), summary_folder; type = "System_Expected", vector_set = nothing, budget_multiplier=1.10)
+    #outputs_cvar, vectors = run_stochastic_exploration_single_type(SPs, inputs, settings, joinpath(results_folder, "CVaR"), summary_folder; type ="System_Weighted_CVaR",vector_set = nothing, budget_multiplier=1.10)
+    
+    @info("Running base MGA test for mean scenario")
+    
+    # set all uncertainties to false and risk aversion to false for this test, since we are just running with one scenario selected
+    settings["Risk aversion flag"] = false
+    settings["Demand uncertainty"] = false
+    settings["Gas price uncertainty"] = false
+    settings["Weather uncertainty"] = false
+    new_inputs = load_input_data(inputs_folder, settings)
+    new_inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
+    new_inputs["Full Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]
+    new_inputs["Full Weather scenario probabilities"] = inputs["Weather scenario probabilities"]
+
+    i = 0
+    results_path = joinpath(results_folder, "Results_Base_MGA", "Scenario_"*string(i))
+    _ = run_base_mga(SPs, new_inputs, settings, results_path, summary_folder; budget_multiplier=1.10, vector_set=vectors, scenario=i)
 
 end
 
