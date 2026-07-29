@@ -33,10 +33,11 @@ Carbon tax: 0
 Carbon cap: 25000
 Contracts: false
 Search equilibria: false
+CRM Flag: true
 
 Scaling factor cost: 1e5
 Scaling factor demand: 1
-Convergence tolerance: 1e-5
+Convergence tolerance: 1e-3
 
 Cost of nonserved energy: [9e3,1500,1100,400]
 Max nse: [0.917,0.05,0.03,0.003]
@@ -53,14 +54,12 @@ Vector Type: random
 Iterations: 50
 Capacity Exploration: true
 Seed: 1234
-Budget convergence tolerance: 0.000001
-Cuts retained: 50000
+Budget convergence tolerance: 0.0001
 Cut deactivation threshold: 8
 MGA cut deactivation threshold: 8
+Cut deactivation strategy: "in benders" # options are "in benders" and "in mga"
 
-Mapping: true
-Mapping Gap Threshold: 0.15
-Interior Samples: 8000
+Mapping: false
+Mapping Gap Threshold: 0.2
 Sample Method: "CVT"
-
-CRM flag: false
+Interior Samples: 2
