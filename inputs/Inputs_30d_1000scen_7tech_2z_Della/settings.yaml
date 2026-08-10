@@ -33,7 +33,7 @@ Carbon tax: 0
 Carbon cap: 25000
 Contracts: false
 Search equilibria: false
-CRM Flag: true
+CRM flag: true
 
 Scaling factor cost: 1e5
 Scaling factor demand: 1

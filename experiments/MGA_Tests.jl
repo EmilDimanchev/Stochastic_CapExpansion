@@ -548,7 +548,7 @@ function mapping_test_della_001(test_index)
 
 end
 
-function risk_pareto_test_della(test_index, budget_type)
+function risk_pareto_test_della(test_index, budget_type; budget_multiplier = 1.0)
 
     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
@@ -568,7 +568,7 @@ function risk_pareto_test_della(test_index, budget_type)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
     results_folder = joinpath(results_folder, "Pareto5")
-    budget_multiplier = 1.00
+    #budget_multiplier = 1.00
     vector_set = nothing
     summary_name = "pareto"
     Eval_SPs = nothing
@@ -578,7 +578,7 @@ function risk_pareto_test_della(test_index, budget_type)
 
 end
 
-function risk_pareto_test_della_deterministic(test_index, budget_type)
+function risk_pareto_test_della_deterministic(test_index, budget_type; budget_multiplier=1.0)
 
     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
@@ -598,7 +598,7 @@ function risk_pareto_test_della_deterministic(test_index, budget_type)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
     results_folder = joinpath(results_folder, "Pareto5")
-    budget_multiplier = 1.00
+    #budget_multiplier = 1.00
     vector_set = nothing
     summary_name = "pareto"
     Eval_SPs = nothing
