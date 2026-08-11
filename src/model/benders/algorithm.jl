@@ -753,7 +753,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 UBs[i] = expected_value
             elseif budget_type == "Transformed"
                 UBs[i] = budgets["Transformed"]["transform_cvar"]*cvar_estimate + budgets["Transformed"]["transform_sys"]*(expected_value + output_mp["Inv_cost"]/settings["Scaling factor cost"])
-                print(UBs[i])
+                @info("Transformed UB: $(UBs[i]), CVaR: $(cvar_estimate), Expected: $(expected_value), Inv_cost: $(output_mp["Inv_cost"]/settings["Scaling factor cost"])")
             else
                 error("Budget type $(budget_type) not recognized for UB calculation.")
             end

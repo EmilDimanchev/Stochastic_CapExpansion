@@ -295,6 +295,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             transform_cvar = 1/(extreme_values[1.0]["CVaR"] - extreme_values[0.0]["CVaR"])
             transform_sys = 1/(extreme_values[0.0]["System Expected"] - extreme_values[1.0]["System Expected"])
             budget_val_transform = transform_cvar*extreme_values[0.0]["CVaR"] + transform_sys*extreme_values[1.0]["System Expected"] + 1 + budget_multiplier
+            @info("Budget value for transformed budget constraint: ", budget_val_transform)
             budgets = add_budget_constraint_bendersMP(MP, budget_val_transform, "Transformed", budgets; extreme_values = extreme_values)
         elseif budget_type == "Box"
             budgets = add_budget_constraint_bendersMP(MP, extreme_values[1.0]["CVaR"], "CVaR", budgets)
@@ -628,7 +629,7 @@ function risk_pareto_test_laptop_5(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
     results_folder = joinpath(results_folder, "Pareto5")
-    budget_multiplier = 1.00
+    budget_multiplier = 0.00
     vector_set = nothing
     summary_name = "pareto"
     Eval_SPs = nothing
