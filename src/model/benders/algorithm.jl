@@ -29,6 +29,34 @@ function _log_iteration_memory!(settings::Dict, label::String, iteration::Int, M
     return nothing
 end
 
+function _warmstart_debug_enabled(settings::Dict)
+    return get(settings, "Warmstart debug flag", false)
+end
+
+# Logs solver-work counters (not just wall-clock, which is noisy) right after an
+# optimize! call, so warmstart effectiveness can be verified directly: a shrinking or
+# flat per-iteration simplex-iteration count as cuts accumulate is a much stronger signal
+# that a warm-started re-solve is actually reusing the previous basis than a timing
+# comparison is. Off by default (see _warmstart_debug_enabled) so it costs nothing on
+# production runs.
+function _log_solver_work!(label::String, model::Model, settings::Dict)
+    if !_warmstart_debug_enabled(settings)
+        return nothing
+    end
+    simplex_iters = try
+        MOI.get(model, MOI.SimplexIterations())
+    catch
+        missing
+    end
+    barrier_iters = try
+        MOI.get(model, MOI.BarrierIterations())
+    catch
+        missing
+    end
+    @info("[warmstart $(label)] simplex_iters=$(simplex_iters), barrier_iters=$(barrier_iters)")
+    return nothing
+end
+
 function run_benders_algorithm(inputs::Dict, settings::Dict)
 
     # Iterations

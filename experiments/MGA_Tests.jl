@@ -691,6 +691,42 @@ function risk_pareto_tighten_test_laptop(test_index)
 
 end
 
+# Minimal diagnostic run for comparing solver warm-start behavior before/after changes to
+# Method/Crossover settings (see src/model/benders/master_planning.jl,
+# subproblems_economic_dispatch.jl). Skips the full MGA/budget-tightening wrapper - one
+# fixed objective, one straight-through benders_algorithm call - so it's fast to re-run
+# after each settings change, unlike the full pareto/tighten harness above. Turns on
+# "Warmstart debug flag" so each master/subproblem solve logs its simplex/barrier
+# iteration count via _log_solver_work! (algorithm.jl) - a more direct signal that warm
+# starting is reducing solver work than wall-clock time alone, which is noisy on a laptop.
+function warmstart_verification_laptop(test_index)
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+    settings["Warmstart debug flag"] = true
+
+    configure_parallel_workers!(settings)
+
+    MP = build_planning_model(inputs, settings)
+    set_objective_bendersMP!(MP, "System_Expected", inputs, settings)
+    SPs = build_all_subproblems(inputs, settings)
+
+    elapsed = @elapsed output = benders_algorithm(inputs, settings, MP, SPs, "Warmstart_verification")
+
+    @info("Warmstart verification run complete in $(round(elapsed; digits=2)) seconds")
+    @info("Final planning objective: $(output["MP"]["Planning objective"])")
+    @info("Final gap: $(output["Gaps"][end])")
+    @info("Time MP hist: $(output["Time MP hist"])")
+    @info("Time SP hist: $(output["Time SP hist"])")
+    @info("Time Reg hist: $(output["Time Reg hist"])")
+
+    return output
+end
+
 
 function simple_comp(test_index)
     inputs_folder = joinpath("inputs","Inputs_30d_1000scen_7tech_2z_Della")

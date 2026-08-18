@@ -420,11 +420,21 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
         set_optimizer(ED, HiGHS.Optimizer)
         set_optimizer_attribute(ED, "primal_feasibility_tolerance", 1e-3)
         set_optimizer_attribute(ED, "optimality_tolerance", 1e-3)
+        # Force crossover on so a vertex/basis is always produced: x/x_line are Parameter
+        # variables (see below), so re-solves after set_parameter_value! are pure bound
+        # changes on an otherwise-static LP - a basis lets HiGHS warm-start the next
+        # solve instead of re-deriving a starting point from scratch every iteration.
+        set_optimizer_attribute(ED, "run_crossover", "on")
     elseif settings["Solver"] == "Gurobi"
         set_optimizer(ED, Gurobi.Optimizer)
         set_optimizer_attribute(ED, "OutputFlag", 0)
         set_optimizer_attribute(ED, "Crossover", 1)
-        set_optimizer_attribute(ED, "Method", 2)
+        # Automatic (-1) rather than hard-pinned barrier: with Crossover=1 a basis is
+        # always available from the previous solve, and Gurobi's automatic method
+        # selection favors warm-started simplex continuation when one exists while still
+        # falling back to barrier/concurrent for a cold or very large LP - this adapts
+        # across problem sizes rather than committing to one method.
+        set_optimizer_attribute(ED, "Method", -1)
         set_optimizer_attribute(ED, "BarConvTol", 1e-5)
         set_optimizer_attribute(ED, "OptimalityTol", 1e-5)
         set_optimizer_attribute(ED, "FeasibilityTol", 1e-5)
@@ -618,6 +628,7 @@ function run_subproblem(ED::Model, inputs, settings; minimal_payload::Bool=false
     output = Dict{String, Any}()
 
     optimize!(ED)
+    _log_solver_work!("SP", ED, settings)
     if termination_status(ED) != MOI.OPTIMAL
         @warn("Subproblem did not solve to optimality. Status: $(termination_status(ED))")
         output["coeff"] = 0
