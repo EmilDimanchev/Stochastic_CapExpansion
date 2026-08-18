@@ -65,3 +65,4 @@ Cut deactivation strategy: "in benders" # options are "in benders" and "in mga"
 Mapping: true
 Mapping Gap Threshold: 0.2
 Interior Samples: 2
+Sample Method: "Base" # "Base" or "CVT"

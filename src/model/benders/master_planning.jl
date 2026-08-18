@@ -637,6 +637,24 @@ function add_budget_constraint_bendersMP(model::Model, budget::Float64, budget_t
     return existing_budgets
 end
 
+function update_budget_constraint_bendersMP!(model::Model, new_budget::Float64, budget_type::String, existing_budgets::Dict)
+    if budget_type == "Transformed"
+        set_normalized_rhs(model[:c_budget_transformed], new_budget)
+        existing_budgets["Transformed"]["budget"] = new_budget
+    elseif budget_type in ("Investment", "Expected", "CVaR", "System_Expected")
+        con_sym = Dict("Investment" => :c_budget_inv, "Expected" => :c_budget_exp, "CVaR" => :c_budget_cvar, "System_Expected" => :c_budget_sys_exp)[budget_type]
+        set_normalized_rhs(model[con_sym], new_budget)
+        existing_budgets[budget_type] = new_budget
+    elseif budget_type == "System_Weighted_CVaR"
+        set_normalized_rhs(model[:c_budget_sys_cvar], new_budget)
+        existing_budgets[budget_type] = new_budget
+    else
+        error("Unsupported budget type. Please choose from 'Investment', 'Expected', 'CVaR', 'Transformed','System_Expected', or 'System_CVaR'.")
+    end
+    @info("Updated budget constraint ($budget_type) RHS to: ", new_budget)
+    return existing_budgets
+end
+
 function manage_cuts(MP::Model, cuts_to_keep::Vector{String})
     # Get all cut constraints in the model. Filter on name(con), not string(con): the latter
     # pretty-prints the full constraint (every term), which is far more expensive than the

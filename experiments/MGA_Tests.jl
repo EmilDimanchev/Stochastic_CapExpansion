@@ -194,7 +194,20 @@ function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, input
 end
 
 
-function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100, budget_type = "Transformed")
+function compute_budget_floor(extreme_values::Dict, transform_cvar::Float64, transform_sys::Float64, floor_offset::Float64)
+    transformed_vals = [transform_sys*ev["System Expected"] + transform_cvar*ev["CVaR"] for ev in values(extreme_values)]
+    isempty(transformed_vals) && error("Need at least one risk-pareto anchor point to compute a budget floor.")
+    return minimum(transformed_vals) + floor_offset
+end
+
+function compute_budget_tighten_schedule(budget_start::Float64, budget_floor::Float64, step_size::Float64)
+    step_size <= 0 && error("Budget tighten step size must be positive.")
+    budget_floor > budget_start && error("Budget floor ($budget_floor) must be <= starting budget ($budget_start) — check budget_offset vs. the anchor points' own transformed costs.")
+    n_steps = ceil(Int, (budget_start - budget_floor) / step_size)
+    return [max(budget_floor, budget_start - step_size*k) for k in 0:n_steps]
+end
+
+function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, budget_offset::Float64 = 1.0, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100, budget_type = "Transformed", tighten_budget::Bool = false, budget_tighten_step_size::Float64 = 0.1, floor_offset::Float64 = 0.1)
 
     #configure_parallel_workers!(settings)
 
@@ -233,14 +246,14 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         # Base Runs
         case_name = "Risk_Weight_"*string(risk)
         set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk)
-        output_cvar = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping, risk_aversion_weight = risk, cut_archive = cut_archive)
-        log_result_memory!(case_name*" output", output_cvar)
-        gap_cvar = output_cvar["Gaps"]
+        output = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping, risk_aversion_weight = risk, cut_archive = cut_archive)
+        log_result_memory!(case_name*" output", output)
+        gap_cvar = output["Gaps"]
         push!(run_labels, case_name)
         push!(gaps, gap_cvar)
         # Write results
         results_destination = joinpath(results_folder, case_name)
-        df_cap, df_syscost, df_emissions = write_results_benders(output_cvar, inputs, settings, results_destination)
+        df_cap, df_syscost, df_emissions = write_results_benders(output, inputs, settings, results_destination)
         if mapping
             temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output, inputs, settings)
             push!(results_cap, temp_df_cap)
@@ -251,11 +264,11 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             push!(results_syscost, df_syscost)
             push!(results_emissions, df_emissions)
         end
-        extreme_values[risk] = Dict("CVaR" => output_cvar["CVaR"]/scaling, "System Expected" => (output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/scaling)
+        extreme_values[risk] = Dict("CVaR" => output["CVaR"]/scaling, "System Expected" => (output["Expected Value"] + output["MP"]["Inv_cost"])/scaling)
 
-        @info("Risk weight $risk solution has investment cost of $(output_cvar["MP"]["Inv_cost"])")
-        @info("Expected value system cost of " * "Risk weight $risk" * " solution: $(output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])")
-        @info("Risk adjusted system cost of " * "Risk weight $risk" * " solution: $((1-risk_aversion_weight)*output_cvar["CVaR"] + risk_aversion_weight*output_cvar["Expected Value"]+ output_cvar["MP"]["Inv_cost"])")
+        @info("Risk weight $risk solution has investment cost of $(output["MP"]["Inv_cost"])")
+        @info("Expected value system cost of " * "Risk weight $risk" * " solution: $(output["Expected Value"] + output["MP"]["Inv_cost"])")
+        @info("Risk adjusted system cost of " * "Risk weight $risk" * " solution: $((1-risk_aversion_weight)*output["CVaR"] + risk_aversion_weight*output["Expected Value"]+ output["MP"]["Inv_cost"])")
         
         if settings["Cut deactivation strategy"] == "in mga"
             
@@ -267,7 +280,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             cuts_to_keep = manage_cuts(MP, cuts_to_keep)
         end
 
-        release_heavy_payload!(output_cvar)
+        release_heavy_payload!(output)
     end
 
     if settings["Capacity Exploration"]
@@ -291,12 +304,20 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         # (algorithm.jl:608/706), not the risk_aversion passed here, so it must be kept at 0.5
         # to match the constraint actually being enforced on MP.
         #settings["Risk aversion weight"] = 0.5
+        if tighten_budget && budget_type != "Transformed"
+            error("tighten_budget=true is only supported for budget_type == \"Transformed\" (got \"$budget_type\").")
+        end
         if budget_type == "Transformed"
             transform_cvar = 1/(extreme_values[1.0]["CVaR"] - extreme_values[0.0]["CVaR"])
             transform_sys = 1/(extreme_values[0.0]["System Expected"] - extreme_values[1.0]["System Expected"])
-            budget_val_transform = transform_cvar*extreme_values[0.0]["CVaR"] + transform_sys*extreme_values[1.0]["System Expected"] + 1 + budget_multiplier
+            budget_val_transform = transform_cvar*extreme_values[0.0]["CVaR"] + transform_sys*extreme_values[1.0]["System Expected"] + budget_offset
             @info("Budget value for transformed budget constraint: ", budget_val_transform)
             budgets = add_budget_constraint_bendersMP(MP, budget_val_transform, "Transformed", budgets; extreme_values = extreme_values)
+            if tighten_budget
+                budget_floor = compute_budget_floor(extreme_values, transform_cvar, transform_sys, floor_offset)
+                budget_schedule = compute_budget_tighten_schedule(budget_val_transform, budget_floor, budget_tighten_step_size)
+                @info("Budget tightening enabled: $(length(budget_schedule)) levels per MGA vector, from $(budget_val_transform) down to $(budget_floor) in steps of $(budget_tighten_step_size).")
+            end
         elseif budget_type == "Box"
             budgets = add_budget_constraint_bendersMP(MP, extreme_values[1.0]["CVaR"], "CVaR", budgets)
             budgets = add_budget_constraint_bendersMP(MP, extreme_values[0.0]["System Expected"]*budget_multiplier, "System_Expected", budgets)
@@ -322,32 +343,40 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             end
             #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
 
-            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs, mapping = mapping, cut_archive = cut_archive)
-            log_result_memory!("Random_"*string(iteration)*" output", output_random)
-            avg_time_mp = mean(output_random["Time MP hist"])
-            gap = output_random["Gaps"]
-            push!(run_labels, "Random_"*string(iteration))
-            push!(gaps, gap)
-            results_destination = joinpath(results_folder,"Random_"*string(iteration))
-            df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
-            if mapping
-                temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output_random, inputs, settings)
-                push!(results_cap, temp_df_cap)
-                push!(results_syscost, temp_df_syscost)
-                push!(results_emissions, temp_df_emissions)
-            else
-                push!(results_cap, df_cap)
-                push!(results_syscost, df_syscost)
-                push!(results_emissions, df_emissions)
-            end
+            levels = tighten_budget ? budget_schedule : [budget_val_transform]
+            local output_random, avg_time_mp
+            for (level, budget_level_val) in enumerate(levels)
+                if tighten_budget
+                    budgets = update_budget_constraint_bendersMP!(MP, budget_level_val, "Transformed", budgets)
+                end
+                run_name = tighten_budget ? "Random_$(iteration)_Budget_$(level)" : "Random_"*string(iteration)
+                output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = mapping, cut_archive = cut_archive)
+                log_result_memory!(run_name*" output", output_random)
+                avg_time_mp = mean(output_random["Time MP hist"])
+                gap = output_random["Gaps"]
+                push!(run_labels, run_name)
+                push!(gaps, gap)
+                results_destination = joinpath(results_folder, run_name)
+                df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
+                if mapping
+                    temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output_random, inputs, settings)
+                    push!(results_cap, temp_df_cap)
+                    push!(results_syscost, temp_df_syscost)
+                    push!(results_emissions, temp_df_emissions)
+                else
+                    push!(results_cap, df_cap)
+                    push!(results_syscost, df_syscost)
+                    push!(results_emissions, df_emissions)
+                end
 
-            release_heavy_payload!(output_random)
+                release_heavy_payload!(output_random)
+            end
             if settings["Cut deactivation strategy"] == "in mga"
                 if length(cuts_to_keep) < settings["Cuts retained"] && !mapping && avg_time_mp < 3*balanced_avg_time_mp
                     push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
                 end
             end
-            
+
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
 
@@ -636,6 +665,29 @@ function risk_pareto_test_laptop_5(test_index)
     mapping=false
     n_samples = settings["Interior Samples"]
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder , summary_folder; budget_multiplier = budget_multiplier, vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping=false, n_samples = settings["Interior Samples"], budget_type = "Transformed")
+
+end
+
+function risk_pareto_tighten_test_laptop(test_index)
+
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+
+    configure_parallel_workers!(settings)
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+    results_folder = joinpath(results_folder, "Pareto5")
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder; vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping = true, n_samples = settings["Interior Samples"], budget_type = "Transformed", tighten_budget = true)
 
 end
 
