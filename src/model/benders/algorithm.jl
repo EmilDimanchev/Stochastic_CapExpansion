@@ -252,7 +252,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     evs = Vector{Any}(undef, J_max)
     all_outputs_mp = Vector{Any}(undef, J_max)
     minimal_payload = true
-    first_write = 0
+    first_write = 1
     indicator_written = false
     last_iteration_cuts = Dict{String, Int64}()
     rhs_values = Dict{String, Float64}()
@@ -678,7 +678,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     evs = Vector{Any}(undef, J_max)
     all_outputs_mp = Vector{Any}(undef, J_max)
     indicator_written = false
-    first_write = 0
+    first_write = 1
     last_iteration_cuts = Dict{String, Int64}()
     rhs_values = Dict{String, Float64}()
     cut_deactivation_threshold = settings["MGA cut deactivation threshold"]
