@@ -697,10 +697,15 @@ function manage_cuts(MP::Model, cuts_to_keep::Vector{String})
     # O(1) name lookup and runs over every constraint in the model.
     all_cuts = [con for con in all_constraints(MP, include_variable_in_set_constraints = false) if startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_")]
 
-    for cut in all_cuts
-        if !(name(cut) in cuts_to_keep)
-            delete(MP, cut)
-        end
+    # Batch delete: a scalar delete(MP, cut) per cut forces both HiGHS.jl and Gurobi.jl to
+    # redo an O(total constraints in MP) reindex pass - and on Gurobi, a full GRBupdatemodel
+    # sync - once per deleted cut, i.e. O(n_deleted * total_constraints) overall. JuMP's
+    # vector delete(MP, ::Vector{ConstraintRef}) lets both solvers' MOI wrappers do that
+    # reindex/sync exactly once for the whole batch. See deactivate_cuts below for the same
+    # pattern with more detail.
+    cuts_to_delete = [cut for cut in all_cuts if !(name(cut) in cuts_to_keep)]
+    if !isempty(cuts_to_delete)
+        delete(MP, cuts_to_delete)
     end
     return cuts_to_keep
 end
@@ -719,9 +724,22 @@ end
 # entire name index from scratch (it's invalidated on every delete), turning this loop
 # quadratic in the number of constraints in MP. Entries are consumed (deleted) as each cut
 # is deactivated, so the cache only ever tracks currently-active cuts.
+#
+# The actual delete is batched (one delete(MP, ::Vector{ConstraintRef}) call after the
+# archive loop) rather than called once per cut inside it. Both HiGHS.jl and Gurobi.jl's MOI
+# wrappers implement a scalar delete that reindexes every remaining constraint in MP (an
+# O(total constraints) walk) on every single call - and Gurobi's scalar path additionally
+# forces a GRBupdatemodel sync per call. Deleting N cuts one at a time is therefore
+# O(N * total_constraints), which is what made large deactivations slower than solving the
+# bigger master problem outright. Their vector delete methods do that reindex/sync exactly
+# once for the whole batch, so this is a call-batching change only - it doesn't touch any
+# RHS, coefficient, or constraint value, so it carries none of the numerical risk that the
+# RHS-loosening approach above ran into.
 function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_archive::Dict{String, Any}, cut_refs::Dict{String, ConstraintRef})
     @info("Deactivating $(length(cuts_to_deactivate)) cuts")
     time_1 = time()
+    cons_to_delete = ConstraintRef[]
+    names_to_delete = String[]
     for cut_name in cuts_to_deactivate
         con = get(cut_refs, cut_name, nothing)
         if con === nothing
@@ -731,7 +749,13 @@ function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_arch
             continue # already removed (e.g. via manage_cuts)
         end
         cut_archive[cut_name] = constraint_object(con)
-        delete(MP, con)
+        push!(cons_to_delete, con)
+        push!(names_to_delete, cut_name)
+    end
+    if !isempty(cons_to_delete)
+        delete(MP, cons_to_delete)
+    end
+    for cut_name in names_to_delete
         delete!(cut_refs, cut_name)
         #unregister(MP, Symbol(cut_name)) # They aren't registered in the first place bc of anonymous + base name construction! That's a new thing I've learned today - thanks, Claude!
     end

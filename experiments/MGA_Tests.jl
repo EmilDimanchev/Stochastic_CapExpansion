@@ -922,9 +922,12 @@ end
 
 Cut management tests: exercises add_optimality_cuts!/deactivate_cuts/reactivate_cuts
 directly against a real (laptop-sized) MP, without running a full Benders loop. Checks
-that a deactivate -> reactivate round trip reproduces cuts exactly (same RHS), and
-times the constraint_by_name-per-call pattern against the cut_refs-cache pattern so a
-regression back to the slow path would show up as a large old/new time gap.
+that a deactivate -> reactivate round trip reproduces cuts exactly (same RHS), and times
+three deletion patterns at production-scale batch sizes so a regression back to any of the
+slower paths would show up as a large gap: (a) constraint_by_name-per-call + scalar delete
+(the original pattern), (b) cut_refs-cache-per-call + scalar delete (isolates the cache win
+alone), (c) cut_refs-cache + batched delete via deactivate_cuts itself (the production
+function - isolates the batch-delete win on top of the cache).
 
 ==========#
 
@@ -992,36 +995,64 @@ function test_cut_management(test_index = "cut_mgmt")
     cut_refs[probe_name] = con # mirrors the fallback populate step in algorithm.jl
     @info("Fallback lookup for an untracked-but-live cut resolved correctly.")
 
-    # --- Performance: constraint_by_name-per-call (old) vs cut_refs cache (new) ---
-    remaining_names = collect(keys(cut_refs))
-    n_perf = min(300, length(remaining_names))
-    perf_batch = remaining_names[1:n_perf]
+    # --- Performance: constraint_by_name/scalar (a) vs cut_refs-cache/scalar (b) vs
+    # cut_refs-cache/batched deactivate_cuts (c), at a production-scale batch size. n_perf
+    # is intentionally much larger than the old N=300: the batch-delete win comes from
+    # avoiding an O(total constraints) reindex/resync per deleted cut in HiGHS.jl/Gurobi.jl,
+    # which only shows up clearly once the batch size is in the thousands (matching real
+    # cuts_to_remove sizes given `Cut deactivation threshold: 8`/`Cuts retained: 50000`).
+    n_perf = min(3000, S*F*K*n_iterations)
+    refill_iter = Ref(n_iterations)
+    refill!(needed) = begin
+        iters = ceil(Int, needed / (S*F*K)) + 1
+        for _ in 1:iters
+            refill_iter[] += 1
+            new_refs = add_optimality_cuts!(MP, SP_obj, cap_dual, line_dual, x_prev, x_prev_line, coeffs, inputs, settings, refill_iter[], "cuttest_refill")
+            merge!(cut_refs, new_refs)
+        end
+    end
 
-    t_old = @elapsed begin
-        for n in perf_batch
+    # (a) constraint_by_name-per-call + scalar delete (the original pattern)
+    perf_batch_a = collect(keys(cut_refs))[1:n_perf]
+    t_a = @elapsed begin
+        for n in perf_batch_a
             con = constraint_by_name(MP, n)
             delete(MP, con)
         end
     end
-    @info("Old pattern (constraint_by_name in a delete loop): removed $(n_perf) cuts in $(round(t_old; digits=4))s")
-    for n in perf_batch
+    @info("(a) constraint_by_name + scalar delete: removed $(n_perf) cuts in $(round(t_a; digits=4))s")
+    for n in perf_batch_a
         delete!(cut_refs, n)
     end
 
-    refill_iterations = ceil(Int, n_perf / (S*F*K)) + 1
-    for it in (n_iterations+1):(n_iterations+refill_iterations)
-        new_refs = add_optimality_cuts!(MP, SP_obj, cap_dual, line_dual, x_prev, x_prev_line, coeffs, inputs, settings, it, "cuttest_refill")
-        merge!(cut_refs, new_refs)
+    # (b) cut_refs cache + scalar delete (isolates the cache win alone, no batching)
+    refill!(n_perf)
+    perf_batch_b = collect(keys(cut_refs))[1:n_perf]
+    t_b = @elapsed begin
+        for n in perf_batch_b
+            delete(MP, cut_refs[n])
+        end
     end
-    perf_batch_2 = collect(keys(cut_refs))[1:n_perf]
-    cut_archive_2 = Dict{String, Any}()
-    t_new = @elapsed deactivate_cuts(MP, perf_batch_2, cut_archive_2, cut_refs)
-    @info("New pattern (cut_refs cache): removed $(n_perf) cuts in $(round(t_new; digits=4))s")
+    @info("(b) cut_refs cache + scalar delete: removed $(n_perf) cuts in $(round(t_b; digits=4))s")
+    for n in perf_batch_b
+        delete!(cut_refs, n)
+    end
 
-    speedup = t_old / max(t_new, 1e-9)
-    @info("[$(test_index)] Speedup from cut_refs cache over constraint_by_name-per-call: $(round(speedup; digits=1))x")
+    # (c) cut_refs cache + batched delete, via the production deactivate_cuts function
+    refill!(n_perf)
+    perf_batch_c = collect(keys(cut_refs))[1:n_perf]
+    cut_archive_c = Dict{String, Any}()
+    t_c = @elapsed deactivate_cuts(MP, perf_batch_c, cut_archive_c, cut_refs)
+    @info("(c) cut_refs cache + batched delete (deactivate_cuts): removed $(n_perf) cuts in $(round(t_c; digits=4))s")
 
-    return (old_time = t_old, new_time = t_new, speedup = speedup, total_cuts = total_cuts)
+    speedup_cache = t_a / max(t_b, 1e-9)
+    speedup_batch = t_b / max(t_c, 1e-9)
+    speedup_total = t_a / max(t_c, 1e-9)
+    @info("[$(test_index)] Speedup from cut_refs cache alone: $(round(speedup_cache; digits=1))x; from batching on top of the cache: $(round(speedup_batch; digits=1))x; combined: $(round(speedup_total; digits=1))x")
+
+    return (n_perf = n_perf, scalar_by_name_time = t_a, scalar_cached_time = t_b, batched_time = t_c,
+            speedup_cache = speedup_cache, speedup_batch = speedup_batch, speedup_total = speedup_total,
+            total_cuts = total_cuts)
 
 end
 
