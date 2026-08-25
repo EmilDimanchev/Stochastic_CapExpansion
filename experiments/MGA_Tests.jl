@@ -342,6 +342,8 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                 cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             end
             #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            # introduce new variable to track if this is the not the first tightening. Used to indicate mapping
+            map_bool = false
 
             levels = tighten_budget ? budget_schedule : [budget_val_transform]
             local output_random, avg_time_mp
@@ -350,7 +352,8 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                     budgets = update_budget_constraint_bendersMP!(MP, budget_level_val, "Transformed", budgets)
                 end
                 run_name = tighten_budget ? "Random_$(iteration)_Budget_$(level)" : "Random_"*string(iteration)
-                output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = mapping, cut_archive = cut_archive)
+                map_bool = true
+                output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = map_bool, cut_archive = cut_archive)
                 log_result_memory!(run_name*" output", output_random)
                 avg_time_mp = mean(output_random["Time MP hist"])
                 gap = output_random["Gaps"]

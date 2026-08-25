@@ -438,7 +438,6 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 if indicator_written == false
                     indicator_written = true
                     first_write = j
-                    @info("Gap $(gap*100)% is within mapping threshold; will save iteration data and turn off regularization for feasible space mapping.")
                     settings["Regularization flag"] = false
                 end
             end
@@ -853,14 +852,14 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             end
             break
         else
-            if mapping && maximum(gaps) <= settings["Mapping Gap Threshold"]
+            if mapping #&& maximum(gaps) <= settings["Mapping Gap Threshold"]
                 all_outputs_sp[j] = outputs_sp
                 cvars[j] = cvar_estimate*settings["Scaling factor cost"]
                 evs[j] = expected_value*settings["Scaling factor cost"]
                 all_outputs_mp[j] = output_mp
 
                 if indicator_written == false
-                    @info("Gap $(maximum(gaps)*100)% is within mapping threshold; will save iteration data and turn off regularization for feasible space mapping starting next iteration.")
+                    #@info("Gap $(maximum(gaps)*100)% is within mapping threshold; will save iteration data and turn off regularization for feasible space mapping starting next iteration.")
                     indicator_written = true
                     first_write = j
                 end
