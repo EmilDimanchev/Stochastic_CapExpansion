@@ -109,7 +109,6 @@ end
 
 ##### TODO: Make better sampling methods - specifically want to try centroidal voronoi tessellations (CVT) which are designed to produce well-distributed samples in high-dimensional spaces. The current method of sampling random points and projecting them onto the convex hull of the original points is a simple approach but may not yield the best distribution of samples, especially as the dimensionality increases. CVT can help in generating samples that are more representative of the underlying distribution of the data, which could lead to better performance in downstream tasks that rely on these samples.
 # try on both weights and original points
-# also can try monte carlo markov chain type sampling methods that are designed to sample uniformly from convex polytopes, such as the hit-and-run algorithm or the Dikin walk. These methods can be more efficient and effective in high-dimensional spaces compared to simple random sampling followed by projection.
 function cvt_sampler(points, num_samples; max_iters = 100)
     k = num_samples
     (n_points, n_vars) = size(points)
@@ -121,69 +120,163 @@ function cvt_sampler(points, num_samples; max_iters = 100)
     return samples
 end
 
+# One hit-and-run step in weight-space on the polytope l_i in [0, ub], sum(l) = 1 (the
+# same simplex-with-cap the MGCA projection uses to express the convex hull of `points`).
+# Directions are drawn from the sum-zero hyperplane so every step stays on sum(l) = 1;
+# for rows == 2 this polytope is just the segment between (ub, 1-ub) and (1-ub, ub), so
+# the walk correctly degenerates to a 1-D bounce rather than exploring a higher-dim body.
+function _hit_and_run_step(l::Vector{Float64}, rng::AbstractRNG; ub::Float64 = 0.95, max_direction_retries::Int = 50)
+    rows = length(l)
+    for _ in 1:max_direction_retries
+        d = randn(rng, rows)
+        d .-= sum(d) / rows
+        dn = norm(d)
+        dn < 1e-10 && continue
+        d ./= dn
+
+        t_min, t_max = -Inf, Inf
+        for i in 1:rows
+            if d[i] > 1e-12
+                t_min = max(t_min, -l[i] / d[i])
+                t_max = min(t_max, (ub - l[i]) / d[i])
+            elseif d[i] < -1e-12
+                t_min = max(t_min, (ub - l[i]) / d[i])
+                t_max = min(t_max, -l[i] / d[i])
+            end
+        end
+
+        if t_max - t_min < 1e-9
+            continue
+        end
+
+        t = t_min + rand(rng) * (t_max - t_min)
+        l_new = clamp.(l .+ t .* d, 0.0, ub)
+        if abs(sum(l_new) - 1.0) > 1e-8
+            l_new ./= sum(l_new)
+        end
+        return l_new
+    end
+    return l
+end
+
+# Runs a single hit-and-run chain of length rows in l-space, discarding burn_in steps and
+# keeping every thin-th step thereafter. Returns n_samples weight vectors summing to 1.
+function _run_hit_and_run_chain(rows::Int, n_samples::Int; rng::AbstractRNG, burn_in::Int, thin::Int, ub::Float64 = 0.95)
+    rows == 1 && error("Hit-and-run sampling requires rows > 1 (got rows=1): the simplex-with-cap polytope l_1=1, l_1<=$(ub) is empty.")
+
+    l = fill(1.0 / rows, rows)
+    for _ in 1:burn_in
+        l = _hit_and_run_step(l, rng; ub = ub)
+    end
+
+    samples = Vector{Vector{Float64}}(undef, n_samples)
+    for idx in 1:n_samples
+        for _ in 1:thin
+            l = _hit_and_run_step(l, rng; ub = ub)
+        end
+        samples[idx] = l
+    end
+    return samples
+end
+
+# Hit-and-run MCMC sampler over the convex hull of `points`, walked in weight-space (see
+# _hit_and_run_step) then mapped to capacity-space via x = bounded_points' * l. Unlike the
+# CVT/Random methods this needs no solver at all - each returned sample is a pure convex
+# combination of `points`. `rng` defaults to a seed derived from myid(), so dispatching
+# this to different workers via remotecall/@fetchfrom gives each worker an independent,
+# reproducible chain for free.
+function hit_and_run_sampler(points, num_samples, settings; rng::Union{Nothing, AbstractRNG} = nothing)
+    rows, cols = size(points)
+    bounded_points = max.(points, 0.0)
+
+    burn_in = get(settings, "Hit and Run Burn-in", max(500, 20 * rows))
+    thin = get(settings, "Hit and Run Thin", max(10, 2 * rows))
+    chain_rng = something(rng, MersenneTwister(get(settings, "Seed", 1234) + myid()))
+
+    l_samples = _run_hit_and_run_chain(rows, num_samples; rng = chain_rng, burn_in = burn_in, thin = thin)
+    return [bounded_points' * l for l in l_samples]
+end
+
 function sample_interior_distributed(points, num_samples, settings)
     samples = Vector{Vector{Float64}}(undef, num_samples)
     solver = settings["Solver"]
     sample_method = settings["Sample Method"]
-    if nworkers() > 0
+    if nprocs() > 1
         pids = workers()
-        if sample_method == "CVT"
-            @info "Sampling using CVT method with $num_samples samples across $(length(pids)) workers..."
-            sample_targets = cvt_sampler(points, num_samples)
-        elseif sample_method == "Random"
-            @info "Sampling using random projection method with $num_samples samples across $(length(pids)) workers..."
-            max_point = maximum(points, dims=1)[:]
-            sample_targets = [rand(length(max_point)) .* max_point for _ in 1:num_samples]
+        if sample_method == "HitAndRun"
+            @info "Sampling using hit-and-run MCMC method with $num_samples samples across $(length(pids)) workers..."
+            n_workers = length(pids)
+            per_worker = ceil(Int, num_samples / n_workers)
+            worker_batches = Vector{Vector{Vector{Float64}}}(undef, n_workers)
+            @sync for (w, pid) in enumerate(pids)
+                @async worker_batches[w] = @fetchfrom pid hit_and_run_sampler(points, per_worker, settings)
+            end
+            samples = vcat(worker_batches...)[1:num_samples]
+        elseif sample_method in ("CVT", "Random")
+            if sample_method == "CVT"
+                @info "Sampling using CVT method with $num_samples samples across $(length(pids)) workers..."
+                sample_targets = cvt_sampler(points, num_samples)
+            else
+                @info "Sampling using random projection method with $num_samples samples across $(length(pids)) workers..."
+                max_point = maximum(points, dims=1)[:]
+                sample_targets = [rand(length(max_point)) .* max_point for _ in 1:num_samples]
+            end
+
+            @sync for pid in pids
+                @async begin
+                    remotecall_wait(_clear_worker_mgca_cache!, pid)
+                    remotecall_wait(_set_worker_mgca_problem_data!, pid, points, solver)
+                    remotecall_wait(_build_and_cache_mgca_problem!, pid)
+                end
+            end
+
+            @sync for (idx, target) in enumerate(sample_targets)
+                @async begin
+                    pid = pids[mod1(idx, length(pids))]
+                    samples[idx] = @fetchfrom pid _run_cached_mgca_sample!(target)
+                end
+            end
         else
-            error("Unsupported sample method: $sample_method. Supported methods are: CVT, Random")
-        end
-
-        @sync for pid in pids
-            @async begin
-                remotecall_wait(_clear_worker_mgca_cache!, pid)
-                remotecall_wait(_set_worker_mgca_problem_data!, pid, points, solver)
-                remotecall_wait(_build_and_cache_mgca_problem!, pid)
-            end
-        end
-
-        @sync for (idx, target) in enumerate(sample_targets)
-            @async begin
-                pid = pids[mod1(idx, length(pids))]
-                samples[idx] = @fetchfrom pid _run_cached_mgca_sample!(target)
-            end
+            error("Unsupported sample method: $sample_method. Supported methods are: CVT, Random, HitAndRun")
         end
         @everywhere GC.gc()
     else
-        model = Model()
-        if solver == "HiGHS"
-            set_optimizer(model, Ipopt.Optimizer)
-        elseif solver == "Gurobi"
-            set_optimizer(model, Gurobi.Optimizer)
-        end
-        rows, cols = size(points)
-        bounded_points = max.(points, 0.0)
-        @variable(model, l[1:rows] >= 0)
-        @constraint(model, sum(l[i] for i in 1:rows) == 1)
-        @variable(model, x[1:cols])
-        @constraint(model, x == bounded_points' * l)
-        @constraint(model, l .<= 0.95)
-        @objective(model, Min, 0)
-        set_silent(model)
+        if sample_method == "HitAndRun"
+            @info "Sampling using hit-and-run MCMC method with $num_samples samples (serial, single chain)..."
+            samples = hit_and_run_sampler(points, num_samples, settings)
+        elseif sample_method in ("CVT", "Random")
+            model = Model()
+            if solver == "HiGHS"
+                set_optimizer(model, Ipopt.Optimizer)
+            elseif solver == "Gurobi"
+                set_optimizer(model, Gurobi.Optimizer)
+            end
+            rows, cols = size(points)
+            bounded_points = max.(points, 0.0)
+            @variable(model, l[1:rows] >= 0)
+            @constraint(model, sum(l[i] for i in 1:rows) == 1)
+            @variable(model, x[1:cols])
+            @constraint(model, x == bounded_points' * l)
+            @constraint(model, l .<= 0.95)
+            @objective(model, Min, 0)
+            set_silent(model)
 
-        if sample_method == "CVT"
-            @info "Sampling using CVT method with $num_samples samples across $(length(pids)) workers..."
-            sample_targets = cvt_sampler(points, num_samples)
-        elseif sample_method == "Random"
-            @info "Sampling using random projection method with $num_samples samples across $(length(pids)) workers..."
-            max_point = maximum(points, dims=1)[:]
-            sample_targets = [rand(length(max_point)) .* max_point for _ in 1:num_samples]
+            if sample_method == "CVT"
+                @info "Sampling using CVT method with $num_samples samples (serial)..."
+                sample_targets = cvt_sampler(points, num_samples)
+            else
+                @info "Sampling using random projection method with $num_samples samples (serial)..."
+                max_point = maximum(points, dims=1)[:]
+                sample_targets = [rand(length(max_point)) .* max_point for _ in 1:num_samples]
+            end
+
+            for (idx, target) in enumerate(sample_targets)
+                @objective(model, Min, sum((model[:x][i] - target[i])^2 for i in 1:length(model[:x])))
+                optimize!(model)
+                samples[idx] = max.(value.(model[:x]), 0.0)
+            end
         else
-            error("Unsupported sample method: $sample_method. Supported methods are: CVT, Random")
-        end
-
-        for (idx, target) in enumerate(sample_targets)
-            @objective(model, Min, sum((model[:x][i] - target[i])^2 for i in 1:length(model[:x])))
-            optimize!(model)
+            error("Unsupported sample method: $sample_method. Supported methods are: CVT, Random, HitAndRun")
         end
     end
 

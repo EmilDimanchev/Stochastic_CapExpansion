@@ -1128,3 +1128,82 @@ function test_capacity_bound_tightening(test_index = "cap_bound")
 
     return (bounds = bounds, capacity = output["Capacity"])
 end
+
+#=========
+
+Hit-and-run sampler test: sample_interior_distributed() previously only supported "CVT"
+(k-means) and "Random" (uniform-box + convex-hull projection via an LP/QP solve) sample
+methods. This test exercises the new "HitAndRun" method, which walks the same
+convex-hull-of-points polytope (expressed in weight-space as l>=0, sum(l)=1, l<=0.95,
+exactly as the existing MGCA projection does) via a hit-and-run MCMC chain instead,
+needing no solver at all.
+
+It also exercises a real bug fix bundled into the same change: the previous `if
+nworkers() > 0` branch condition in sample_interior_distributed was always true in
+practice (Distributed.nworkers() returns 1, not 0, with no extra processes), so the
+serial `else` branch was dead code containing two further bugs (an undefined `pids`
+reference, and a sampling loop that never wrote into `samples[idx]`). The condition is
+now `nprocs() > 1`, so this test deliberately runs the sampler once before adding any
+workers (serial path) and once after (distributed path).
+
+=========#
+
+function test_hit_and_run_sampler(test_index = "hit_and_run")
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    settings = load_settings(inputs_folder)
+    settings["Sample Method"] = "HitAndRun"
+    settings["Workers"] = 2
+
+    points = [1.0 0.0 0.0 0.0;
+              0.0 1.0 0.0 0.0;
+              0.0 0.0 1.0 0.0;
+              0.0 0.0 0.0 1.0;
+              0.5 0.5 0.0 0.0;
+              0.0 0.0 0.5 0.5]
+    rows, cols = size(points)
+    lo = vec(minimum(points, dims=1))
+    hi = vec(maximum(points, dims=1))
+    n_samples = 40
+
+    # --- l-space checks on the chain in isolation ---
+    rng = MersenneTwister(42)
+    ls = _run_hit_and_run_chain(rows, n_samples; rng = rng, burn_in = 200, thin = 20)
+    for l in ls
+        @assert all(l .>= -1e-9) && all(l .<= 0.95 + 1e-9) "l out of [0, 0.95] bounds"
+        @assert abs(sum(l) - 1.0) < 1e-6 "l does not sum to 1"
+    end
+    @assert norm(ls[end] - ls[1]) > 1e-3 "chain did not move in l-space - suspect a self-loop or burn-in/thin no-op bug"
+    @info("[$(test_index)] l-space chain: all $(n_samples) samples satisfy l>=0, l<=0.95, sum(l)=1; chain moved (||l_end - l_1|| = $(round(norm(ls[end]-ls[1]); digits=4))).")
+
+    # --- serial path (nprocs()==1 -> the fixed `else` branch) ---
+    @assert nprocs() == 1 "expected a clean single-process session for the serial-path assertions"
+    samples_serial = sample_interior_distributed(points, n_samples, settings)
+    @assert length(samples_serial) == n_samples
+    for x in samples_serial
+        @assert all(x .>= lo .- 1e-6) && all(x .<= hi .+ 1e-6) "capacity-space sample outside bounding box of points"
+    end
+    spread_serial = maximum(norm(samples_serial[i] - samples_serial[1]) for i in 2:n_samples)
+    @assert spread_serial > 1e-3 "serial samples show no spread - suspect samples collapsed to the start point"
+    @info("[$(test_index)] Serial path: $(n_samples) samples all within bounding box of points; spread=$(round(spread_serial; digits=4)).")
+
+    # --- distributed path (nprocs()>1 -> the distributed branch, independent chain per worker) ---
+    configure_parallel_workers!(settings)
+    @assert nprocs() > 1
+    samples_dist = sample_interior_distributed(points, n_samples, settings)
+    @assert length(samples_dist) == n_samples
+    for x in samples_dist
+        @assert all(x .>= lo .- 1e-6) && all(x .<= hi .+ 1e-6) "capacity-space sample outside bounding box of points"
+    end
+    spread_dist = maximum(norm(samples_dist[i] - samples_dist[1]) for i in 2:n_samples)
+    @assert spread_dist > 1e-3 "distributed samples show no spread"
+    # n_samples=40 over Workers=2 divides evenly (per_worker=20), so index 1 and 21 are
+    # each the first sample drawn by a different worker's chain - distinct seeds (Seed +
+    # myid()) should make these different chains, not identical draws.
+    @assert samples_dist[1] != samples_dist[21] "first samples from worker 1 and worker 2 are identical - suspect identical RNG seeds across workers"
+    @info("[$(test_index)] Distributed path ($(nworkers()) workers): $(n_samples) samples all within bounding box of points; spread=$(round(spread_dist; digits=4)); per-worker chains are distinct.")
+
+    rmprocs(workers())
+    @info("[$(test_index)] PASSED: hit-and-run sampler correct in l-space and capacity-space, on both serial and distributed paths.")
+
+    return (spread_serial = spread_serial, spread_dist = spread_dist)
+end
