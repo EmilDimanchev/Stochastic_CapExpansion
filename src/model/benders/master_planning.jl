@@ -313,7 +313,7 @@ Runner
 
 # Multiple dispatch run_planning_model with and without SP outputs for cuts
 function run_planning_model(MP, settings, risk_aversion_weight)
-    output = {}
+    output = Dict()
     optimize!(MP)
     _log_solver_work!("MP", MP, settings)
     if termination_status(MP) != MOI.OPTIMAL
