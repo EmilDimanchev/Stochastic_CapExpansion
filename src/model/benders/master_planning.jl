@@ -313,16 +313,19 @@ Runner
 
 # Multiple dispatch run_planning_model with and without SP outputs for cuts
 function run_planning_model(MP, settings, risk_aversion_weight)
-
+    output = {}
     optimize!(MP)
     _log_solver_work!("MP", MP, settings)
     if termination_status(MP) != MOI.OPTIMAL
         @warn("Model did not solve to optimality. Status: ", termination_status(MP))
         unset_silent(MP)
         optimize!(MP)
+    else
+        # Write outputs
+        output = write_outputs(MP, settings, risk_aversion_weight = risk_aversion_weight)
     end
     if termination_status(MP) == MOI.INFEASIBLE_OR_UNBOUNDED || termination_status(MP) == MOI.INFEASIBLE
-        @warn("Model did not solve to optimality. Status: ", termination_status(MP))
+        @warn("Model did not solve to optimality. Status: ", termination_status(MP), "Conflicting constraints: ")
         compute_conflict!(MP)
         list_of_conflicting_constraints = ConstraintRef[];
         for (F, S) in list_of_constraint_types(MP)
@@ -336,8 +339,7 @@ function run_planning_model(MP, settings, risk_aversion_weight)
         error("Model infeasible. See conflicting constraints above.")
     end
 
-    # Write outputs
-    output = write_outputs(MP, settings, risk_aversion_weight = risk_aversion_weight)
+    
 
     return output
 

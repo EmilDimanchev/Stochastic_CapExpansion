@@ -207,7 +207,7 @@ function compute_budget_tighten_schedule(budget_start::Float64, budget_floor::Fl
     return [max(budget_floor, budget_start - step_size*k) for k in 0:n_steps]
 end
 
-function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, budget_offset::Float64 = 1.0, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100, budget_type = "Transformed", tighten_budget::Bool = false, budget_tighten_step_size::Float64 = 0.1, floor_offset::Float64 = 0.1)
+function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, budget_offset::Float64 = 1.0, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100, budget_type = "Transformed", tighten_budget::Bool = false, budget_tighten_step_size::Float64 = 0.09, floor_offset::Float64 = 0.01)
 
     #configure_parallel_workers!(settings)
 
@@ -353,26 +353,31 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                 end
                 run_name = tighten_budget ? "Random_$(iteration)_Budget_$(level)" : "Random_"*string(iteration)
                 map_bool = true
-                output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = map_bool, cut_archive = cut_archive)
-                log_result_memory!(run_name*" output", output_random)
-                avg_time_mp = mean(output_random["Time MP hist"])
-                gap = output_random["Gaps"]
-                push!(run_labels, run_name)
-                push!(gaps, gap)
-                results_destination = joinpath(results_folder, run_name)
-                df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
-                if mapping
-                    temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output_random, inputs, settings)
-                    push!(results_cap, temp_df_cap)
-                    push!(results_syscost, temp_df_syscost)
-                    push!(results_emissions, temp_df_emissions)
-                else
-                    push!(results_cap, df_cap)
-                    push!(results_syscost, df_syscost)
-                    push!(results_emissions, df_emissions)
-                end
+                try
+                    output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = map_bool, cut_archive = cut_archive)
+                    log_result_memory!(run_name*" output", output_random)
+                    avg_time_mp = mean(output_random["Time MP hist"])
+                    gap = output_random["Gaps"]
+                    push!(run_labels, run_name)
+                    push!(gaps, gap)
+                    results_destination = joinpath(results_folder, run_name)
+                    df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
+                    if mapping
+                        temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output_random, inputs, settings)
+                        push!(results_cap, temp_df_cap)
+                        push!(results_syscost, temp_df_syscost)
+                        push!(results_emissions, temp_df_emissions)
+                    else
+                        push!(results_cap, df_cap)
+                        push!(results_syscost, df_syscost)
+                        push!(results_emissions, df_emissions)
+                    end
 
-                release_heavy_payload!(output_random)
+                    release_heavy_payload!(output_random)
+                catch
+                    @warn("Budget too tight, terminating tightening")
+                    break
+                end
             end
             if settings["Cut deactivation strategy"] == "in mga"
                 if length(cuts_to_keep) < settings["Cuts retained"] && !mapping && avg_time_mp < 3*balanced_avg_time_mp
