@@ -835,7 +835,7 @@ function _run_planning_model_for_sample(sample::Vector{Float64})
     sample_caps = sample[1:length(MP[:x])]
     sample_line_caps = sample[length(MP[:x])+1:end]
     fix_capacities!(MP, sample_caps, sample_line_caps)
-    output = run_planning_model(MP, WORKER_DATA_CACHE[:settings])
+    output = run_planning_model(MP, WORKER_DATA_CACHE[:settings], WORKER_DATA_CACHE[:settings]["Risk aversion weight"])
     unfix_capacities!(MP)
     return output
 end
