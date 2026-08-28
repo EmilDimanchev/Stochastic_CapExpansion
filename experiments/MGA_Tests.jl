@@ -3,7 +3,7 @@ using Distributed
 @everywhere include("../src/Stochastic_CapExpansion.jl")
 
 @everywhere using .Stochastic_CapExpansion
-@everywhere using Revise, JuMP, Gurobi, HiGHS, Ipopt, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions, Surrogates
+@everywhere using Revise, JuMP, Gurobi, HiGHS, Ipopt, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions, Surrogates, DelaunayTriangulation
 using Clarabel
 
 #=========================
@@ -391,7 +391,8 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         # Map interior after exterior mapping
         if mapping
             all_caps = Matrix(vcat(results_cap...))
-            @time samples = sample_interior(all_caps, n_samples, settings)
+            all_costs = vcat(results_syscost)
+            @time samples = sample_interior_delauney(all_caps, all_costs, n_samples, settings)
             outputs_mp = run_distributed_sampling(samples)
             @time for (i, sample) in enumerate(samples)
                 outputs_sp = run_all_subproblems(SPs, inputs, settings, sample[1:R], sample[R+1:end]; minimal_payload=false)
@@ -497,6 +498,20 @@ end
 
 function sample_interior(points, num_samples, settings)
     return sample_interior_distributed(points, num_samples, settings)
+end
+
+# takes in points, cost_df, num samples and settings
+# transforms cost_df into a 2d array of inv+ev and inv+cvar columns, with each row being a point in order of solve
+# sends those to sample_interior_distributed which will return the evaluated mps
+
+function sample_interior_delauney(points, cost_df::DataFrame, num_samples, settings)
+    inv = cost_df[!,"Investment_Cost"]
+    cvar = cost_df[!,"CVaR_OpCost"]
+    ev = cost_df[!,"EV_OpCost"]
+
+    cost_points = Matrix([inv+ev inv+cvar])
+
+    return sample_interior_simplex(points, cost_points, num_samples, settings)
 end
 
 #=================
@@ -1210,4 +1225,74 @@ function test_hit_and_run_sampler(test_index = "hit_and_run")
     @info("[$(test_index)] PASSED: hit-and-run sampler correct in l-space and capacity-space, on both serial and distributed paths.")
 
     return (spread_serial = spread_serial, spread_dist = spread_dist)
+end
+
+function test_sample_interior_delaunay(test_index = "sample_interior_delaunay")
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    settings = load_settings(inputs_folder)
+
+    # capacity-space points (same shape/style as test_hit_and_run_sampler)
+    points = [1.0 0.0 0.0 0.0;
+              0.0 1.0 0.0 0.0;
+              0.0 0.0 1.0 0.0;
+              0.0 0.0 0.0 1.0;
+              0.5 0.5 0.0 0.0;
+              0.0 0.0 0.5 0.5]
+    # matching cost-space points (Investment_Cost+EV_OpCost, Investment_Cost+CVaR_OpCost), row i
+    # aligned with row i of `points` above - a convex pentagon plus one interior point so the
+    # triangulation has several simplices of clearly different areas to rank.
+    cost_points = [0.0 0.0;
+                   4.0 0.0;
+                   4.0 3.0;
+                   2.0 5.0;
+                   0.0 3.0;
+                   2.0 1.5]
+    lo = vec(minimum(points, dims=1))
+    hi = vec(maximum(points, dims=1))
+    n_samples = 20
+
+    @assert nprocs() == 1 "expected a clean single-process session - this sampler must never dispatch to workers"
+
+    # --- unit check on the triangulation+ranking helper in isolation ---
+    unit_square = [0.0 0.0; 1.0 0.0; 0.0 1.0; 1.0 1.0]
+    ranked, elapsed = _build_cost_hull_simplices(unit_square)
+    @assert length(ranked) == 2 "unit square should triangulate into exactly 2 simplices"
+    @assert all(abs(area - 0.5) < 1e-9 for (_, area) in ranked) "unit square simplices should each have area 0.5, got areas=$([a for (_,a) in ranked])"
+    @assert elapsed >= 0.0
+    @info("[$(test_index)] _build_cost_hull_simplices unit check: 2 simplices, areas=$([round(a; digits=4) for (_,a) in ranked]).")
+
+    # --- CycleSampling mode: single triangulation, cycles through top-fraction pool with fresh
+    # random Dirichlet draws each pass, so re-running with the same Seed must reproduce exactly ---
+    settings["Delaunay Repeat Mode"] = "CycleSampling"
+    settings["Seed"] = 4321
+    samples_cycle_a = sample_interior_distributed(points, cost_points, n_samples, settings)
+    samples_cycle_b = sample_interior_distributed(points, cost_points, n_samples, settings)
+    @assert length(samples_cycle_a) == n_samples
+    @assert all(samples_cycle_a[i] == samples_cycle_b[i] for i in 1:n_samples) "CycleSampling is not reproducible under a fixed Seed"
+    for x in samples_cycle_a
+        @assert all(x .>= lo .- 1e-6) && all(x .<= hi .+ 1e-6) "capacity-space sample outside bounding box of points"
+    end
+    spread_cycle = maximum(norm(samples_cycle_a[i] - samples_cycle_a[1]) for i in 2:n_samples)
+    @assert spread_cycle > 1e-6 "CycleSampling samples show no spread - suspect Dirichlet draws collapsed to the same point"
+    @info("[$(test_index)] CycleSampling: $(n_samples) samples within bounding box of points, reproducible under fixed Seed, spread=$(round(spread_cycle; digits=4)).")
+
+    # --- ProgressiveRefinement mode: fixed centroids only, so it is fully deterministic
+    # regardless of Seed/rng ---
+    settings["Delaunay Repeat Mode"] = "ProgressiveRefinement"
+    samples_prog_a = sample_interior_distributed(points, cost_points, n_samples, settings)
+    settings["Seed"] = 9999
+    samples_prog_b = sample_interior_distributed(points, cost_points, n_samples, settings)
+    @assert length(samples_prog_a) == n_samples
+    @assert all(samples_prog_a[i] == samples_prog_b[i] for i in 1:n_samples) "ProgressiveRefinement should be deterministic (centroids only) regardless of Seed"
+    for x in samples_prog_a
+        @assert all(x .>= lo .- 1e-6) && all(x .<= hi .+ 1e-6) "capacity-space sample outside bounding box of points"
+    end
+    spread_prog = maximum(norm(samples_prog_a[i] - samples_prog_a[1]) for i in 2:n_samples)
+    @assert spread_prog > 1e-6 "ProgressiveRefinement samples show no spread"
+    @info("[$(test_index)] ProgressiveRefinement: $(n_samples) samples within bounding box of points, deterministic across Seeds, spread=$(round(spread_prog; digits=4)).")
+
+    @assert nprocs() == 1 "sampler must not have spawned workers"
+    @info("[$(test_index)] PASSED: Delaunay interior sampling correct for both CycleSampling and ProgressiveRefinement modes.")
+
+    return (spread_cycle = spread_cycle, spread_prog = spread_prog)
 end

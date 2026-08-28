@@ -127,7 +127,7 @@ end
 # the walk correctly degenerates to a 1-D bounce rather than exploring a higher-dim body.
 
 
-# Hit and run as parameterizedr right now is very bad for our purposes.
+# Hit and run as parameterizedr right now is very bad for our purposes 
 function _hit_and_run_step(l::Vector{Float64}, rng::AbstractRNG; ub::Float64 = 0.95, max_direction_retries::Int = 50)
     rows = length(l)
     for _ in 1:max_direction_retries
@@ -199,6 +199,123 @@ function hit_and_run_sampler(points, num_samples, settings; rng::Union{Nothing, 
     l_samples = _run_hit_and_run_chain(rows, num_samples; rng = chain_rng, burn_in = burn_in, thin = thin)
     return [bounded_points' * l for l in l_samples]
 end
+
+#===
+
+Delauney Sampling Setup
+
+Description: Group points by delauney triangulation in inv + cvar and inv + ev cost space. Then choose interior points to those sets and evaluate. Repeat. Gets uniform distribution over cost surface.
+
+Operates in barycentric coordinates
+
+====#
+
+# Builds the Delaunay triangulation of `cost_points` (rows = points, 2 columns), then ranks the
+# resulting simplices by area (largest first) using the triangulation's own built-in statistics -
+# no hand-rolled area formula needed. Returns the ranked (simplex, area) pairs, where each simplex
+# is a Tuple of row indices into `cost_points`/`points` (never copied coordinates - the whole point
+# is that these indices double as identifiers into the corresponding capacity-space rows of
+# `points`), plus the wall-clock time spent solving the triangulation.
+function _build_cost_hull_simplices(cost_points)
+    local triangles, stats
+    elapsed = @elapsed begin
+        tri = triangulate(permutedims(cost_points))
+        stats = statistics(tri)
+        triangles = collect(each_solid_triangle(tri))
+    end
+    # DelaunayTriangulation.jl's randomized incremental construction draws from the global RNG,
+    # so the vertex order within a triangle tuple and the traversal order of `each_solid_triangle`
+    # are not reproducible across calls even when the resulting geometry is identical. Look up
+    # each triangle's area against `stats` using its original (as-returned) tuple - that's the
+    # only form guaranteed to match `stats`'s internal keys - but store/rank a canonicalized
+    # (ascending-sorted) tuple, with a deterministic tie-break on that canonical form, so the
+    # returned ranking - and hence which simplices/vertex order downstream sampling sees - is a
+    # pure function of the point set, independent of construction-order randomness.
+    scored = [(Tuple(sort(collect(t))), get_area(stats, t)) for t in triangles]
+    ranked = sort(scored, by = x -> (-x[2], x[1]))
+    @info "Delaunay triangulation solved in $(round(elapsed, digits=4))s ($(length(triangles)) simplices)"
+    return ranked, elapsed
+end
+
+# Top fraction (by area) of an already-ranked simplex list, at least one simplex.
+function _select_top_fraction_simplices(ranked_simplices, fraction)
+    n_selected = max(1, ceil(Int, fraction * length(ranked_simplices)))
+    return [simplex for (simplex, _) in ranked_simplices[1:n_selected]]
+end
+
+# Random barycentric weights, uniform over the simplex (Dirichlet(1,...,1)). Used by cycle sampling.
+_dirichlet_weights(k, rng) = rand(rng, Dirichlet(ones(k)))
+
+# Fixed barycentric weights for the geometric centroid. Used by progressive refinement.
+_centroid_weights(k) = fill(1.0 / k, k)
+
+# Applies one barycentric weight vector to the rows of `mat` (either `points` or `cost_points`)
+# named by `simplex`'s indices, producing a single interior point in whichever space `mat` is.
+_apply_barycentric(mat, simplex, w) = mat[collect(simplex), :]' * w
+
+# Mode (a): triangulate + rank once, select the top-fraction simplex pool once, then keep cycling
+# through that fixed pool drawing a fresh random Dirichlet interior point each pass (so repeated
+# passes over the same simplex give different points) until num_samples have been collected.
+function _delaunay_cycle_sample(points, cost_points, num_samples, fraction, rng)
+    ranked_simplices, _ = _build_cost_hull_simplices(cost_points)
+    pool = _select_top_fraction_simplices(ranked_simplices, fraction)
+
+    samples = Vector{Vector{Float64}}(undef, num_samples)
+    for idx in 1:num_samples
+        simplex = pool[mod1(idx, length(pool))]
+        w = _dirichlet_weights(length(simplex), rng)
+        samples[idx] = _apply_barycentric(points, simplex, w)
+    end
+    return samples
+end
+
+# Mode (b): each round, triangulate the current (initially original) point set, take the
+# top-fraction simplices, and add each one's *centroid* (not a random point) both to the sample
+# output and back into the working point set. Re-triangulating on the enlarged set next round
+# progressively refines the mesh. Repeats until num_samples have been collected.
+function _delaunay_progressive_sample(points, cost_points, num_samples, fraction)
+    working_points = [points[i, :] for i in 1:size(points, 1)]
+    working_cost_points = [cost_points[i, :] for i in 1:size(cost_points, 1)]
+    samples = Vector{Vector{Float64}}()
+
+    while length(samples) < num_samples
+        wp_matrix = permutedims(reduce(hcat, working_points))
+        cp_matrix = permutedims(reduce(hcat, working_cost_points))
+        ranked_simplices, _ = _build_cost_hull_simplices(cp_matrix)
+        pool = _select_top_fraction_simplices(ranked_simplices, fraction)
+
+        for simplex in pool
+            w = _centroid_weights(length(simplex))
+            capacity_sample = _apply_barycentric(wp_matrix, simplex, w)
+            cost_sample = _apply_barycentric(cp_matrix, simplex, w)
+
+            push!(samples, capacity_sample)
+            length(samples) == num_samples && break
+
+            push!(working_points, capacity_sample)
+            push!(working_cost_points, cost_sample)
+        end
+    end
+    return samples
+end
+
+# Delauney version. Runs entirely on the calling process - no worker
+# dispatch - since a 2D triangulation solve plus a cheap barycentric-sampling loop isn't worth
+# the @fetchfrom/remotecall_wait machinery used by the CVT/Random/HitAndRun methods.
+function sample_interior_simplex(points, cost_points, num_samples, settings)
+    fraction = get(settings, "Delaunay Simplex Fraction", 0.25)
+    mode = get(settings, "Delaunay Repeat Mode", "CycleSampling")
+    rng = MersenneTwister(get(settings, "Seed", 1234))
+
+    if mode == "CycleSampling"
+        return _delaunay_cycle_sample(points, cost_points, num_samples, fraction, rng)
+    elseif mode == "ProgressiveRefinement"
+        return _delaunay_progressive_sample(points, cost_points, num_samples, fraction)
+    else
+        error("Unsupported Delaunay repeat mode: $mode. Supported modes are: CycleSampling, ProgressiveRefinement")
+    end
+end
+
 
 function sample_interior_distributed(points, num_samples, settings)
     samples = Vector{Vector{Float64}}(undef, num_samples)
