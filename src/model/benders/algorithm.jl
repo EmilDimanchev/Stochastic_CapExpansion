@@ -852,7 +852,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             end
             break
         else
-            if mapping #&& maximum(gaps) <= settings["Mapping Gap Threshold"]
+            if mapping && maximum(gaps) <= settings["Mapping Gap Threshold"]
                 all_outputs_sp[j] = outputs_sp
                 cvars[j] = cvar_estimate*settings["Scaling factor cost"]
                 evs[j] = expected_value*settings["Scaling factor cost"]
