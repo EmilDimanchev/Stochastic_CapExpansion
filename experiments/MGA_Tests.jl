@@ -207,7 +207,7 @@ function compute_budget_tighten_schedule(budget_start::Float64, budget_floor::Fl
     return [max(budget_floor, budget_start - step_size*k) for k in 0:n_steps]
 end
 
-function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, budget_offset::Float64 = 1.0, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100, budget_type = "Transformed", tighten_budget::Bool = false, budget_tighten_step_size::Float64 = 0.09, floor_offset::Float64 = 0.01)
+function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, budget_offset::Float64 = 1.0, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100, budget_type = "Transformed", tighten_budget::Bool = false, budget_tighten_step_size::Float64 = 0.05, floor_offset::Float64 = 0.01)
 
     #configure_parallel_workers!(settings)
 
@@ -397,7 +397,6 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                 outputs_sp = run_all_subproblems(SPs, inputs, settings, sample[1:R], sample[R+1:end]; minimal_payload=false)
                 ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
                 @info("Sample $i: Investment cost = $(outputs_mp[i]["Inv_cost"]), Expected value = $ev, CVaR = $(cvar)")
-                @info("Sample $i: Budget Percentage for CVaR: $(((cvar)/(budgets["CVaR"]*settings["Scaling factor cost"]))*100)%, Budget Percentage for Expected Value: $((((ev+outputs_mp[i]["Inv_cost"])/(budgets["Expected"]*settings["Scaling factor cost"]))*100)-100)%")
                 temp_df_cap, temp_df_syscost, temp_df_emissions = make_results_mapping_dfs(sample[1:R], sample[R+1:end], outputs_sp, outputs_mp[i]["Inv_cost"], outputs_mp[i]["Inv cost by zone"], cvar, ev, inputs, settings)
                 push!(results_cap, temp_df_cap)
                 push!(results_syscost, temp_df_syscost)

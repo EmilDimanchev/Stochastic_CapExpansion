@@ -125,6 +125,9 @@ end
 # Directions are drawn from the sum-zero hyperplane so every step stays on sum(l) = 1;
 # for rows == 2 this polytope is just the segment between (ub, 1-ub) and (1-ub, ub), so
 # the walk correctly degenerates to a 1-D bounce rather than exploring a higher-dim body.
+
+
+# Hit and run as parameterizedr right now is very bad for our purposes.
 function _hit_and_run_step(l::Vector{Float64}, rng::AbstractRNG; ub::Float64 = 0.95, max_direction_retries::Int = 50)
     rows = length(l)
     for _ in 1:max_direction_retries
