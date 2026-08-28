@@ -63,3 +63,5 @@ Mapping: false
 Mapping Gap Threshold: 0.2
 Sample Method: "CVT"
 Interior Samples: 2
+"Delaunay Simplex Fraction": 0.1
+"Delaunay Repeat Mode": "ProgressiveRefinement" # options "CycleSampling", "ProgressiveRefinement"
