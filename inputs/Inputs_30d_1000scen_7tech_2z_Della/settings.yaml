@@ -59,7 +59,7 @@ Cut deactivation threshold: 8
 MGA cut deactivation threshold: 8
 Cut deactivation strategy: "in benders" # options are "in benders" and "in mga"
 
-Mapping: false
-Mapping Gap Threshold: 0.2
-Sample Method: "CVT"
-Interior Samples: 2
+Mapping: true
+Mapping Gap Threshold: 0.005
+Sample Method: "Random" 
+Interior Samples: 5000
