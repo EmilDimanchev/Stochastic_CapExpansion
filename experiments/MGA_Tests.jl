@@ -391,7 +391,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         # Map interior after exterior mapping
         if mapping
             all_caps = Matrix(vcat(results_cap...))
-            all_costs = vcat(results_syscost)
+            all_costs = vcat(results_syscost...)
             @time samples = sample_interior_delauney(all_caps, all_costs, n_samples, settings)
             outputs_mp = run_distributed_sampling(samples)
             @time for (i, sample) in enumerate(samples)
