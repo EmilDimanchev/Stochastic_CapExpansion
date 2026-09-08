@@ -429,7 +429,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
             break
         else
-            if mapping && gap <= settings["Mapping Gap Threshold"]
+            if mapping && gap <= settings["Mapping Gap Threshold"] && risk_aversion_weight != 0.0
                 all_outputs_sp[j] = outputs_sp
                 cvars[j] = cvar_estimate*settings["Scaling factor cost"]
                 evs[j] = expected_value*settings["Scaling factor cost"]

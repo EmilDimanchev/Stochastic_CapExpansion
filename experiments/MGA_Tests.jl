@@ -307,6 +307,9 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         if tighten_budget && budget_type != "Transformed"
             error("tighten_budget=true is only supported for budget_type == \"Transformed\" (got \"$budget_type\").")
         end
+        if mapping && budget_type != "Transformed"
+            error("mapping=true is only supported for budget_type == \"Transformed\" (got \"$budget_type\") - sample_interior_delauney filters against the Transformed budget.")
+        end
         if budget_type == "Transformed"
             transform_cvar = 1/(extreme_values[1.0]["CVaR"] - extreme_values[0.0]["CVaR"])
             transform_sys = 1/(extreme_values[0.0]["System Expected"] - extreme_values[1.0]["System Expected"])
@@ -392,7 +395,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         if mapping
             all_caps = Matrix(vcat(results_cap...))
             all_costs = vcat(results_syscost...)
-            @time samples = sample_interior_delauney(all_caps, all_costs, n_samples, settings)
+            @time samples = sample_interior_delauney(all_caps, all_costs, n_samples, settings, budget_val_transform, transform_sys, transform_cvar)
             outputs_mp = run_distributed_sampling(samples)
             @time for (i, sample) in enumerate(samples)
                 outputs_sp = run_all_subproblems(SPs, inputs, settings, sample[1:R], sample[R+1:end]; minimal_payload=false)
@@ -504,11 +507,26 @@ end
 # transforms cost_df into a 2d array of inv+ev and inv+cvar columns, with each row being a point in order of solve
 # sends those to sample_interior_distributed which will return the evaluated mps
 
-function sample_interior_delauney(points, cost_df::DataFrame, num_samples, settings)
+function sample_interior_delauney(points, cost_df::DataFrame, num_samples, settings, budget::Float64, transform_sys::Float64, transform_cvar::Float64)
     inv = cost_df[!,"Investment_Cost"]
     cvar = cost_df[!,"CVaR_OpCost"]
     ev = cost_df[!,"EV_OpCost"]
 
+    # Drop solutions the Benders mapping recording pass let through despite violating the
+    # Transformed budget constraint (it only checks the Benders convergence gap, not the
+    # budget itself) - see algorithm.jl:432. Filtered against the loosest (untightened)
+    # budget since results from every tightening level are combined here.
+    transformed_cost = transform_sys .* (inv .+ ev) .+ transform_cvar .* (inv .+ cvar)
+    cutoff = budget + settings["Mapping Gap Threshold"]
+    keep = transformed_cost .<= cutoff
+
+    n_dropped = length(keep) - sum(keep)
+    if n_dropped > 0
+        @info("Dropping $(n_dropped) of $(length(keep)) mapped solutions with transformed cost above budget + Mapping Gap Threshold ($(cutoff)) before Delaunay sampling.")
+    end
+
+    points = points[keep, :]
+    inv, cvar, ev = inv[keep], cvar[keep], ev[keep]
     cost_points = Matrix([inv+ev inv+cvar])
 
     return sample_interior_simplex(points, cost_points, num_samples, settings)
