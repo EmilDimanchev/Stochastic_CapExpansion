@@ -258,7 +258,10 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     rhs_values = Dict{String, Float64}()
     cut_refs = Dict{String, ConstraintRef}() # name => ConstraintRef cache; avoids constraint_by_name in the hot loop below
 
-    if mapping
+    if mapping 
+        if risk_aversion_weight == 0.0
+            mapping = false
+        end
         @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
         minimal_payload = false
     end
@@ -429,7 +432,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
             break
         else
-            if mapping && gap <= settings["Mapping Gap Threshold"] && risk_aversion_weight != 0.0
+            if mapping && gap <= settings["Mapping Gap Threshold"]
                 all_outputs_sp[j] = outputs_sp
                 cvars[j] = cvar_estimate*settings["Scaling factor cost"]
                 evs[j] = expected_value*settings["Scaling factor cost"]

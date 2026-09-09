@@ -254,7 +254,8 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         # Write results
         results_destination = joinpath(results_folder, case_name)
         df_cap, df_syscost, df_emissions = write_results_benders(output, inputs, settings, results_destination)
-        if mapping
+        if mapping && risk >= 0.00001 # > 0 with tolerance for machine precision
+        # do not map intermediate risk = 0 solutions because they are unbounded in EV, which can distort the outputs
             temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output, inputs, settings)
             push!(results_cap, temp_df_cap)
             push!(results_syscost, temp_df_syscost)
@@ -702,9 +703,9 @@ function risk_pareto_test_laptop_5(test_index)
     vector_set = nothing
     summary_name = "pareto"
     Eval_SPs = nothing
-    mapping=false
+    mapping=true
     n_samples = settings["Interior Samples"]
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder , summary_folder; budget_multiplier = budget_multiplier, vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping=false, n_samples = settings["Interior Samples"], budget_type = "Transformed")
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder , summary_folder; budget_multiplier = budget_multiplier, vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping=mapping, n_samples = settings["Interior Samples"], budget_type = "Transformed")
 
 end
 
