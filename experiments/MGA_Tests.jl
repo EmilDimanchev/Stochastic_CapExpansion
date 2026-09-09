@@ -536,8 +536,6 @@ function sample_interior_delauney(points, cost_df::DataFrame, num_samples, setti
     points = points[keep, :]
     inv, cvar, ev = inv[keep], cvar[keep], ev[keep]
     cost_points = Matrix([inv+ev inv+cvar])
-    print(points)
-    print(cost_points)
 
     return sample_interior_simplex(points, cost_points, num_samples, settings)
 end
