@@ -422,8 +422,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             # Evaluate MP sol on Eval SPs if needed
             if Eval_SPs !== nothing
                 @info("Evaluating current MP solution on evaluation SPs to track performance on these scenarios.")
-                set_capacity_parameters!(Eval_SPs, output_mp["Capacity"])
-                outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings, output_mp["Capacity"]; minimal_payload=false)
+                set_capacity_parameters!(Eval_SPs, output_mp["Capacity"], output_mp["Line expansion"])
+                outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings, output_mp["Capacity"], output_mp["Line expansion"]; minimal_payload=false)
                 results["SPs_eval"] = outputs_sp_eval
                 results["CVaR_Eval"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)
                 results["Expected Value Eval"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)

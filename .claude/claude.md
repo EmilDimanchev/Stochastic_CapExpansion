@@ -63,3 +63,15 @@ Recurring mistakes (Claude- or user-side) worth avoiding next time. Add to this 
   *correctness* checks (objective/gap/capacity-mix should match exactly across such changes) but not
   for demonstrating a performance improvement - that needs a larger-scale input set, which doesn't
   exist in this repo yet.
+- **`write_results_benders` (`src/results/Write_results.jl`) can silently drop in-sample results in
+  favor of eval-SP results.** When a Benders run supplies `Eval_SPs` (e.g. `run_base_mga`'s
+  single-scenario cost-optimal/MGA solves evaluated against the full stochastic scenario set), the
+  raw per-scenario time-series writer used to pick *one* `scenario_source` for `generation.csv`/
+  `price.csv`/`nse.csv` - `eval_SPs` if present, else the in-sample `SPs_output` - so the in-sample
+  single-scenario time series was never written whenever eval SPs were supplied (true for every
+  `run_base_mga` call under the laptop config, since `Write all scenarios flag: true` there). Fixed
+  by factoring out `write_raw_scenario_results` and calling it once for the in-sample SPs and once
+  (suffixed `_eval`) for `eval_SPs` when present, so both get written to separate files instead of
+  one overwriting/shadowing the other. When touching this pipeline, check whether any other
+  "pick eval or in-sample" branching (e.g. `make_results_dfs`'s `_Eval`-suffixed columns are the
+  correct pattern to follow) should also keep both instead of choosing one.

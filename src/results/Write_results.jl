@@ -355,17 +355,6 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
     K = size(P_k)[1] # number of weather scenarios
     Z = inputs["Number of zones"]
 
-    if eval_SPs != []
-        P_s_eval = inputs["Full Demand scenario probabilities"]
-        P_f_eval = inputs["Full Gas price scenario probabilities"]
-        P_k_eval = inputs["Full Weather scenario probabilities"]
-        S_use, F_use, K_use = size(P_s_eval)[1], size(P_f_eval)[1], size(P_k_eval)[1]
-        scenario_source = eval_SPs
-    else
-        S_use, F_use, K_use = S, F, K
-        scenario_source = SPs_output
-    end
-
     if Sys.isunix()
         sep = "/"
     elseif Sys.iswindows()
@@ -385,30 +374,44 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
     CSV.write(joinpath(results_folder, "Convergence.csv"), DataFrame(data, names))
 
     if settings["Write all scenarios flag"]
-        df_gen = DataFrame()
-        insertcols!(df_gen, 1, :Time => time_index)
-        df_price = DataFrame()
-        insertcols!(df_price, 1, :Time => time_index)
-        df_nse = DataFrame()
-        insertcols!(df_nse, 1, :Time => time_index)
+        write_raw_scenario_results(results_folder, sep, "", SPs_output, S, F, K, Z, time_index, resources)
 
-        for s in 1:S_use, f in 1:F_use, k in 1:K_use
-            col_names = [string(i,"_D",s,"F",f,"W",k) for i in resources]
-            df_gen = hcat(df_gen, DataFrame(transpose(scenario_source[s,f,k]["Generation"]), col_names))
-            for z in 1:Z
-                col_name = string("D",s,"F",f,"W",k,"Z",z)
-                insertcols!(df_price, col_name => scenario_source[s,f,k]["Power price"][:,z])
-                insertcols!(df_nse, col_name => scenario_source[s,f,k]["Load shedding"][:,z])
-            end
+        # Written to separate, suffixed files rather than reusing generation.csv/price.csv/nse.csv
+        # so the out-of-sample eval-SP results never overwrite the in-sample single/base-scenario ones.
+        if eval_SPs != []
+            P_s_eval = inputs["Full Demand scenario probabilities"]
+            P_f_eval = inputs["Full Gas price scenario probabilities"]
+            P_k_eval = inputs["Full Weather scenario probabilities"]
+            S_eval, F_eval, K_eval = size(P_s_eval)[1], size(P_f_eval)[1], size(P_k_eval)[1]
+            write_raw_scenario_results(results_folder, sep, "_eval", eval_SPs, S_eval, F_eval, K_eval, Z, time_index, resources)
         end
-
-        CSV.write(string(results_folder,sep,"generation.csv"), df_gen)
-        CSV.write(string(results_folder,sep,"price.csv"), df_price)
-        CSV.write(string(results_folder,sep,"nse.csv"), df_nse)
     end
 
     return df_cap, df_syscost, df_emissions
 
+end
+
+function write_raw_scenario_results(results_folder::String, sep::String, suffix::String, scenario_source, S::Int, F::Int, K::Int, Z::Int, time_index, resources)
+    df_gen = DataFrame()
+    insertcols!(df_gen, 1, :Time => time_index)
+    df_price = DataFrame()
+    insertcols!(df_price, 1, :Time => time_index)
+    df_nse = DataFrame()
+    insertcols!(df_nse, 1, :Time => time_index)
+
+    for s in 1:S, f in 1:F, k in 1:K
+        col_names = [string(i,"_D",s,"F",f,"W",k) for i in resources]
+        df_gen = hcat(df_gen, DataFrame(transpose(scenario_source[s,f,k]["Generation"]), col_names))
+        for z in 1:Z
+            col_name = string("D",s,"F",f,"W",k,"Z",z)
+            insertcols!(df_price, col_name => scenario_source[s,f,k]["Power price"][:,z])
+            insertcols!(df_nse, col_name => scenario_source[s,f,k]["Load shedding"][:,z])
+        end
+    end
+
+    CSV.write(string(results_folder,sep,"generation",suffix,".csv"), df_gen)
+    CSV.write(string(results_folder,sep,"price",suffix,".csv"), df_price)
+    CSV.write(string(results_folder,sep,"nse",suffix,".csv"), df_nse)
 end
 
 function remove_undefs(x)

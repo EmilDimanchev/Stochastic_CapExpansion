@@ -572,7 +572,7 @@ function build_all_subproblems(inputs, settings)
     F = inputs["Number of gas price scenarios"]
     K = inputs["Number of weather scenarios"]
     SPs = Array{Model,3}(undef, S, F, K)
-    if settings["Parallel flag"] && nworkers() > 0
+    if settings["Parallel flag"] && nworkers() > 0 && (S > 1 || F > 1 || K > 1)
         @info "Building subproblems in parallel using $(nworkers()) distributed workers..."
         pids = workers()
         empty!(MASTER_SCENARIO_TO_WORKER)
@@ -598,8 +598,10 @@ function build_all_subproblems(inputs, settings)
     else
         if settings["Parallel flag"] && nworkers() == 0
             @warn("Parallel flag is true but no distributed workers are available. Falling back to serial subproblem build.")
+        elseif (S == 1 && F == 1 && K == 1)
+            @info("One Scenario selected, building on main process")
         end
-         for s in 1:S, f in 1:F, k in 1:K
+        for s in 1:S, f in 1:F, k in 1:K
             SPs[s,f,k] = build_subproblem(inputs, settings, [s,f,k])
         end
     end
@@ -856,9 +858,9 @@ function run_subproblem(ED::Model, inputs, settings; minimal_payload::Bool=false
 end
 
 function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Vector{Float64}, capacity_line::Vector{Float64}; minimal_payload::Bool=get(settings, "Minimal worker payload flag", true))
-
+    
     sp_results = Array{Dict{String, Any},3}(undef, size(SPs)...)
-    if settings["Parallel flag"] && nworkers() > 0
+    if settings["Parallel flag"] && nworkers() > 0 && size(SPs) != (1, 1, 1)
         pids = workers()
         scenario_keys = [(s, f, k) for s in 1:size(SPs,1), f in 1:size(SPs,2), k in 1:size(SPs,3)]
 
@@ -883,6 +885,8 @@ function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Ve
     else
         if settings["Parallel flag"] && nworkers() == 0
             @warn("Parallel flag is true but no distributed workers are available. Falling back to serial subproblem solves.")
+        elseif size(SPs) == (1, 1, 1)
+            @info("One scenario loaded, running on main process")
         end
         set_capacity_parameters!(SPs, capacity, capacity_line)
         for s in 1:size(SPs,1), f in 1:size(SPs,2), k in 1:size(SPs,3)

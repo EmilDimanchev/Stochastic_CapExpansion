@@ -448,12 +448,12 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
     push!(results_cap, df_cap)
     push!(results_syscost, df_syscost)
     push!(results_emissions, df_emissions)
-    lc_value = df_syscost[1, :SingleScenario_SystemCost]
+    lc_value = df_syscost[1, :EV_SystemCost]
     if budget_multiplier <= 10
         budget = (lc_value) * (budget_multiplier)
     end
     
-    vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x]), settings["Vector Type"], settings)
+    vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Vector Type"], settings)
     @info("Using budget of ", budget, " for Base MGA test")
     percent_over_lc = round((budget - lc_value)/lc_value * 100, digits=2)
     @info("This budget is ", percent_over_lc, "% over the cost optimal solution")
@@ -839,7 +839,7 @@ function simple_comp(test_index)
 
     i = 0
     results_path = joinpath(results_folder, "Results_Base_MGA", "Scenario_"*string(i))
-    _ = run_base_mga(SPs, new_inputs, settings, results_path, summary_folder; budget_multiplier=1.10, vector_set=vectors, scenario=i)
+    _ = run_base_mga(SPs, new_inputs, settings, results_path, summary_folder; budget_multiplier=1.035, vector_set=nothing, scenario=i)
 
 end
 
