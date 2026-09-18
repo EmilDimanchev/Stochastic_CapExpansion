@@ -762,7 +762,7 @@ function risk_pareto_tighten_test_della(test_index)
 
 end
 
-function risk_pareto_test_della(test_index)
+function risk_pareto_test_no_tighten_della(test_index)
 
     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
