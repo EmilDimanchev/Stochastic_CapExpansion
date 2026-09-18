@@ -762,6 +762,29 @@ function risk_pareto_tighten_test_della(test_index)
 
 end
 
+function risk_pareto_test_della(test_index)
+
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+
+    configure_parallel_workers!(settings)
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+    results_folder = joinpath(results_folder, "Pareto5")
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder; vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping = false, n_samples = settings["Interior Samples"], budget_type = "Transformed", tighten_budget = false)
+
+end
+
 # Minimal diagnostic run for comparing solver warm-start behavior before/after changes to
 # Method/Crossover settings (see src/model/benders/master_planning.jl,
 # subproblems_economic_dispatch.jl). Skips the full MGA/budget-tightening wrapper - one
@@ -800,7 +823,7 @@ end
 
 
 function simple_comp(test_index)
-    inputs_folder = joinpath("inputs","Inputs_30d_1000scen_7tech_2z_Della")
+    inputs_folder = joinpath("inputs","Inputs_30d_1000scen_7tech_2z")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -839,7 +862,7 @@ function simple_comp(test_index)
 
     i = 0
     results_path = joinpath(results_folder, "Results_Base_MGA", "Scenario_"*string(i))
-    _ = run_base_mga(SPs, new_inputs, settings, results_path, summary_folder; budget_multiplier=1.035, vector_set=nothing, scenario=i)
+    _ = run_base_mga(SPs, new_inputs, settings, results_path, summary_folder; budget_multiplier=1.20, vector_set=nothing, scenario=i)
 
 end
 
