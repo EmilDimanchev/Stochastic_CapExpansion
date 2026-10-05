@@ -58,140 +58,13 @@ end
 
 
 
-#============================
+#===============================
 
-
-Main MGA functions for running stochastic exploration with Benders and MGA, including base runs and iterative exploration with budget constraints, cut management, and result logging
-
-
-==============================#
-
-function run_stochastic_exploration_separate_budgets(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100)
-
-    #configure_parallel_workers!(settings)
-
-    # Result containers
-    results_cap = []
-    results_syscost = []
-    results_emissions = []
-    run_labels = []
-    gaps = []
-    cuts_to_keep = []
-
-    # Model Settings
-    iterations = settings["Iterations"]
-    risk_aversion_weight = settings["Risk aversion weight"] ### Currently set consistently across runs and ahead of time
-    VaR_percent = settings["Value-at-Risk percent"] ### Currently set consistently across runs and ahead of time
-    # Create and set expected value model
-    settings["Risk aversion flag"] = true
-
-    P_s = inputs["Demand scenario probabilities"]
-    P_f = inputs["Gas price scenario probabilities"]
-    P_k = inputs["Weather scenario probabilities"]
-    R = length(inputs["Resources"])
-    
-
-    MP = build_planning_model(inputs, settings)
-
-    # Base Runs
-    set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk_aversion_weight)
-    output_cvar = benders_algorithm(inputs, settings, MP, SPs, "System_Weighted_CVaR"; Eval_SPs = Eval_SPs, mapping = mapping)
-    log_result_memory!("System_Weighted_CVaR output", output_cvar)
-    gap_cvar = output_cvar["Gaps"]
-    push!(run_labels, "System_Weighted_CVaR")
-    push!(gaps, gap_cvar)
-    avg_time_mp_base = mean(output_cvar["Time MP hist"])
-     # Write results
-    results_destination = joinpath(results_folder,"System_Weighted_CVaR")
-    df_cap, df_syscost, df_emissions = write_results_benders(output_cvar, inputs, settings, results_destination)
-    if mapping
-        temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output_cvar, inputs, settings)
-        push!(results_cap, temp_df_cap)
-        push!(results_syscost, temp_df_syscost)
-        push!(results_emissions, temp_df_emissions)
-    else 
-        push!(results_cap, df_cap)
-        push!(results_syscost, df_syscost)
-        push!(results_emissions, df_emissions)
-    end
-    
-    release_heavy_payload!(output_cvar)
-    
-    @info("System_Weighted_CVaR solution has investment cost of ", output_cvar["MP"]["Inv_cost"])
-    @info("Expected value system cost of " * "System_Weighted_CVaR" * " solution: $(output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])")
-    @info("Risk adjusted system cost of " * "System_Weighted_CVaR" * " solution: $((1-risk_aversion_weight)*output_cvar["CVaR"] + risk_aversion_weight*output_cvar["Expected Value"]+ output_cvar["MP"]["Inv_cost"])")
+Helpers for main pareto + exploration run
 
 
 
-    if settings["Capacity Exploration"]
-        budgets = Dict()
-        # Set budgets? ------- budget set = set with budgets same percent greater than least cost solution for each metric
-        budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["CVaR"])/settings["Scaling factor cost"]), "CVaR", budgets)
-        budgets = add_budget_constraint_bendersMP(MP, ((output_cvar["Expected Value"] + output_cvar["MP"]["Inv_cost"])/settings["Scaling factor cost"])*(budget_multiplier), "System_Expected", budgets)
-        cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
-        cuts_to_keep = copy(cuts)
-        rhs_values = output_cvar["RHS Values"]
-        removed_cuts = output_cvar["Removed cuts"]
-        if mapping
-            cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output_cvar["first_write"] + 10, cuts_to_keep)
-        end
-        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Vector Type"], settings)
-        #@info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
-        for iteration in 1:iterations
-            set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
-            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
-            # other option - reactivate all cuts then let alg deactivate those that are not useful
-            #reactivate_cuts(MP, removed_cuts, rhs_values)
-
-            output_random = mga_benders(inputs, settings, MP, SPs, budgets, "Random_"*string(iteration); Eval_SPs = Eval_SPs, mapping = mapping)
-            log_result_memory!("Random_"*string(iteration)*" output", output_random)
-            avg_time_mp = mean(output_random["Time MP hist"])
-            gap = output_random["Gaps"]
-            push!(run_labels, "Random_"*string(iteration))
-            push!(gaps, gap)
-            results_destination = joinpath(results_folder,"Random_"*string(iteration))
-            df_cap, df_syscost, df_emissions = write_results_benders(output_random, inputs, settings, results_destination; budgets = budgets)
-            if mapping
-                temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(output_random, inputs, settings)
-                push!(results_cap, temp_df_cap)
-                push!(results_syscost, temp_df_syscost)
-                push!(results_emissions, temp_df_emissions)
-            else
-                push!(results_cap, df_cap)
-                push!(results_syscost, df_syscost)
-                push!(results_emissions, df_emissions)
-            end
-            
-            release_heavy_payload!(output_random)
-            rhs_values = output_random["RHS Values"]
-            removed_cuts = output_random["Removed cuts"]
-            
-            if length(cuts_to_keep) < settings["Cuts retained"] && !mapping && avg_time_mp < 3*avg_time_mp_base
-                push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
-            end
-        end
-        #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
-
-        # Map interior after exterior mapping
-        if mapping
-            all_caps = Matrix(vcat(results_cap...))
-            @time samples = sample_interior(all_caps, n_samples, settings)
-            outputs_mp = run_distributed_sampling(samples)
-            @time for (i, sample) in enumerate(samples)
-                outputs_sp = run_all_subproblems(SPs, inputs, settings, sample[1:R], sample[R+1:end]; minimal_payload=false)
-                ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
-                @info("Sample $i: Investment cost = $(outputs_mp[i]["Inv_cost"]), Expected value = $ev, CVaR = $(cvar)")
-                @info("Sample $i: Budget Percentage for CVaR: $(((cvar)/(budgets["CVaR"]*settings["Scaling factor cost"]))*100)%, Budget Percentage for Expected Value: $((((ev+outputs_mp[i]["Inv_cost"])/(budgets["System_Expected"]*settings["Scaling factor cost"]))*100)-100)%")
-                temp_df_cap, temp_df_syscost, temp_df_emissions = make_results_mapping_dfs(sample[1:R], sample[R+1:end], outputs_sp, outputs_mp[i]["Inv_cost"], outputs_mp[i]["Inv cost by zone"], cvar, ev, inputs, settings)
-                push!(results_cap, temp_df_cap)
-                push!(results_syscost, temp_df_syscost)
-                push!(results_emissions, temp_df_emissions)
-            end
-        end
-        write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
-    end
-    return vectors
-end
+================================#
 
 
 function compute_budget_floor(extreme_values::Dict, transform_cvar::Float64, transform_sys::Float64, floor_offset::Float64)
@@ -207,7 +80,198 @@ function compute_budget_tighten_schedule(budget_start::Float64, budget_floor::Fl
     return [max(budget_floor, budget_start - step_size*k) for k in 0:n_steps]
 end
 
-function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, budget_offset::Float64 = 1.0, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100, budget_type = "Transformed", tighten_budget::Bool = false, budget_tighten_step_size::Float64 = 0.05, floor_offset::Float64 = 0.01)
+
+#-------------------------------------------------------------------------------------------
+# Helper 1: piecewise-linear interpolation (Base Julia has no built-in interp function).
+# Given sorted breakpoints xs with values ys, return the linearly interpolated y at x.
+# Values of x outside [xs[1], xs[end]] are clamped to the end values.
+#-------------------------------------------------------------------------------------------
+function linear_interp(xs::Vector{Float64}, ys::Vector{Float64}, x::Real)
+    # Clamp to the ends of the curve
+    if x <= xs[1]
+        return ys[1]
+    elseif x >= xs[end]
+        return ys[end]
+    end
+
+    # Index i of the last breakpoint with xs[i] ≤ x, so x lies in [xs[i], xs[i+1])
+    i = searchsortedlast(xs, x)
+
+    # Guard against a zero-length segment (two breakpoints at the same x)
+    if xs[i+1] == xs[i]
+        return ys[i]
+    end
+
+    # Fraction of the way from xs[i] to xs[i+1], then blend the two y values
+    t = (x - xs[i]) / (xs[i+1] - xs[i])
+    return ys[i] + t * (ys[i+1] - ys[i])
+end
+
+
+#-------------------------------------------------------------------------------------------
+# Helper 2: lens end. Walk the polyline vertices in the given order (from one anchor inward)
+# and return the arc position of the first point where T ≤ B. Within the crossing segment
+# T is linear, so the exact crossing point is found by linear interpolation.
+# Returns `nothing` if no point on the polyline satisfies T ≤ B.
+#-------------------------------------------------------------------------------------------
+function lens_end(B::Real, order::Vector{Int}, Tv::Vector{Float64}, arc::Vector{Float64})
+    for k in 1:length(order)-1
+        a = order[k]      # current vertex
+        b = order[k+1]    # next vertex inward
+
+        # The current vertex already satisfies the budget: the lens starts here
+        if Tv[a] <= B
+            return arc[a]
+        end
+
+        # The budget line is crossed inside segment a -> b: solve for the crossing point
+        if Tv[b] <= B
+            t = (Tv[a] - B) / (Tv[a] - Tv[b])
+            return arc[a] + t * (arc[b] - arc[a])
+        end
+    end
+
+    # Only the final vertex is left to check
+    if Tv[order[end]] <= B
+        return arc[order[end]]
+    end
+    return nothing
+end
+
+
+#-------------------------------------------------------------------------------------------
+# Helper 3: cap values for one wing. Places n evenly spaced caps between the lens end
+# (tight_end) and the central edge (edge), excluding the lens end itself. n is limited by
+# n_max and by the minimum spacing min_gap_frac * span. Caps are returned loose -> tight,
+# which is the order to solve them in.
+#-------------------------------------------------------------------------------------------
+function wing_caps(tight_end::Real, edge::Real, span::Real, n_max::Int, min_gap_frac::Real)
+    width = edge - tight_end
+
+    # How many caps fit while keeping adjacent caps at least min_gap_frac * span apart
+    n = min(n_max, Int(floor(width / (min_gap_frac * span))))
+    if n <= 0
+        return Float64[]
+    end
+
+    # i = n gives the loosest cap (at the central edge); i = 1 the tightest
+    caps = Float64[]
+    for i in n:-1:1
+        push!(caps, tight_end + width * i / n)
+    end
+    return caps
+end
+
+
+#-------------------------------------------------------------------------------------------
+# Main function.
+#
+# Inputs
+# - extreme_values: Dict(risk_weight => Dict("System Expected" => …, "CVaR" => …)) for ALL
+#   risk-weight solves. Intermediate weights are required to locate the lens ends and the
+#   tangency point. The key convention does not matter: the EV-optimal solve is the one with
+#   the lowest System Expected.
+# - budgets: transformed budget levels, in the same units as k_ev*SystemExpected + k_cvar*CVaR.
+# - k_ev, k_cvar: weights of the transformed budget.
+# - n_max: maximum number of caps per wing per level.
+# - min_gap_frac: minimum spacing between adjacent caps, as a fraction of that metric's span
+#   (0.03 ≈ 2.5× the Benders overshoot in the reference run).
+# - edge_pullback: moves each central edge from the tangency toward its anchor, as a fraction
+#   of that metric's span. 0.0 = edges exactly at the tangency.
+#
+# Returns Dict(B => Dict("System_Expected" => caps, "CVaR" => caps)). Iterate over `budgets`
+# (not over the Dict) to keep level order.
+#
+# Feasibility: every polyline point is a convex combination of solved portfolios, so by
+# convexity of the operational problem some feasible portfolio is at least as good on both
+# metrics. Each capped region {T ≤ B, cap} therefore contains a feasible point.
+#-------------------------------------------------------------------------------------------
+function compute_budget_schedule_wings(extreme_values::Dict, budgets::AbstractVector;
+                                       k_ev::Real, k_cvar::Real,
+                                       n_max::Int = 3, min_gap_frac::Real = 0.03,
+                                       edge_pullback::Real = 0.05)
+
+    # --- Block 1: collect the risk-weight solves as (System Expected, CVaR) pairs and sort
+    #     them by System Expected, so the polyline runs EV-optimal -> CVaR-optimal.
+    pts = Tuple{Float64,Float64}[]
+    for v in values(extreme_values)
+        push!(pts, (Float64(v["System Expected"]), Float64(v["CVaR"])))
+    end
+    pts = sort(pts; by = first)
+    if length(pts) < 3
+        error("need intermediate risk-weight solves to locate lens ends and the tangency point")
+    end
+    ev = [first(p) for p in pts]   # System Expected at each vertex (increasing)
+    cv = [last(p) for p in pts]    # CVaR at each vertex (decreasing along a proper frontier)
+    n_pts = length(pts)
+
+    # --- Block 2: spans of each metric between the two extreme solves. These normalize the
+    #     axes for arc length and set the minimum cap spacing.
+    ev_span = ev[end] - ev[1]
+    cv_span = cv[1] - cv[end]
+    if !(ev_span > 0 && cv_span > 0)
+        error("extreme solves must trade off EV against CVaR")
+    end
+
+    # --- Block 3: normalized arc length along the polyline (0 at EV-optimal, 1 at CVaR-optimal).
+    #     Each segment length is measured with both axes scaled by their spans.
+    seg = Float64[]
+    for i in 1:n_pts-1
+        push!(seg, hypot((ev[i+1] - ev[i]) / ev_span, (cv[i+1] - cv[i]) / cv_span))
+    end
+    arc = vcat(0.0, cumsum(seg)) ./ sum(seg)
+
+    # --- Block 4: transformed budget value T at each polyline vertex.
+    Tv = [k_ev * ev[i] + k_cvar * cv[i] for i in 1:n_pts]
+
+    # --- Block 5: central edges at the tangency point (vertex with the lowest T), optionally
+    #     pulled back toward each anchor. These are the same for every budget level.
+    i_tan = argmin(Tv)
+    ev_central_edge = ev[i_tan] - edge_pullback * ev_span   # EV-wing caps stop here
+    cv_central_edge = cv[i_tan] - edge_pullback * cv_span   # CVaR-wing caps stop here
+
+    # --- Block 6: for each budget level, find both lens ends and place the wing caps.
+    order_from_ev   = collect(1:n_pts)       # walk inward from the EV-optimal anchor
+    order_from_cvar = collect(n_pts:-1:1)    # walk inward from the CVaR-optimal anchor
+    schedule = Dict{Float64,Dict{String,Vector{Float64}}}()
+
+    for B in budgets
+        s_ev = lens_end(B, order_from_ev, Tv, arc)
+        s_cv = lens_end(B, order_from_cvar, Tv, arc)
+
+        # EV wing: caps on System Expected, only if the lens end lies outside the central edge
+        caps_ev = Float64[]
+        if !isnothing(s_ev)
+            ev_end = linear_interp(arc, ev, s_ev)
+            if ev_end < ev_central_edge
+                caps_ev = wing_caps(ev_end, ev_central_edge, ev_span, n_max, min_gap_frac)
+            end
+        end
+
+        # CVaR wing: caps on CVaR, only if the lens end lies outside the central edge
+        caps_cv = Float64[]
+        if !isnothing(s_cv)
+            cv_end = linear_interp(arc, cv, s_cv)
+            if cv_end < cv_central_edge
+                caps_cv = wing_caps(cv_end, cv_central_edge, cv_span, n_max, min_gap_frac)
+            end
+        end
+
+        schedule[Float64(B)] = Dict("System_Expected" => caps_ev, "CVaR" => caps_cv)
+    end
+    return schedule
+end
+
+#============================
+
+
+Main MGA functions for running stochastic exploration with Benders and MGA, including base runs and iterative exploration with budget constraints, cut management, and result logging
+
+
+==============================#
+
+
+function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, budget_offset::Float64 = 1.0, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100, budget_type = "Transformed", tighten_budget::Bool = false, budget_tighten_step_size::Float64 = 0.1, floor_offset::Float64 = 0.01, cap_wings::Bool = true)
 
     #configure_parallel_workers!(settings)
 
@@ -290,49 +354,40 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
 
     if settings["Capacity Exploration"]
         budgets = Dict()
-        # CVaR budget: the CVaR achieved by the risk-neutral (expected-value-only) solution.
-        # extreme_values[...] is already in cost-scaled units (divided by "Scaling factor
-        # cost" once above, when it was populated) - dividing again here shrank the budget
-        # by another 1e5x, making it essentially unsatisfiable against any real cut. That
-        # was the actual cause of "numerical issues" reported for the MGA phase: not a
-        # conditioning problem, a budget that was ~1e5x too tight by construction.
-        #budgets = add_budget_constraint_bendersMP(MP, extreme_values[1.0]["CVaR"], "CVaR", budgets)
-        # Expected value budget: the EV achieved by the fully risk-averse (CVaR-only)
-        # solution, with budget_multiplier headroom (mirrors the working pattern in
-        # run_stochastic_exploration_separate_budgets above). The previous line added
-        # extreme_values[0.0]["System Expected"] to itself instead of applying
-        # budget_multiplier, which this function accepts but never used.
-        #budgets = add_budget_constraint_bendersMP(MP, extreme_values[0.0]["System Expected"]*budget_multiplier, "System_Expected", budgets)
-        # Combined budget: keep inv_cost + 0.5*EV + 0.5*CVaR within (1+budget_multiplier) of the
-        # balanced (risk weight 0.5) solution's own optimal value.
-        # mga_benders tracks this budget's upper bound using settings["Risk aversion weight"]
-        # (algorithm.jl:608/706), not the risk_aversion passed here, so it must be kept at 0.5
-        # to match the constraint actually being enforced on MP.
-        #settings["Risk aversion weight"] = 0.5
+        constraint_dict = Dict()
+        # Wing caps only make sense with a tightening schedule on the Transformed budget
+        do_cap_wings = cap_wings && tighten_budget && budget_type == "Transformed"
+        cap_schedule = Dict{Float64,Dict{String,Vector{Float64}}}()
+
         if tighten_budget && budget_type != "Transformed"
             error("tighten_budget=true is only supported for budget_type == \"Transformed\" (got \"$budget_type\").")
         end
+
         if mapping && budget_type != "Transformed"
             error("mapping=true is only supported for budget_type == \"Transformed\" (got \"$budget_type\") - sample_interior_delauney filters against the Transformed budget.")
         end
+
         if budget_type == "Transformed"
             transform_cvar = 1/(extreme_values[1.0]["CVaR"] - extreme_values[0.0]["CVaR"])
             transform_sys = 1/(extreme_values[0.0]["System Expected"] - extreme_values[1.0]["System Expected"])
             budget_val_transform = transform_cvar*extreme_values[0.0]["CVaR"] + transform_sys*extreme_values[1.0]["System Expected"] + budget_offset
             @info("Budget value for transformed budget constraint: ", budget_val_transform)
-            budgets = add_budget_constraint_bendersMP(MP, budget_val_transform, "Transformed", budgets; extreme_values = extreme_values)
+            budgets, constraint_dict = add_budget_constraint_bendersMP(MP, budget_val_transform, "Transformed", budgets; extreme_values = extreme_values, constraint_dict = constraint_dict)
             if tighten_budget
                 budget_floor = compute_budget_floor(extreme_values, transform_cvar, transform_sys, floor_offset)
                 budget_schedule = compute_budget_tighten_schedule(budget_val_transform, budget_floor, budget_tighten_step_size)
                 @info("Budget tightening enabled: $(length(budget_schedule)) levels per MGA vector, from $(budget_val_transform) down to $(budget_floor) in steps of $(budget_tighten_step_size).")
+                if do_cap_wings
+                    cap_schedule = compute_budget_schedule_wings(extreme_values, budget_schedule; k_ev = transform_sys, k_cvar = transform_cvar)
+                end
             end
         elseif budget_type == "Box"
-            budgets = add_budget_constraint_bendersMP(MP, extreme_values[1.0]["CVaR"], "CVaR", budgets)
-            budgets = add_budget_constraint_bendersMP(MP, extreme_values[0.0]["System Expected"]*budget_multiplier, "System_Expected", budgets)
+            budgets, constraint_dict = add_budget_constraint_bendersMP(MP, extreme_values[1.0]["CVaR"], "CVaR", budgets; constraint_dict = constraint_dict)
+            budgets, constraint_dict = add_budget_constraint_bendersMP(MP, extreme_values[0.0]["System Expected"]*budget_multiplier, "System_Expected", budgets; constraint_dict = constraint_dict)
         else
             error("Unknown budget type: $budget_type")
         end
-        #budgets = add_budget_constraint_bendersMP(MP, (balanced_optimum/settings["Scaling factor cost"])*(1+budget_multiplier), "System_Weighted_CVaR", budgets; risk_aversion = settings["Risk aversion weight"])
+
         if settings["Cut deactivation strategy"] == "in mga"
             cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
             cuts_to_keep = copy(cuts)
@@ -380,10 +435,57 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                         push!(results_syscost, df_syscost)
                         push!(results_emissions, df_emissions)
                     end
-
                     release_heavy_payload!(output_random)
-                catch
-                    @warn("Budget too tight, terminating tightening")
+
+                    if do_cap_wings
+                        schedule = cap_schedule[budget_level_val]
+                        for key in keys(schedule) # iterates through cvar and ev wings
+                            caps = schedule[key]
+                            isempty(caps) && continue
+                            for (cap_level, cap) in enumerate(caps) # loose -> tight
+                                if !haskey(budgets, key) # first cap of this wing: add the constraint
+                                    budgets, constraint_dict = add_budget_constraint_bendersMP(MP, cap, key, budgets; constraint_dict = constraint_dict)
+                                else
+                                    budgets = update_budget_constraint_bendersMP!(MP, cap, key, budgets)
+                                end
+
+                                cap_run_name = "Random_$(iteration)_Budget_$(level)_$(key)_Cap_$(cap_level)"
+
+                                try
+                                    cap_output = mga_benders(inputs, settings, MP, SPs, budgets, cap_run_name; Eval_SPs = Eval_SPs, mapping = true, cut_archive = cut_archive)
+                                    log_result_memory!(cap_run_name*" output", cap_output)
+                                    avg_time_mp = mean(cap_output["Time MP hist"])
+                                    push!(run_labels, cap_run_name)
+                                    push!(gaps, cap_output["Gaps"])
+                                    results_destination = joinpath(results_folder, cap_run_name)
+                                    df_cap, df_syscost, df_emissions = write_results_benders(cap_output, inputs, settings, results_destination; budgets = budgets)
+                                    if mapping
+                                        temp_df_cap, temp_df_syscost, temp_df_emissions = write_mapping_results(cap_output, inputs, settings)
+                                        push!(results_cap, temp_df_cap)
+                                        push!(results_syscost, temp_df_syscost)
+                                        push!(results_emissions, temp_df_emissions)
+                                    else
+                                        push!(results_cap, df_cap)
+                                        push!(results_syscost, df_syscost)
+                                        push!(results_emissions, df_emissions)
+                                    end
+                                    release_heavy_payload!(cap_output)
+                                catch e
+                                    @warn("Cap run $cap_run_name failed, skipping remaining caps for this wing", exception = (e, catch_backtrace()))
+                                    break
+                                end
+                            end
+                            # Remove this wing's constraint so it does not affect the other wing or later runs
+                            con_ref = constraint_dict[key]
+                            con_sym = Symbol(name(con_ref))
+                            delete(MP, con_ref)
+                            unregister(MP, con_sym)
+                            delete!(budgets, key)
+                            delete!(constraint_dict, key)
+                        end
+                    end
+                catch e
+                    @warn("Budget too tight (or error), terminating tightening", exception = (e, catch_backtrace()))
                     break
                 end
             end
@@ -458,7 +560,7 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
     percent_over_lc = round((budget - lc_value)/lc_value * 100, digits=2)
     @info("This budget is ", percent_over_lc, "% over the cost optimal solution")
     budgets = Dict()
-    budgets = add_budget_constraint_bendersMP(MP, budget/settings["Scaling factor cost"], "System_Expected", budgets)
+    budgets, _ = add_budget_constraint_bendersMP(MP, budget/settings["Scaling factor cost"], "System_Expected", budgets)
     cuts_to_keep = [name(con) for (F, S) in list_of_constraint_types(MP) for con in all_constraints(MP, F, S) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
 
     for iteration in 1:iterations
@@ -577,7 +679,7 @@ function mapping_test_laptop(test_index)
     budget_multiplier = 1.001
     n_samples = 10
 
-    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, results_folder, summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping = true, n_samples = 50)
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping = true, n_samples = 50)
     rmprocs(workers())
 
 end
@@ -600,7 +702,7 @@ function mapping_test_della(test_index)
     
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
-    vectors = run_stochastic_exploration_separate_budgets(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping=true, n_samples = settings["Interior Samples"])
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping=true, n_samples = settings["Interior Samples"])
 
 end
 
@@ -782,6 +884,29 @@ function risk_pareto_test_no_tighten_della(test_index)
     SPs = build_all_subproblems(inputs, settings)
     results_folder = joinpath(results_folder, "Pareto5")
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder; vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping = false, n_samples = settings["Interior Samples"], budget_type = "Transformed", tighten_budget = false)
+
+end
+
+function wing_caps_test_della(test_index)
+
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+    if !isdir(summary_folder)
+        mkpath(summary_folder)
+    end
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+
+    configure_parallel_workers!(settings)
+
+    # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
+    SPs = build_all_subproblems(inputs, settings)
+    results_folder = joinpath(results_folder, "Pareto5")
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder; vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping = false, n_samples = settings["Interior Samples"], budget_type = "Transformed", tighten_budget = true, cap_wings = true)
 
 end
 

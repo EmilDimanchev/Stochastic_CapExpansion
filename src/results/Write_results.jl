@@ -476,18 +476,35 @@ function write_exploration_results!(results_cap::AbstractVector, results_syscost
     dfs_emissions = vcat(results_emissions...)
 
     total_length = nrow(dfs_cap)
-    # run_labels only has a 1:1 correspondence with the rows when every pushed result was
-    # given a label (e.g. mapping=false, or a fully-labeled interpolate evaluation). When
-    # mapping=true adds unlabeled interior samples on top of the labeled runs, fall back to
-    # generic sample labels.
-    labels = length(run_labels) == total_length ? String.(run_labels) : ["Sample "*string(i) for i in 1:total_length]
+    # Each entry of results_cap is one pushed result, and run_labels holds one label per
+    # labeled run, in push order. With mapping=true a single run can contribute several rows
+    # (one per Benders iteration), and unlabeled interior samples are appended after all the
+    # labeled runs. So label rows per entry: a one-row entry keeps its run label, a multi-row
+    # entry gets "<label>_iter_<k>", and any entries beyond the labeled runs are "Sample <i>".
+    labels = String[]
+    n_labeled = min(length(run_labels), length(results_cap))
+    n_samples_labeled = 0
+    for (j, df) in enumerate(results_cap)
+        n_rows = nrow(df)
+        if j <= n_labeled
+            lab = string(run_labels[j])
+            append!(labels, n_rows == 1 ? [lab] : [lab*"_iter_"*string(k) for k in 1:n_rows])
+        else
+            append!(labels, ["Sample "*string(n_samples_labeled + k) for k in 1:n_rows])
+            n_samples_labeled += n_rows
+        end
+    end
+    length(labels) == total_length || error("Built $(length(labels)) row labels for $total_length result rows.")
 
+    # Join on a unique row id rather than the label, so duplicate labels cannot cross-multiply rows.
+    dfs_cap.RowID = 1:total_length
+    dfs_syscost.RowID = 1:total_length
+    dfs_emissions.RowID = 1:total_length
     dfs_cap.Index = labels
-    dfs_syscost.Index = labels
-    dfs_emissions.Index = labels
 
-    df_exploration = innerjoin(dfs_cap, dfs_syscost, on = :Index)
-    df_exploration = innerjoin(df_exploration, dfs_emissions, on = :Index)
+    df_exploration = innerjoin(dfs_cap, dfs_syscost, on = :RowID)
+    df_exploration = innerjoin(df_exploration, dfs_emissions, on = :RowID)
+    select!(df_exploration, Not(:RowID))
 
     CSV.write(joinpath(results_folder,"Summary_"*summary_name*".csv"), df_exploration)
 
