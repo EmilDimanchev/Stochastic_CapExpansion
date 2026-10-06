@@ -188,7 +188,7 @@ end
 
 function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_archive::Dict{String, Any} = Dict{String, Any}())
     # Iterations
-    J_max = 150
+    J_max = 300
 
     # Initialize
     settings["Search equilibria"] = false
