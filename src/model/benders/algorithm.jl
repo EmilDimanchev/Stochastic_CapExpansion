@@ -188,7 +188,7 @@ end
 
 function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_archive::Dict{String, Any} = Dict{String, Any}())
     # Iterations
-    J_max = 300
+    J_max = 150
 
     # Initialize
     settings["Search equilibria"] = false
@@ -479,7 +479,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                         cut_refs[cut] = constraint_by_name(MP, cut)
                     end
                     rhs_values[cut] = normalized_rhs(cut_refs[cut])
-                elseif output_mp_unst["Cut Duals"][cut] >= 0.0001
+                elseif output_mp_unst["Cut Duals"][cut] >= 0.00000001
                     # only update
                     last_iteration_cuts[cut] = j
                 elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold
