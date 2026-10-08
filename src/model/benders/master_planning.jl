@@ -426,7 +426,13 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
         unset_silent(MP)
         optimize!(MP)
     end
-    infeasible = termination_status(MP) == MOI.INFEASIBLE || termination_status(MP) == MOI.INFEASIBLE_OR_UNBOUNDED
+    infeasible = termination_status(MP) == MOI.INFEASIBLE 
+    numerical_trouble = termination_status(MP) == MOI.INFEASIBLE_OR_UNBOUNDED
+    if numerical_trouble
+        set_optimizer_attribute(MP, "BarHomogeneous", 1)
+        optimize!(MP)
+
+    end
     if infeasible
         compute_conflict!(MP)
         list_of_conflicting_constraints = ConstraintRef[];
@@ -462,6 +468,8 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
         set_optimizer(MP, my_optimizer)
     elseif settings["Solver"] == "Gurobi"
         set_optimizer_attribute(MP, "Method", 1)
+        if numerical_trouble
+            set_optimizer_attribute(MP, "BarHomogeneous", 0)
     end
     set_silent(MP)
 
