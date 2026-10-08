@@ -150,13 +150,13 @@ function build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
     # deliberately use interior-point methods for numerical reasons and temporarily
     # override these settings for their own solve.
     if settings["Solver"] == "HiGHS"
-        my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "on", "primal_feasibility_tolerance" => 1e-3, "optimality_tolerance" => 1e-3, "user_bound_scale" => -6)
+        my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "off", "primal_feasibility_tolerance" => 1e-3, "optimality_tolerance" => 1e-3, "user_bound_scale" => -6)
         set_optimizer(MP, my_optimizer)
     elseif settings["Solver"] == "Gurobi"
         set_optimizer(MP, Gurobi.Optimizer)
         set_optimizer_attribute(MP, "OptimalityTol", 1e-5)
         set_optimizer_attribute(MP, "FeasibilityTol", 1e-3)
-        set_optimizer_attribute(MP, "Crossover", 1)
+        set_optimizer_attribute(MP, "Crossover", 0)
         set_optimizer_attribute(MP, "Method", 1)
     end
 
@@ -458,7 +458,7 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
         # the ordinary solve on the next iteration still gets a basis to warm-start from -
         # otherwise every regularized iteration (i.e. most of them, since this runs
         # whenever gap*100 >= 1) would silently undo that warmstart setup on the way out.
-        my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "on")
+        my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "off")
         set_optimizer(MP, my_optimizer)
     elseif settings["Solver"] == "Gurobi"
         set_optimizer_attribute(MP, "Method", 1)
