@@ -237,6 +237,11 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     min_UB = Inf
     unst_LB = -Inf
     inv_cost_unst = 0.0
+    # Stagnation fallback: if the LB hasn't moved for `lb_stall_limit` iterations, skip regularization
+    # for one iteration and evaluate the unstabilized MP solution instead (see the regularization branch).
+    lb_stall_limit = get(settings, "LB stall limit", 10)
+    lb_stall_tol = get(settings, "LB stall tolerance", 1e-6)
+    lb_stall_count = 0
     cut_deactivation_threshold = settings["Cut deactivation threshold"]
     gamma = 0.25 # Initial regularization parameter; will be adjusted based on gap. Starts
                  # loose (few/unreliable cuts early on) and adjust_gamma tightens it down
@@ -461,7 +466,9 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 LB_unst  = alpha_ev + output_mp_unst["Inv_cost"]/settings["Scaling factor cost"]
             end
             inv_cost_unst = output_mp_unst["Inv_cost"]/settings["Scaling factor cost"]
+            LB_prev = LB
             LB = max(LB, LB_unst)
+            lb_stall_count = (LB - LB_prev) <= lb_stall_tol*abs(LB) ? lb_stall_count + 1 : 0
             push!(LB_hist, LB)
 
             all_cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_")]
@@ -491,7 +498,12 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 deactivate_cuts(MP, cuts_to_remove, cut_archive, cut_refs)
             end
 
-            if settings["Regularization flag"] && (gap*100) >= 1
+            skip_reg_for_stall = lb_stall_count >= lb_stall_limit
+            if skip_reg_for_stall && settings["Regularization flag"] && (gap*100) >= 1
+                @info("LB has not improved for $lb_stall_count iterations; skipping regularization this iteration and evaluating the unstabilized MP solution.")
+                lb_stall_count = 0
+            end
+            if settings["Regularization flag"] && (gap*100) >= 1 && !skip_reg_for_stall
                 if settings["Regularization strategy"] == "Level Set"
                     #gamma = adjust_gamma(UB_hist[end-1], min_UB, LB, gamma)
                     @info("Applying level set regularization to master problem") #(gamma=$(round(gamma; digits=3)))")
