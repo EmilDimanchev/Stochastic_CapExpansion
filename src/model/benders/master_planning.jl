@@ -431,7 +431,6 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
     if numerical_trouble
         set_optimizer_attribute(MP, "BarHomogeneous", 1)
         optimize!(MP)
-
     end
     if infeasible
         compute_conflict!(MP)
@@ -470,6 +469,7 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
         set_optimizer_attribute(MP, "Method", 1)
         if numerical_trouble
             set_optimizer_attribute(MP, "BarHomogeneous", 0)
+        end
     end
     set_silent(MP)
 
