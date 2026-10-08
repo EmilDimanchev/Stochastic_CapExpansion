@@ -11,3 +11,4 @@ Thumbs.db
 *.out
 *.err
 experiments/Della_experiments/
+.claude
