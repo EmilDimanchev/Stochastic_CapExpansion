@@ -429,7 +429,10 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
     infeasible = termination_status(MP) == MOI.INFEASIBLE 
     numerical_trouble = termination_status(MP) == MOI.INFEASIBLE_OR_UNBOUNDED || termination_status(MP) == MOI.NUMERICAL_ERROR
     if numerical_trouble
-        set_optimizer_attribute(MP, "BarHomogeneous", 1)
+        @warn("Numerical trouble encountered, re-running with numerically stable solver")
+        if settings["Solver"] == "Gurobi"
+            set_optimizer_attribute(MP, "BarHomogeneous", 1)
+        end
         optimize!(MP)
     end
     if infeasible
@@ -451,7 +454,7 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
     end
 
     # Write outputs (only meaningful if the level-set solve actually succeeded)
-    output = infeasible ? nothing : write_outputs(MP, settings)
+    output = (infeasible || numerical_trouble) ? nothing : write_outputs(MP, settings)
 
     # Relax rather than delete: keeps the row (and MOI's row indexing) stable across
     # calls. Sized relative to UB rather than an arbitrary large constant, to avoid the
