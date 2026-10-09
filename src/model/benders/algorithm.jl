@@ -239,6 +239,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     inv_cost_unst = 0.0
     # Stagnation fallback: if the LB hasn't moved for `lb_stall_limit` iterations, skip regularization
     # for one iteration and evaluate the unstabilized MP solution instead (see the regularization branch).
+    regularization_flag = settings["Regularization flag"]
     lb_stall_limit = get(settings, "LB stall limit", 10)
     lb_stall_tol = get(settings, "LB stall tolerance", 1e-6)
     lb_stall_count = 0
@@ -446,7 +447,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 if indicator_written == false
                     indicator_written = true
                     first_write = j
-                    settings["Regularization flag"] = false
+                    regularization_flag = false
                 end
             end
 
@@ -499,11 +500,11 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             end
 
             skip_reg_for_stall = lb_stall_count >= lb_stall_limit
-            if skip_reg_for_stall && settings["Regularization flag"] && (gap*100) >= 1
-                @info("LB has not improved for $lb_stall_count iterations; skipping regularization this iteration and evaluating the unstabilized MP solution.")
-                lb_stall_count = 0
+            if skip_reg_for_stall && regularization_flag
+                @info("LB has not improved for $lb_stall_count iterations; turning off regularization for remainder of iterations for this problem.")
+                regularization_flag = false
             end
-            if settings["Regularization flag"] && (gap*100) >= 1 && !skip_reg_for_stall
+            if regularization_flag
                 if settings["Regularization strategy"] == "Level Set"
                     #gamma = adjust_gamma(UB_hist[end-1], min_UB, LB, gamma)
                     @info("Applying level set regularization to master problem") #(gamma=$(round(gamma; digits=3)))")
