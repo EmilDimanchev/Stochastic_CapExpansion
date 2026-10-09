@@ -427,7 +427,7 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
         optimize!(MP)
     end
     infeasible = termination_status(MP) == MOI.INFEASIBLE 
-    numerical_trouble = termination_status(MP) == MOI.INFEASIBLE_OR_UNBOUNDED
+    numerical_trouble = termination_status(MP) == MOI.INFEASIBLE_OR_UNBOUNDED || MOI.NUMERICAL_ERROR
     if numerical_trouble
         set_optimizer_attribute(MP, "BarHomogeneous", 1)
         optimize!(MP)
