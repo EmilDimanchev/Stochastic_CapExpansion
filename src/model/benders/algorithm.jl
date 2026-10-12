@@ -625,7 +625,7 @@ function compute_cvar(SP_obj, P, P_f, P_k, VaR_Percent)
     return tail_weighted_sum / alpha
 end
 
-function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing, mapping = false, cut_archive::Dict{String, Any} = Dict{String, Any}())
+function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing, mapping = false, cut_archive::Dict{String, Any} = Dict{String, Any}(); retain_new_cuts = true)
     # Iterations 
     J_max = 150
 
@@ -924,7 +924,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 end
             end
             if length(cuts_to_remove) >= 1
-                deactivate_cuts(MP, cuts_to_remove, cut_archive, cut_refs)
+                deactivate_cuts(MP, cuts_to_remove, cut_archive, cut_refs; retain_new_cuts)
             end
 
         end

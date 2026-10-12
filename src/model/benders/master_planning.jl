@@ -753,7 +753,7 @@ end
 # once for the whole batch, so this is a call-batching change only - it doesn't touch any
 # RHS, coefficient, or constraint value, so it carries none of the numerical risk that the
 # RHS-loosening approach above ran into.
-function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_archive::Dict{String, Any}, cut_refs::Dict{String, ConstraintRef})
+function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_archive::Dict{String, Any}, cut_refs::Dict{String, ConstraintRef}; retain_new_cuts = true)
     @info("Deactivating $(length(cuts_to_deactivate)) cuts")
     time_1 = time()
     cons_to_delete = ConstraintRef[]
@@ -766,7 +766,9 @@ function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_arch
         if con === nothing
             continue # already removed (e.g. via manage_cuts)
         end
-        cut_archive[cut_name] = constraint_object(con)
+        if retain_new_cuts
+            cut_archive[cut_name] = constraint_object(con)
+        end
         push!(cons_to_delete, con)
         push!(names_to_delete, cut_name)
     end

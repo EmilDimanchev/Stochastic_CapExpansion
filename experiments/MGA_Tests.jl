@@ -297,6 +297,8 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     transform_sys = 0.0
     transform_cvar = 0.0
 
+    retain_new_cuts = true
+
     P_s = inputs["Demand scenario probabilities"]
     P_f = inputs["Gas price scenario probabilities"]
     P_k = inputs["Weather scenario probabilities"]
@@ -403,6 +405,10 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
             if settings["Cut deactivation strategy"] == "in mga"
                 cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            elseif settings["Cut deactivation strategy"] == "in benders"
+                if length(cut_archive) > settings["Cuts retained"]
+                    retain_new_cuts = false
+                end
             end
             #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             # introduce new variable to track if this is the not the first tightening. Used to indicate mapping
@@ -417,7 +423,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                 run_name = tighten_budget ? "Random_$(iteration)_Budget_$(level)" : "Random_"*string(iteration)
                 map_bool = true
                 try
-                    output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = map_bool, cut_archive = cut_archive)
+                    output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = map_bool, cut_archive = cut_archive; retain_new_cuts = retain_new_cuts)
                     log_result_memory!(run_name*" output", output_random)
                     avg_time_mp = mean(output_random["Time MP hist"])
                     gap = output_random["Gaps"]
