@@ -504,7 +504,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 @info("LB has not improved for $lb_stall_count iterations; turning off regularization for remainder of iterations for this problem.")
                 regularization_flag = false
             end
-            if regularization_flag
+            if regularization_flag && (gap * 100) > 1 # do not run regularization when gap is tight -> takes extra time and can have numerical issues
                 if settings["Regularization strategy"] == "Level Set"
                     #gamma = adjust_gamma(UB_hist[end-1], min_UB, LB, gamma)
                     @info("Applying level set regularization to master problem") #(gamma=$(round(gamma; digits=3)))")
