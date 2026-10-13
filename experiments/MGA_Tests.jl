@@ -458,7 +458,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                                 cap_run_name = "Random_$(iteration)_Budget_$(level)_$(key)_Cap_$(cap_level)"
 
                                 try
-                                    cap_output = mga_benders(inputs, settings, MP, SPs, budgets, cap_run_name; Eval_SPs = Eval_SPs, mapping = true, cut_archive = cut_archive)
+                                    cap_output = mga_benders(inputs, settings, MP, SPs, budgets, cap_run_name; Eval_SPs = Eval_SPs, mapping = true, cut_archive = cut_archive, retain_new_cuts = retain_new_cuts)
                                     log_result_memory!(cap_run_name*" output", cap_output)
                                     avg_time_mp = mean(cap_output["Time MP hist"])
                                     push!(run_labels, cap_run_name)
