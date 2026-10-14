@@ -297,8 +297,6 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     transform_sys = 0.0
     transform_cvar = 0.0
 
-    retain_new_cuts = true
-
     P_s = inputs["Demand scenario probabilities"]
     P_f = inputs["Gas price scenario probabilities"]
     P_k = inputs["Weather scenario probabilities"]
@@ -405,10 +403,6 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
             if settings["Cut deactivation strategy"] == "in mga"
                 cuts_to_keep = manage_cuts(MP, cuts_to_keep)
-            elseif settings["Cut deactivation strategy"] == "in benders"
-                if length(cut_archive) > settings["Cuts retained"]
-                    retain_new_cuts = false
-                end
             end
             #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             # introduce new variable to track if this is the not the first tightening. Used to indicate mapping
@@ -423,7 +417,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                 run_name = tighten_budget ? "Random_$(iteration)_Budget_$(level)" : "Random_"*string(iteration)
                 map_bool = true
                 try
-                    output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = map_bool, cut_archive = cut_archive, retain_new_cuts = retain_new_cuts)
+                    output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = map_bool, cut_archive = cut_archive)
                     log_result_memory!(run_name*" output", output_random)
                     avg_time_mp = mean(output_random["Time MP hist"])
                     gap = output_random["Gaps"]
@@ -458,7 +452,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                                 cap_run_name = "Random_$(iteration)_Budget_$(level)_$(key)_Cap_$(cap_level)"
 
                                 try
-                                    cap_output = mga_benders(inputs, settings, MP, SPs, budgets, cap_run_name; Eval_SPs = Eval_SPs, mapping = true, cut_archive = cut_archive, retain_new_cuts = retain_new_cuts)
+                                    cap_output = mga_benders(inputs, settings, MP, SPs, budgets, cap_run_name; Eval_SPs = Eval_SPs, mapping = true, cut_archive = cut_archive)
                                     log_result_memory!(cap_run_name*" output", cap_output)
                                     avg_time_mp = mean(cap_output["Time MP hist"])
                                     push!(run_labels, cap_run_name)
@@ -1214,6 +1208,20 @@ function test_cut_management(test_index = "cut_mgmt")
     @assert rhs_before == rhs_after "reactivated cuts' RHS did not match the originals"
     @info("Reactivated all $(length(to_deactivate)) cuts; RHS values match the originals exactly.")
 
+    # --- Archive cap: max_archive bounds the archive, extra cuts are deleted outright ---
+    cap_k = 10
+    capped_names = all_names[1:30]
+    capped_archive = Dict{String, Any}()
+    deactivate_cuts(MP, capped_names, capped_archive, cut_refs; max_archive = cap_k)
+    @assert length(capped_archive) == cap_k "archive cap not enforced: $(length(capped_archive)) > $cap_k"
+    @assert all(n -> constraint_by_name(MP, n) === nothing, capped_names) "over-cap cuts should still be deleted from MP"
+    cap_reactivated = reactivate_cuts(MP, capped_archive; max_reactivate = 4)
+    @assert length(cap_reactivated) == 4 && length(capped_archive) == cap_k - 4
+    merge!(cut_refs, cap_reactivated)
+    @info("Archive cap and max_reactivate enforced as expected.")
+    # restore the rest so later checks see an unchanged cut set
+    merge!(cut_refs, reactivate_cuts(MP, capped_archive))
+
     # --- Self-healing fallback: a cut live in MP but absent from cut_refs (simulates a
     # cut carried over from a previous problem on a reused MP) should still resolve. ---
     probe_name = all_names[end]
@@ -1229,7 +1237,7 @@ function test_cut_management(test_index = "cut_mgmt")
     # avoiding an O(total constraints) reindex/resync per deleted cut in HiGHS.jl/Gurobi.jl,
     # which only shows up clearly once the batch size is in the thousands (matching real
     # cuts_to_remove sizes given `Cut deactivation threshold: 8`/`Cuts retained: 50000`).
-    n_perf = min(3000, S*F*K*n_iterations)
+    n_perf = min(3000, length(cut_refs))
     refill_iter = Ref(n_iterations)
     refill!(needed) = begin
         iters = ceil(Int, needed / (S*F*K)) + 1

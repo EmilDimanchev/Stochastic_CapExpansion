@@ -753,7 +753,7 @@ end
 # once for the whole batch, so this is a call-batching change only - it doesn't touch any
 # RHS, coefficient, or constraint value, so it carries none of the numerical risk that the
 # RHS-loosening approach above ran into.
-function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_archive::Dict{String, Any}, cut_refs::Dict{String, ConstraintRef}; retain_new_cuts = true)
+function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_archive::Dict{String, Any}, cut_refs::Dict{String, ConstraintRef}; max_archive::Int = typemax(Int))
     @info("Deactivating $(length(cuts_to_deactivate)) cuts")
     time_1 = time()
     cons_to_delete = ConstraintRef[]
@@ -766,7 +766,9 @@ function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_arch
         if con === nothing
             continue # already removed (e.g. via manage_cuts)
         end
-        if retain_new_cuts
+        # Cap is enforced per cut (not once up front) so a single large prune can't overshoot it.
+        # Overwriting an existing key doesn't grow the archive, so it's always allowed.
+        if haskey(cut_archive, cut_name) || length(cut_archive) < max_archive
             cut_archive[cut_name] = constraint_object(con)
         end
         push!(cons_to_delete, con)
@@ -798,10 +800,14 @@ end
 # and gives them the usual `cut_deactivation_threshold` iterations of grace before they're
 # eligible to be pruned again - so only the ones that still don't bind for the new problem
 # get re-removed.
-function reactivate_cuts(MP::Model, cut_archive::Dict{String, Any}, cut_names::Union{Vector{String}, Nothing} = nothing)
-    @info("Reactivating $(cut_names === nothing ? length(cut_archive) : length(cut_names)) cuts")
+function reactivate_cuts(MP::Model, cut_archive::Dict{String, Any}, cut_names::Union{Vector{String}, Nothing} = nothing; max_reactivate::Int = typemax(Int))
     time_1 = time()
     names_to_reactivate = cut_names === nothing ? collect(keys(cut_archive)) : cut_names
+    if length(names_to_reactivate) > max_reactivate
+        # Restore only a bounded subset so MP doesn't get the whole archive back; the rest stay archived.
+        names_to_reactivate = names_to_reactivate[1:max_reactivate]
+    end
+    @info("Reactivating $(length(names_to_reactivate)) cuts")
     reactivated = Dict{String, ConstraintRef}()
     for cut_name in names_to_reactivate
         if !haskey(cut_archive, cut_name)
