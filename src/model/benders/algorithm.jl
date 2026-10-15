@@ -186,7 +186,7 @@ end
 
 ####TODO - modify containers to be preallocated sizes to avoid memory over runs from push! and append!
 
-function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_archive::Dict{String, Any} = Dict{String, Any}())
+function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_archive::Dict{String, Any} = Dict{String, Any}(), cut_stats::Dict{String, Tuple{Int,Int}} = Dict{String, Tuple{Int,Int}}(), cut_clock::Ref{Int} = Ref(0))
     # Iterations
     J_max = 150
 
@@ -263,7 +263,6 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     last_iteration_cuts = Dict{String, Int64}()
     rhs_values = Dict{String, Float64}()
     cut_refs = Dict{String, ConstraintRef}() # name => ConstraintRef cache; avoids constraint_by_name in the hot loop below
-    max_archive = get(settings, "Cuts retained", typemax(Int)) # cap on cut_archive size (see deactivate_cuts)
 
     if mapping 
         if risk_aversion_weight == 0.0
@@ -274,7 +273,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     end
 
     if !isempty(cut_archive)
-        reactivated = reactivate_cuts(MP, cut_archive; max_reactivate = max_archive)
+        reactivated = reactivate_cuts(MP, cut_archive)
         merge!(cut_refs, reactivated)
         @info("Reactivated $(length(reactivated)) previously-pruned cuts for this problem; will re-prune whichever don't bind within $(cut_deactivation_threshold) iterations.")
     end
@@ -475,11 +474,13 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
             all_cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_")]
 
+            cut_clock[] += 1
             cuts_to_remove = String[]
             for cut in all_cuts
                 if !haskey(last_iteration_cuts, cut)
                     # catalog and update last iteration
                     last_iteration_cuts[cut] = j
+                    stamp_cut!(cut_stats, cut, cut_clock[])
                     if !haskey(cut_refs, cut)
                         # Cut is live in MP but wasn't created or reactivated by this call
                         # (e.g. carried over, still active, from a previous problem that
@@ -491,13 +492,14 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 elseif output_mp_unst["Cut Duals"][cut] >= 0.00000001
                     # only update
                     last_iteration_cuts[cut] = j
+                    stamp_cut!(cut_stats, cut, cut_clock[]; bound = true)
                 elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold
                     # deactivate
                     push!(cuts_to_remove, cut)
                 end
             end
             if length(cuts_to_remove) >= 1
-                deactivate_cuts(MP, cuts_to_remove, cut_archive, cut_refs; max_archive = max_archive)
+                deactivate_cuts(MP, cuts_to_remove, cut_archive, cut_refs)
             end
 
             skip_reg_for_stall = lb_stall_count >= lb_stall_limit
@@ -626,7 +628,7 @@ function compute_cvar(SP_obj, P, P_f, P_k, VaR_Percent)
     return tail_weighted_sum / alpha
 end
 
-function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing, mapping = false, cut_archive::Dict{String, Any} = Dict{String, Any}())
+function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing, mapping = false, cut_archive::Dict{String, Any} = Dict{String, Any}(), cut_stats::Dict{String, Tuple{Int,Int}} = Dict{String, Tuple{Int,Int}}(), cut_clock::Ref{Int} = Ref(0))
     # Iterations 
     J_max = 150
 
@@ -699,14 +701,13 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     rhs_values = Dict{String, Float64}()
     cut_deactivation_threshold = settings["MGA cut deactivation threshold"]
     cut_refs = Dict{String, ConstraintRef}() # name => ConstraintRef cache; avoids constraint_by_name in the hot loop below
-    max_archive = get(settings, "Cuts retained", typemax(Int)) # cap on cut_archive size (see deactivate_cuts)
 
     if mapping
         @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
     end
 
     if !isempty(cut_archive)
-        reactivated = reactivate_cuts(MP, cut_archive; max_reactivate = max_archive)
+        reactivated = reactivate_cuts(MP, cut_archive)
         merge!(cut_refs, reactivated)
         @info("Reactivated $(length(reactivated)) previously-pruned cuts for this problem; will re-prune whichever don't bind within $(cut_deactivation_threshold) iterations.")
     end
@@ -904,11 +905,13 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             ])
 
             all_cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_")]
+            cut_clock[] += 1
             cuts_to_remove = String[]
             for cut in all_cuts
                 if !haskey(last_iteration_cuts, cut)
                     # catalog and update last iteration
                     last_iteration_cuts[cut] = j
+                    stamp_cut!(cut_stats, cut, cut_clock[])
                     if !haskey(cut_refs, cut)
                         # Cut is live in MP but wasn't created or reactivated by this call
                         # (e.g. carried over, still active, from a previous problem that
@@ -920,13 +923,14 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 elseif output_mp["Cut Duals"][cut] >= 0.0001
                     # only update
                     last_iteration_cuts[cut] = j
+                    stamp_cut!(cut_stats, cut, cut_clock[]; bound = true)
                 elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold
                     # deactivate
                     push!(cuts_to_remove, cut)
                 end
             end
             if length(cuts_to_remove) >= 1
-                deactivate_cuts(MP, cuts_to_remove, cut_archive, cut_refs; max_archive = max_archive)
+                deactivate_cuts(MP, cuts_to_remove, cut_archive, cut_refs)
             end
 
         end

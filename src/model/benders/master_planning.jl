@@ -436,14 +436,22 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
         optimize!(MP)
     end
     if infeasible
-        compute_conflict!(MP)
         list_of_conflicting_constraints = ConstraintRef[];
-        for (F, S) in list_of_constraint_types(MP)
-            for con in all_constraints(MP, F, S)
-                if get_attribute(con, MOI.ConstraintConflictStatus()) == MOI.IN_CONFLICT
-                    push!(list_of_conflicting_constraints, con)
+        # The level-set solve runs on Clarabel when Solver == "HiGHS", which doesn't implement
+        # compute_conflict!. Treat that as "no conflict identified" (the fallback branch below)
+        # instead of crashing the whole run on a diagnostic.
+        try
+            compute_conflict!(MP)
+            for (F, S) in list_of_constraint_types(MP)
+                for con in all_constraints(MP, F, S)
+                    if get_attribute(con, MOI.ConstraintConflictStatus()) == MOI.IN_CONFLICT
+                        push!(list_of_conflicting_constraints, con)
+                    end
                 end
             end
+        catch e
+            e isa ArgumentError || rethrow()
+            @warn("Conflict analysis unavailable for the current optimizer: $(sprint(showerror, e))")
         end
         if isempty(list_of_conflicting_constraints)
             @warn("Level-set solve reported infeasible with no conflicting constraints identified - treating as a numerical solver failure rather than a real infeasibility, and falling back to the unstabilized solution for this iteration.")
@@ -753,7 +761,7 @@ end
 # once for the whole batch, so this is a call-batching change only - it doesn't touch any
 # RHS, coefficient, or constraint value, so it carries none of the numerical risk that the
 # RHS-loosening approach above ran into.
-function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_archive::Dict{String, Any}, cut_refs::Dict{String, ConstraintRef}; max_archive::Int = typemax(Int))
+function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_archive::Dict{String, Any}, cut_refs::Dict{String, ConstraintRef})
     @info("Deactivating $(length(cuts_to_deactivate)) cuts")
     time_1 = time()
     cons_to_delete = ConstraintRef[]
@@ -766,11 +774,7 @@ function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_arch
         if con === nothing
             continue # already removed (e.g. via manage_cuts)
         end
-        # Cap is enforced per cut (not once up front) so a single large prune can't overshoot it.
-        # Overwriting an existing key doesn't grow the archive, so it's always allowed.
-        if haskey(cut_archive, cut_name) || length(cut_archive) < max_archive
-            cut_archive[cut_name] = constraint_object(con)
-        end
+        cut_archive[cut_name] = constraint_object(con)
         push!(cons_to_delete, con)
         push!(names_to_delete, cut_name)
     end
@@ -784,6 +788,44 @@ function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_arch
     time_1 = time() - time_1
     @info("Deactivated $(length(cuts_to_deactivate)) cuts in $(round(time_1, digits=2)) seconds")
     return cut_archive
+end
+
+# Per-cut bookkeeping used to decide which archived cuts survive trim_cut_archive!.
+# cut_stats maps cut name => (created, last_bound), both stamped from a shared monotone clock
+# (cut_clock, bumped once per Benders iteration by the algorithms) so they're comparable across
+# runs. `created` is set once and survives deactivation/reactivation; `last_bound` is the most
+# recent clock value at which the cut had a nonzero dual (0 = never seen binding).
+function stamp_cut!(cut_stats::Dict{String, Tuple{Int,Int}}, cut_name::String, clock::Int; bound::Bool = false)
+    created, last_bound = get(cut_stats, cut_name, (clock, 0))
+    cut_stats[cut_name] = (created, bound ? clock : last_bound)
+    return nothing
+end
+
+# Re-prunes cut_archive down to at most n_keep cuts, permanently discarding the rest (and
+# their cut_stats). Only the archive is touched - cuts currently live in the MP are left to the
+# per-iteration deactivation rule. rule:
+#   "recent_binding" - keep the cuts that bound most recently (ties: later-created first)
+#   "earliest"       - keep the earliest-created cuts
+function trim_cut_archive!(cut_archive::Dict{String, Any}, cut_stats::Dict{String, Tuple{Int,Int}}, n_keep::Int, rule::String)
+    n_total = length(cut_archive)
+    if n_total <= n_keep
+        return 0
+    end
+    names = collect(keys(cut_archive))
+    stat(n) = get(cut_stats, n, (0, 0))
+    if rule == "recent_binding"
+        sort!(names; by = n -> (stat(n)[2], stat(n)[1]), rev = true)
+    elseif rule == "earliest"
+        sort!(names; by = n -> stat(n)[1])
+    else
+        error("Unknown cut trim rule \"$rule\". Choose \"recent_binding\" or \"earliest\".")
+    end
+    for n in names[n_keep+1:end]
+        delete!(cut_archive, n)
+        delete!(cut_stats, n)
+    end
+    @info("Trimmed cut archive from $n_total to $n_keep cuts (rule: $rule)")
+    return n_total - n_keep
 end
 
 # Rebuilds cuts from cut_archive and re-adds them to MP under their original names,
@@ -800,13 +842,9 @@ end
 # and gives them the usual `cut_deactivation_threshold` iterations of grace before they're
 # eligible to be pruned again - so only the ones that still don't bind for the new problem
 # get re-removed.
-function reactivate_cuts(MP::Model, cut_archive::Dict{String, Any}, cut_names::Union{Vector{String}, Nothing} = nothing; max_reactivate::Int = typemax(Int))
+function reactivate_cuts(MP::Model, cut_archive::Dict{String, Any}, cut_names::Union{Vector{String}, Nothing} = nothing)
     time_1 = time()
     names_to_reactivate = cut_names === nothing ? collect(keys(cut_archive)) : cut_names
-    if length(names_to_reactivate) > max_reactivate
-        # Restore only a bounded subset so MP doesn't get the whole archive back; the rest stay archived.
-        names_to_reactivate = names_to_reactivate[1:max_reactivate]
-    end
     @info("Reactivating $(length(names_to_reactivate)) cuts")
     reactivated = Dict{String, ConstraintRef}()
     for cut_name in names_to_reactivate

@@ -271,9 +271,17 @@ Main MGA functions for running stochastic exploration with Benders and MGA, incl
 ==============================#
 
 
-function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, budget_offset::Float64 = 1.0, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100, budget_type = "Transformed", tighten_budget::Bool = false, budget_tighten_step_size::Float64 = 0.1, floor_offset::Float64 = 0.01, cap_wings::Bool = true)
+function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, budget_offset::Float64 = 1.0, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100, budget_type = "Transformed", tighten_budget::Bool = false, budget_tighten_step_size::Float64 = 0.1, floor_offset::Float64 = 0.01, cap_wings::Bool = true, run_log::Union{Nothing, Vector} = nothing)
 
     #configure_parallel_workers!(settings)
+
+    # Optional per-run diagnostics (used by test_cut_trim_rules): (label, benders iterations,
+    # sum of MP solve time, archive size before/after the run).
+    log_run!(label, out, archive_before) = run_log === nothing || begin
+        entry = (label = label, iterations = length(out["Gaps"]), mp_time = sum(out["Time MP hist"]), archive_before = archive_before, archive_after = length(cut_archive))
+        push!(run_log, entry)
+        @info("TRIMRUN|$(entry.label)|iters=$(entry.iterations)|mp_time=$(round(entry.mp_time; digits=3))|archive_before=$(entry.archive_before)|archive_after=$(entry.archive_after)")
+    end
 
     # Result containers
     results_cap = []
@@ -309,12 +317,22 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     # deactivate_cuts now archives the exact constraint rather than discarding it) when a
     # later problem starts.
     cut_archive = Dict{String, Any}()
+    # Per-cut (created, last_bound) stamps used to decide which archived cuts survive trimming.
+    cut_stats = Dict{String, Tuple{Int,Int}}()
+    cut_clock = Ref(0)
+    cuts_retained = get(settings, "Cuts retained", typemax(Int))
+    trim_rule = get(settings, "Cut trim rule", "recent_binding")
 
     for (i, risk) in enumerate(risk_aversion_weights)
         # Base Runs
         case_name = "Risk_Weight_"*string(risk)
         set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk)
-        output = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping, risk_aversion_weight = risk, cut_archive = cut_archive)
+        if settings["Cut deactivation strategy"] == "in benders"
+            trim_cut_archive!(cut_archive, cut_stats, cuts_retained, trim_rule)
+        end
+        archive_before = length(cut_archive)
+        output = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping, risk_aversion_weight = risk, cut_archive = cut_archive, cut_stats = cut_stats, cut_clock = cut_clock)
+        log_run!(case_name, output, archive_before)
         log_result_memory!(case_name*" output", output)
         gap_cvar = output["Gaps"]
         push!(run_labels, case_name)
@@ -403,6 +421,9 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
             if settings["Cut deactivation strategy"] == "in mga"
                 cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            elseif settings["Cut deactivation strategy"] == "in benders"
+                # Archive grows freely across this vector's runs; re-prune it once per new vector.
+                trim_cut_archive!(cut_archive, cut_stats, cuts_retained, trim_rule)
             end
             #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
             # introduce new variable to track if this is the not the first tightening. Used to indicate mapping
@@ -417,7 +438,9 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                 run_name = tighten_budget ? "Random_$(iteration)_Budget_$(level)" : "Random_"*string(iteration)
                 map_bool = true
                 try
-                    output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = map_bool, cut_archive = cut_archive)
+                    archive_before = length(cut_archive)
+                    output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = map_bool, cut_archive = cut_archive, cut_stats = cut_stats, cut_clock = cut_clock)
+                    log_run!(run_name, output_random, archive_before)
                     log_result_memory!(run_name*" output", output_random)
                     avg_time_mp = mean(output_random["Time MP hist"])
                     gap = output_random["Gaps"]
@@ -452,7 +475,9 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                                 cap_run_name = "Random_$(iteration)_Budget_$(level)_$(key)_Cap_$(cap_level)"
 
                                 try
-                                    cap_output = mga_benders(inputs, settings, MP, SPs, budgets, cap_run_name; Eval_SPs = Eval_SPs, mapping = true, cut_archive = cut_archive)
+                                    archive_before = length(cut_archive)
+                                    cap_output = mga_benders(inputs, settings, MP, SPs, budgets, cap_run_name; Eval_SPs = Eval_SPs, mapping = true, cut_archive = cut_archive, cut_stats = cut_stats, cut_clock = cut_clock)
+                                    log_run!(cap_run_name, cap_output, archive_before)
                                     log_result_memory!(cap_run_name*" output", cap_output)
                                     avg_time_mp = mean(cap_output["Time MP hist"])
                                     push!(run_labels, cap_run_name)
@@ -1208,19 +1233,25 @@ function test_cut_management(test_index = "cut_mgmt")
     @assert rhs_before == rhs_after "reactivated cuts' RHS did not match the originals"
     @info("Reactivated all $(length(to_deactivate)) cuts; RHS values match the originals exactly.")
 
-    # --- Archive cap: max_archive bounds the archive, extra cuts are deleted outright ---
-    cap_k = 10
-    capped_names = all_names[1:30]
-    capped_archive = Dict{String, Any}()
-    deactivate_cuts(MP, capped_names, capped_archive, cut_refs; max_archive = cap_k)
-    @assert length(capped_archive) == cap_k "archive cap not enforced: $(length(capped_archive)) > $cap_k"
-    @assert all(n -> constraint_by_name(MP, n) === nothing, capped_names) "over-cap cuts should still be deleted from MP"
-    cap_reactivated = reactivate_cuts(MP, capped_archive; max_reactivate = 4)
-    @assert length(cap_reactivated) == 4 && length(capped_archive) == cap_k - 4
-    merge!(cut_refs, cap_reactivated)
-    @info("Archive cap and max_reactivate enforced as expected.")
-    # restore the rest so later checks see an unchanged cut set
-    merge!(cut_refs, reactivate_cuts(MP, capped_archive))
+    # --- trim_cut_archive!: both rules keep the expected cuts ---
+    trim_names = all_names[1:30]
+    trim_archive = Dict{String, Any}()
+    deactivate_cuts(MP, trim_names, trim_archive, cut_refs)
+    k = 10
+    # created and last_bound both ascend with i, so the rules disagree:
+    # recent_binding keeps the last k, earliest keeps the first k
+    stats = Dict(n => (i, i) for (i, n) in enumerate(trim_names))
+    arch = copy(trim_archive); st = copy(stats)
+    @assert trim_cut_archive!(arch, st, k, "recent_binding") == length(trim_names) - k
+    @assert Set(keys(arch)) == Set(trim_names[end-k+1:end]) "recent_binding should keep the highest last_bound"
+    @assert Set(keys(st)) == Set(trim_names[end-k+1:end]) "stats not trimmed alongside the archive"
+    arch = copy(trim_archive); st = copy(stats)
+    trim_cut_archive!(arch, st, k, "earliest")
+    @assert Set(keys(arch)) == Set(trim_names[1:k]) "earliest should keep the lowest created"
+    arch = copy(trim_archive)
+    @assert trim_cut_archive!(arch, copy(stats), 1000, "earliest") == 0 && length(arch) == length(trim_names) "trim should be a no-op under the cap"
+    @info("trim_cut_archive! keeps the expected cuts for both rules.")
+    merge!(cut_refs, reactivate_cuts(MP, trim_archive)) # restore so later checks see an unchanged cut set
 
     # --- Self-healing fallback: a cut live in MP but absent from cut_refs (simulates a
     # cut carried over from a previous problem on a reused MP) should still resolve. ---
@@ -1509,4 +1540,52 @@ function test_sample_interior_delaunay(test_index = "sample_interior_delaunay")
     @info("[$(test_index)] PASSED: Delaunay interior sampling correct for both CycleSampling and ProgressiveRefinement modes.")
 
     return (spread_cycle = spread_cycle, spread_prog = spread_prog)
+end
+
+#=========
+
+Cut trim rule comparison: runs the same laptop risk-pareto + MGA exploration (same seed, so the
+same MGA vectors and budget schedule) once with archive trimming effectively off (baseline), then
+once per trim rule ("recent_binding", "earliest") with a small "Cuts retained". Objectives/gaps
+should agree across configs; the signal for which rule keeps the more useful cuts is the number
+of Benders iterations needed (a worse cut set needs more). Solve *times* are reported but are not
+meaningful at laptop scale (see CLAUDE.md traps), so don't read a performance win from them.
+
+==========#
+
+function test_cut_trim_rules(test_index = "cut_trim"; cuts_retained_small::Int = 300)
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    base_settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, base_settings)
+    configure_parallel_workers!(base_settings)
+    SPs = build_all_subproblems(inputs, base_settings)
+
+    configs = [("baseline", 10^9, "recent_binding"),
+               ("recent_binding", cuts_retained_small, "recent_binding"),
+               ("earliest", cuts_retained_small, "earliest")]
+    summaries = Dict{String, Any}()
+    for (label, n_keep, rule) in configs
+        settings = deepcopy(base_settings)
+        settings["Cuts retained"] = n_keep
+        settings["Cut trim rule"] = rule
+        settings["Cut deactivation strategy"] = "in benders"
+        results_folder = joinpath("outputs", "Test_"*string(test_index), label)
+        summary_folder = joinpath(results_folder, "Summary")
+        mkpath(summary_folder)
+        run_log = []
+        t = @elapsed run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Pareto"), summary_folder; vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping = false, budget_type = "Transformed", tighten_budget = true, run_log = run_log)
+        mga_runs = filter(r -> startswith(r.label, "Random_"), run_log)
+        summaries[label] = (total_iterations = sum(r.iterations for r in run_log), mga_iterations = sum(r.iterations for r in mga_runs), mp_time = sum(r.mp_time for r in run_log), wall_time = t, max_archive_at_run_start = maximum(r.archive_before for r in run_log), run_log = run_log)
+        # Invariant: trimming happens at vector/risk-weight starts, so the archive going *into*
+        # the first run of each vector must already be within the cap.
+        if n_keep < 10^9
+            first_runs = filter(r -> occursin(r"^Random_\d+(_Budget_1)?$", r.label) || startswith(r.label, "Risk_Weight_"), run_log)
+            @assert all(r -> r.archive_before <= n_keep, first_runs) "archive exceeded Cuts retained at a vector boundary for $label"
+        end
+    end
+
+    for (label, s) in summaries
+        @info("[$(test_index)] $label: total Benders iterations = $(s.total_iterations), MGA iterations = $(s.mga_iterations), MP time = $(round(s.mp_time; digits=3))s, wall = $(round(s.wall_time; digits=1))s, max archive at run start = $(s.max_archive_at_run_start)")
+    end
+    return summaries
 end
