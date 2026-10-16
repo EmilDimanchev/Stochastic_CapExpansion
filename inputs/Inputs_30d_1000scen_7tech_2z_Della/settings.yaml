@@ -54,6 +54,7 @@ Vector Type: random
 Iterations: 50
 Capacity Exploration: true
 Seed: 1234
+
 Budget convergence tolerance: 1e-3
 Cut deactivation threshold: 8
 MGA cut deactivation threshold: 8

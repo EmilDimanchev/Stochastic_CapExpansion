@@ -790,7 +790,7 @@ function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_arch
     return cut_archive
 end
 
-# Per-cut bookkeeping used to decide which archived cuts survive trim_cut_archive!.
+# Per-cut bookkeeping used to decide which cuts survive trim_cuts!.
 # cut_stats maps cut name => (created, last_bound), both stamped from a shared monotone clock
 # (cut_clock, bumped once per Benders iteration by the algorithms) so they're comparable across
 # runs. `created` is set once and survives deactivation/reactivation; `last_bound` is the most
@@ -801,18 +801,35 @@ function stamp_cut!(cut_stats::Dict{String, Tuple{Int,Int}}, cut_name::String, c
     return nothing
 end
 
-# Re-prunes cut_archive down to at most n_keep cuts, permanently discarding the rest (and
-# their cut_stats). Only the archive is touched - cuts currently live in the MP are left to the
-# per-iteration deactivation rule. rule:
+# Number of optimality/CVaR-tail cuts currently live in MP.
+function count_live_cuts(MP::Model)
+    return count(con -> startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_"), all_constraints(MP, include_variable_in_set_constraints = false))
+end
+
+# Trims the combined pool of cuts - those live in MP *and* those in cut_archive - down to at most
+# n_keep, permanently discarding the rest (live ones are deleted from MP; their cut_stats go too).
+# Trimming only the archive isn't enough: runs shorter than the deactivation threshold never prune,
+# so reactivated cuts just stay live in MP and the pool grows without bound. rule:
 #   "recent_binding" - keep the cuts that bound most recently (ties: later-created first)
 #   "earliest"       - keep the earliest-created cuts
-function trim_cut_archive!(cut_archive::Dict{String, Any}, cut_stats::Dict{String, Tuple{Int,Int}}, n_keep::Int, rule::String)
-    n_total = length(cut_archive)
-    if n_total <= n_keep
-        return 0
+# Cuts with no stats yet (added after the last cataloguing pass) count as newest, so they survive.
+# Always logs, including when it's a no-op, so a trim that never engages is visible in the logs.
+# Returns (live cuts deleted, archived cuts deleted).
+function trim_cuts!(MP::Model, cut_archive::Dict{String, Any}, cut_stats::Dict{String, Tuple{Int,Int}}, n_keep::Int, rule::String, clock::Int)
+    live = Dict{String, ConstraintRef}()
+    for con in all_constraints(MP, include_variable_in_set_constraints = false)
+        n = name(con)
+        if startswith(n, "optimality_cut_") || startswith(n, "cvar_tail_cuts_")
+            live[n] = con
+        end
     end
-    names = collect(keys(cut_archive))
-    stat(n) = get(cut_stats, n, (0, 0))
+    n_live, n_arch = length(live), length(cut_archive)
+    if n_live + n_arch <= n_keep
+        @info("Cut trim ($rule): $n_live live + $n_arch archived = $(n_live + n_arch) cuts <= Cuts retained ($n_keep); nothing trimmed")
+        return (0, 0)
+    end
+    names = vcat(collect(keys(live)), collect(keys(cut_archive)))
+    stat(n) = get(cut_stats, n, (clock, clock))
     if rule == "recent_binding"
         sort!(names; by = n -> (stat(n)[2], stat(n)[1]), rev = true)
     elseif rule == "earliest"
@@ -820,12 +837,22 @@ function trim_cut_archive!(cut_archive::Dict{String, Any}, cut_stats::Dict{Strin
     else
         error("Unknown cut trim rule \"$rule\". Choose \"recent_binding\" or \"earliest\".")
     end
+    live_to_delete = ConstraintRef[]
+    n_arch_deleted = 0
     for n in names[n_keep+1:end]
-        delete!(cut_archive, n)
+        if haskey(live, n)
+            push!(live_to_delete, live[n])
+        else
+            delete!(cut_archive, n)
+            n_arch_deleted += 1
+        end
         delete!(cut_stats, n)
     end
-    @info("Trimmed cut archive from $n_total to $n_keep cuts (rule: $rule)")
-    return n_total - n_keep
+    if !isempty(live_to_delete)
+        delete(MP, live_to_delete) # one batched delete, see manage_cuts
+    end
+    @info("Cut trim ($rule): $n_live live + $n_arch archived -> kept $n_keep; deleted $(length(live_to_delete)) live and $n_arch_deleted archived cuts")
+    return (length(live_to_delete), n_arch_deleted)
 end
 
 # Rebuilds cuts from cut_archive and re-adds them to MP under their original names,
