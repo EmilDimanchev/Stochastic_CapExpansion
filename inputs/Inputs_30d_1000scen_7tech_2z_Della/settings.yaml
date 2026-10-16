@@ -55,6 +55,8 @@ Iterations: 50
 Capacity Exploration: true
 Seed: 1234
 Budget convergence tolerance: 0.0001
+Cuts retained: 200000 # cap on live + archived cuts, enforced at the start of each MGA vector
+Cut trim rule: "recent_binding" # which cuts survive the trim; options are "recent_binding" and "earliest"
 Cut deactivation threshold: 8
 MGA cut deactivation threshold: 8
 Cut deactivation strategy: "in benders" # options are "in benders" and "in mga"
