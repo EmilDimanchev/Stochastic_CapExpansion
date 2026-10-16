@@ -271,7 +271,74 @@ Main MGA functions for running stochastic exploration with Benders and MGA, incl
 ==============================#
 
 
-function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_multiplier::Float64 = 1.10, budget_offset::Float64 = 1.0, vector_set::Union{AbstractVector, Nothing} = nothing, summary_name::String = "new_setup", Eval_SPs = nothing, mapping = false, n_samples = 100, budget_type = "Transformed", tighten_budget::Bool = false, budget_tighten_step_size::Float64 = 0.1, floor_offset::Float64 = 0.01, cap_wings::Bool = true, run_log::Union{Nothing, Vector} = nothing)
+#-------------------------------------------------------------------------------------------
+# Settings dicts for run_stochastic_exploration_risk_pareto, one per subsection of the run.
+# Callers pass only the keys they want to change; everything else takes the default below.
+# Unknown keys error out, so a typo can't silently fall back to a default.
+#-------------------------------------------------------------------------------------------
+
+# Budget constraint used during capacity exploration (and its optional tightening schedule)
+default_budget_settings() = Dict{String,Any}(
+    "Budget type" => "Transformed",       # "Transformed" or "Box"
+    "Budget offset" => 1.0,               # Transformed: added to the loosest budget
+    "Budget multiplier" => 1.10,          # Box: scales the EV-optimal System Expected cost
+    "Tighten budget" => false,            # Transformed only: step the budget down per MGA vector
+    "Tighten step size" => 0.1,
+    "Floor offset" => 0.01,               # tightest budget = min transformed anchor cost + this
+)
+
+# Extra caps on one metric (System Expected / CVaR) at selected tightening levels
+default_cap_settings() = Dict{String,Any}(
+    "Cap wings" => true,                  # only active when tightening a Transformed budget
+    "Number of caps" => 2,                # max caps per wing per level
+    "Cap levels" => [1],                  # tightening levels at which caps are run
+)
+
+# Mapping of the feasible space (records every Benders iterate, then samples the interior)
+default_mapping_settings() = Dict{String,Any}(
+    "Mapping" => false,
+    "Interior samples" => 100,
+)
+
+# Run bookkeeping: MGA vectors, output naming, evaluation SPs and diagnostics
+default_run_settings() = Dict{String,Any}(
+    "Vector set" => nothing,              # nothing -> generate from settings["Vector Type"]
+    "Summary name" => "new_setup",
+    "Eval SPs" => nothing,
+    "Run log" => nothing,                 # Vector to collect per-run diagnostics (see log_run!)
+)
+
+function resolve_settings(defaults::Dict{String,Any}, overrides::AbstractDict, name::String)
+    unknown = setdiff(keys(overrides), keys(defaults))
+    isempty(unknown) || error("Unknown key(s) $(collect(unknown)) in $name. Valid keys: $(sort(collect(keys(defaults)))).")
+    return merge(defaults, Dict{String,Any}(overrides))
+end
+
+function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_settings::AbstractDict = Dict(), cap_settings::AbstractDict = Dict(), mapping_settings::AbstractDict = Dict(), run_settings::AbstractDict = Dict())
+
+    budget_settings = resolve_settings(default_budget_settings(), budget_settings, "budget_settings")
+    cap_settings = resolve_settings(default_cap_settings(), cap_settings, "cap_settings")
+    mapping_settings = resolve_settings(default_mapping_settings(), mapping_settings, "mapping_settings")
+    run_settings = resolve_settings(default_run_settings(), run_settings, "run_settings")
+
+    budget_type = budget_settings["Budget type"]
+    budget_offset = budget_settings["Budget offset"]
+    budget_multiplier = budget_settings["Budget multiplier"]
+    tighten_budget = budget_settings["Tighten budget"]
+    budget_tighten_step_size = budget_settings["Tighten step size"]
+    floor_offset = budget_settings["Floor offset"]
+
+    cap_wings = cap_settings["Cap wings"]
+    n_caps = cap_settings["Number of caps"]
+    cap_levels = cap_settings["Cap levels"]
+
+    mapping = mapping_settings["Mapping"]
+    n_samples = mapping_settings["Interior samples"]
+
+    vector_set = run_settings["Vector set"]
+    summary_name = run_settings["Summary name"]
+    Eval_SPs = run_settings["Eval SPs"]
+    run_log = run_settings["Run log"]
 
     #configure_parallel_workers!(settings)
 
@@ -397,7 +464,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                 budget_schedule = compute_budget_tighten_schedule(budget_val_transform, budget_floor, budget_tighten_step_size)
                 @info("Budget tightening enabled: $(length(budget_schedule)) levels per MGA vector, from $(budget_val_transform) down to $(budget_floor) in steps of $(budget_tighten_step_size).")
                 if do_cap_wings
-                    cap_schedule = compute_budget_schedule_wings(extreme_values, budget_schedule; k_ev = transform_sys, k_cvar = transform_cvar)
+                    cap_schedule = compute_budget_schedule_wings(extreme_values, budget_schedule; k_ev = transform_sys, k_cvar = transform_cvar, n_max = n_caps, )
                 end
             end
         elseif budget_type == "Box"
@@ -461,7 +528,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                     end
                     release_heavy_payload!(output_random)
 
-                    if do_cap_wings
+                    if do_cap_wings && level in cap_levels # only carry out on budgets asked for
                         schedule = cap_schedule[budget_level_val]
                         for key in keys(schedule) # iterates through cvar and ev wings
                             caps = schedule[key]
@@ -705,7 +772,10 @@ function mapping_test_laptop(test_index)
     budget_multiplier = 1.001
     n_samples = 10
 
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping = true, n_samples = 50)
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
+        budget_settings = Dict("Budget multiplier" => 1.001),
+        mapping_settings = Dict("Mapping" => true, "Interior samples" => 50),
+        run_settings = Dict("Summary name" => "mapping"))
     rmprocs(workers())
 
 end
@@ -728,7 +798,10 @@ function mapping_test_della(test_index)
     
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping=true, n_samples = settings["Interior Samples"])
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder;
+        budget_settings = Dict("Budget multiplier" => 1.001),
+        mapping_settings = Dict("Mapping" => true, "Interior samples" => settings["Interior Samples"]),
+        run_settings = Dict("Summary name" => "mapping"))
 
 end
 
@@ -750,7 +823,10 @@ function mapping_test_della_001(test_index)
     
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder; budget_multiplier = 1.001, vector_set = nothing, summary_name = "mapping", Eval_SPs = nothing, mapping=true, n_samples = settings["Interior Samples"])
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder;
+        budget_settings = Dict("Budget multiplier" => 1.001),
+        mapping_settings = Dict("Mapping" => true, "Interior samples" => settings["Interior Samples"]),
+        run_settings = Dict("Summary name" => "mapping"))
 
 end
 
@@ -780,7 +856,10 @@ function risk_pareto_test_della(test_index, budget_type; budget_multiplier = 1.0
     Eval_SPs = nothing
     mapping=false
     n_samples = settings["Interior Samples"]
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder , summary_folder; budget_multiplier = budget_multiplier, vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping=false, n_samples = settings["Interior Samples"], budget_type = budget_type)
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
+        budget_settings = Dict("Budget type" => budget_type, "Budget multiplier" => budget_multiplier),
+        mapping_settings = Dict("Mapping" => false, "Interior samples" => settings["Interior Samples"]),
+        run_settings = Dict("Summary name" => "pareto"))
 
 end
 
@@ -810,7 +889,10 @@ function risk_pareto_test_della_deterministic(test_index, budget_type; budget_mu
     Eval_SPs = nothing
     mapping=false
     n_samples = settings["Interior Samples"]
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder , summary_folder; budget_multiplier = budget_multiplier, vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping=false, n_samples = settings["Interior Samples"], budget_type = budget_type)
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
+        budget_settings = Dict("Budget type" => budget_type, "Budget multiplier" => budget_multiplier),
+        mapping_settings = Dict("Mapping" => false, "Interior samples" => settings["Interior Samples"]),
+        run_settings = Dict("Summary name" => "pareto"))
 
 end
 
@@ -840,7 +922,10 @@ function risk_pareto_test_laptop_5(test_index)
     Eval_SPs = nothing
     mapping=true
     n_samples = settings["Interior Samples"]
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder , summary_folder; budget_multiplier = budget_multiplier, vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping=mapping, n_samples = settings["Interior Samples"], budget_type = "Transformed")
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
+        budget_settings = Dict("Budget type" => "Transformed", "Budget multiplier" => budget_multiplier),
+        mapping_settings = Dict("Mapping" => mapping, "Interior samples" => settings["Interior Samples"]),
+        run_settings = Dict("Summary name" => "pareto"))
 
 end
 
@@ -863,7 +948,10 @@ function risk_pareto_tighten_test_laptop(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
     results_folder = joinpath(results_folder, "Pareto5")
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder; vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping = true, n_samples = settings["Interior Samples"], budget_type = "Transformed", tighten_budget = true)
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
+        budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
+        mapping_settings = Dict("Mapping" => true, "Interior samples" => settings["Interior Samples"]),
+        run_settings = Dict("Summary name" => "pareto"))
 
 end
 
@@ -886,7 +974,10 @@ function risk_pareto_tighten_test_della(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
     results_folder = joinpath(results_folder, "Pareto5")
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder; vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping = true, n_samples = settings["Interior Samples"], budget_type = "Transformed", tighten_budget = true)
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
+        budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
+        mapping_settings = Dict("Mapping" => true, "Interior samples" => settings["Interior Samples"]),
+        run_settings = Dict("Summary name" => "pareto"))
 
 end
 
@@ -909,7 +1000,10 @@ function risk_pareto_test_no_tighten_della(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
     results_folder = joinpath(results_folder, "Pareto5")
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder; vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping = false, n_samples = settings["Interior Samples"], budget_type = "Transformed", tighten_budget = false)
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
+        budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => false),
+        mapping_settings = Dict("Mapping" => false, "Interior samples" => settings["Interior Samples"]),
+        run_settings = Dict("Summary name" => "pareto"))
 
 end
 
@@ -932,7 +1026,11 @@ function wing_caps_test_della(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
     results_folder = joinpath(results_folder, "Pareto5")
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder; vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping = false, n_samples = settings["Interior Samples"], budget_type = "Transformed", tighten_budget = true, cap_wings = true)
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
+        budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
+        cap_settings = Dict("Cap wings" => true),
+        mapping_settings = Dict("Mapping" => false, "Interior samples" => settings["Interior Samples"]),
+        run_settings = Dict("Summary name" => "pareto"))
 
 end
 
@@ -957,7 +1055,11 @@ function wing_caps_test_laptop(test_index)
     # Build SPs ------ note that this function set up maintains same SPs across all setups, but each creates its own MP
     SPs = build_all_subproblems(inputs, settings)
     results_folder = joinpath(results_folder, "Pareto5")
-    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder; vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping = false, n_samples = settings["Interior Samples"], budget_type = "Transformed", tighten_budget = true, cap_wings = true)
+    vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
+        budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
+        cap_settings = Dict("Cap wings" => true),
+        mapping_settings = Dict("Mapping" => false, "Interior samples" => settings["Interior Samples"]),
+        run_settings = Dict("Summary name" => "pareto"))
 
 end
 
@@ -1589,7 +1691,10 @@ function test_cut_trim_rules(test_index = "cut_trim"; cuts_retained_small::Int =
         summary_folder = joinpath(results_folder, "Summary")
         mkpath(summary_folder)
         run_log = []
-        t = @elapsed run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Pareto"), summary_folder; vector_set = nothing, summary_name = "pareto", Eval_SPs = nothing, mapping = false, budget_type = "Transformed", tighten_budget = true, run_log = run_log)
+        t = @elapsed run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Pareto"), summary_folder;
+            budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
+            mapping_settings = Dict("Mapping" => false),
+            run_settings = Dict("Summary name" => "pareto", "Run log" => run_log))
         mga_runs = filter(r -> startswith(r.label, "Random_"), run_log)
         summaries[label] = (total_iterations = sum(r.iterations for r in run_log), mga_iterations = sum(r.iterations for r in mga_runs), mp_time = sum(r.mp_time for r in run_log), wall_time = t, max_archive_at_run_start = maximum(r.archive_before for r in run_log), run_log = run_log)
         # Invariant: trimming happens at vector/risk-weight starts, so the archive going *into*
