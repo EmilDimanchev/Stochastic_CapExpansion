@@ -12,3 +12,4 @@ Thumbs.db
 *.err
 experiments/Della_experiments/
 .claude
+/inputs

@@ -54,14 +54,16 @@ Vector Type: random
 Iterations: 50
 Capacity Exploration: true
 Seed: 1234
-Budget convergence tolerance: 0.0001
+Budget convergence tolerance: 1e-3
 Cut deactivation threshold: 8
 MGA cut deactivation threshold: 8
 Cut deactivation strategy: "in benders" # options are "in benders" and "in mga"
+Cuts retained: 200000
+Cut trim rule: "recent_binding"
 
 Mapping: false
 Mapping Gap Threshold: 0.2
 Sample Method: "CVT"
-Interior Samples: 2
+Interior Samples: 3000
 "Delaunay Simplex Fraction": 0.1
 "Delaunay Repeat Mode": "ProgressiveRefinement" # options "CycleSampling", "ProgressiveRefinement"
