@@ -333,6 +333,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     cap_levels = cap_settings["Cap levels"]
 
     mapping = mapping_settings["Mapping"]
+    sampling = mapping_settings["Sampling"]
     n_samples = mapping_settings["Interior samples"]
 
     vector_set = run_settings["Vector set"]
@@ -603,7 +604,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
 
         # Map interior after exterior mapping
-        if mapping
+        if sampling
             all_caps = Matrix(vcat(results_cap...))
             all_costs = vcat(results_syscost...)
             @time samples = sample_interior_delauney(all_caps, all_costs, n_samples, settings, budget_val_transform, transform_sys, transform_cvar, scaling)
@@ -1041,7 +1042,7 @@ function wing_caps_test_della(test_index)
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
         cap_settings = Dict("Cap wings" => true),
-        mapping_settings = Dict("Mapping" => false, "Interior samples" => settings["Interior Samples"]),
+        mapping_settings = Dict("Mapping" => true, "Sampling" => false, "Interior samples" => settings["Interior Samples"]),
         run_settings = Dict("Summary name" => "pareto"))
 
 end
