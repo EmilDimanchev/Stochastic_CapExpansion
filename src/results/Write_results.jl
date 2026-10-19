@@ -506,6 +506,25 @@ function write_exploration_results!(results_cap::AbstractVector, results_syscost
     df_exploration = innerjoin(df_exploration, dfs_emissions, on = :RowID)
     select!(df_exploration, Not(:RowID))
 
-    CSV.write(joinpath(results_folder,"Summary_"*summary_name*".csv"), df_exploration)
-
+    # Write to a temp file and only swap it in once it is verified non-empty. On quota-limited
+    # filesystems a failed flush can leave a 0-byte file without throwing, and writing in place
+    # would also clobber the previous (good) checkpoint of the summary.
+    final_path = joinpath(results_folder, "Summary_"*summary_name*".csv")
+    tmp_path = final_path * ".tmp"
+    written = false
+    for attempt in 1:2
+        try
+            CSV.write(tmp_path, df_exploration)
+            if isfile(tmp_path) && filesize(tmp_path) > 0
+                mv(tmp_path, final_path; force = true)
+                written = true
+                break
+            end
+            @warn("Summary write attempt $attempt produced an empty file (disk quota?)", path = tmp_path)
+        catch e
+            @warn("Summary write attempt $attempt failed", exception = (e, catch_backtrace()))
+        end
+    end
+    written || @error("Could not write $final_path; any earlier checkpoint is left in place")
+    return written
 end

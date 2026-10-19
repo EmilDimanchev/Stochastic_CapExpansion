@@ -439,6 +439,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     end
 
     if settings["Capacity Exploration"]
+        checkpoint_time = 0.0 # cumulative seconds spent on incremental summary writes
         budgets = Dict()
         constraint_dict = Dict()
         # Wing caps only make sense with a tightening schedule on the Transformed budget
@@ -581,6 +582,16 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                     @warn("Budget too tight (or error), terminating tightening", exception = (e, catch_backtrace()))
                     break
                 end
+                # Checkpoint the summary after every budget level so a late failure does not lose the run
+                try
+                    if !isempty(results_cap)
+                        t_ckpt = @elapsed write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
+                        checkpoint_time += t_ckpt
+                        @info("Summary checkpoint after $run_name: $(round(t_ckpt; digits=3)) s ($(sum(nrow, results_cap)) rows), cumulative $(round(checkpoint_time; digits=3)) s")
+                    end
+                catch e
+                    @warn("Summary checkpoint failed", exception = (e, catch_backtrace()))
+                end
             end
             if settings["Cut deactivation strategy"] == "in mga"
                 if length(cuts_to_keep) < settings["Cuts retained"] && !mapping && avg_time_mp < 3*balanced_avg_time_mp
@@ -607,7 +618,8 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                 push!(results_emissions, temp_df_emissions)
             end
         end
-        write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
+        t_final = @elapsed write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
+        @info("Final summary write: $(round(t_final; digits=3)) s; total checkpoint time $(round(checkpoint_time; digits=3)) s")
         return vectors
     end
 end
