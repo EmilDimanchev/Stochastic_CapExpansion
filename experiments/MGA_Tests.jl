@@ -333,6 +333,9 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     cap_levels = cap_settings["Cap levels"]
 
     mapping = mapping_settings["Mapping"]
+    if mapping
+        @info("Mapping on")
+    end
     sampling = mapping_settings["Sampling"]
     n_samples = mapping_settings["Interior samples"]
 
@@ -496,8 +499,6 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                 trim_cuts!(MP, cut_archive, cut_stats, cuts_retained, trim_rule, cut_clock[])
             end
             #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
-            # introduce new variable to track if this is the not the first tightening. Used to indicate mapping
-            map_bool = false
 
             levels = tighten_budget ? budget_schedule : [budget_val_transform]
             local output_random, avg_time_mp
@@ -506,10 +507,9 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                     budgets = update_budget_constraint_bendersMP!(MP, budget_level_val, "Transformed", budgets)
                 end
                 run_name = tighten_budget ? "Random_$(iteration)_Budget_$(level)" : "Random_"*string(iteration)
-                map_bool = true
                 try
                     archive_before = count_live_cuts(MP) + length(cut_archive)
-                    output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = map_bool, cut_archive = cut_archive, cut_stats = cut_stats, cut_clock = cut_clock)
+                    output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = mapping, cut_archive = cut_archive, cut_stats = cut_stats, cut_clock = cut_clock)
                     log_run!(run_name, output_random, archive_before)
                     log_result_memory!(run_name*" output", output_random)
                     avg_time_mp = mean(output_random["Time MP hist"])
@@ -546,7 +546,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
 
                                 try
                                     archive_before = count_live_cuts(MP) + length(cut_archive)
-                                    cap_output = mga_benders(inputs, settings, MP, SPs, budgets, cap_run_name; Eval_SPs = Eval_SPs, mapping = true, cut_archive = cut_archive, cut_stats = cut_stats, cut_clock = cut_clock)
+                                    cap_output = mga_benders(inputs, settings, MP, SPs, budgets, cap_run_name; Eval_SPs = Eval_SPs, mapping = mapping, cut_archive = cut_archive, cut_stats = cut_stats, cut_clock = cut_clock)
                                     log_run!(cap_run_name, cap_output, archive_before)
                                     log_result_memory!(cap_run_name*" output", cap_output)
                                     avg_time_mp = mean(cap_output["Time MP hist"])
@@ -1041,7 +1041,7 @@ function wing_caps_test_della(test_index)
     results_folder = joinpath(results_folder, "Pareto5")
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
-        cap_settings = Dict("Cap wings" => true),
+        cap_settings = Dict("Cap wings" => true, "Cap levels" => [1, 3]),
         mapping_settings = Dict("Mapping" => true, "Sampling" => false, "Interior samples" => settings["Interior Samples"]),
         run_settings = Dict("Summary name" => "pareto"))
 
