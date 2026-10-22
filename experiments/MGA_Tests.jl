@@ -297,6 +297,7 @@ default_cap_settings() = Dict{String,Any}(
 # Mapping of the feasible space (records every Benders iterate, then samples the interior)
 default_mapping_settings() = Dict{String,Any}(
     "Mapping" => false,
+    "Sampling" => false,
     "Interior samples" => 100,
 )
 
