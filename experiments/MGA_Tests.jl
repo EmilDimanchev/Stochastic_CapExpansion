@@ -140,24 +140,26 @@ end
 
 
 #-------------------------------------------------------------------------------------------
-# Helper 3: cap values for one wing. Places n evenly spaced caps between the lens end
-# (tight_end) and the central edge (edge), excluding the lens end itself. n is limited by
-# n_max and by the minimum spacing min_gap_frac * span. Caps are returned loose -> tight,
-# which is the order to solve them in.
+# Helper 3: cap values for one wing. Places n evenly spaced caps strictly between the lens
+# end (tight_end) and the central edge (edge), excluding both endpoints, so every cap lies
+# inside the outer wing (a cap at the central edge is fixed across budget levels and often
+# does not bind once the budget tightens). n is limited by n_max and by the minimum spacing
+# min_gap_frac * span. Caps are returned loose -> tight, which is the order to solve them in.
 #-------------------------------------------------------------------------------------------
 function wing_caps(tight_end::Real, edge::Real, span::Real, n_max::Int, min_gap_frac::Real)
     width = edge - tight_end
 
-    # How many caps fit while keeping adjacent caps at least min_gap_frac * span apart
-    n = min(n_max, Int(floor(width / (min_gap_frac * span))))
+    # How many caps fit while keeping adjacent caps (and the endpoints) at least
+    # min_gap_frac * span apart: n caps split the wing into n + 1 gaps
+    n = min(n_max, Int(floor(width / (min_gap_frac * span))) - 1)
     if n <= 0
         return Float64[]
     end
 
-    # i = n gives the loosest cap (at the central edge); i = 1 the tightest
+    # i = n gives the loosest cap (one gap inside the central edge); i = 1 the tightest
     caps = Float64[]
     for i in n:-1:1
-        push!(caps, tight_end + width * i / n)
+        push!(caps, tight_end + width * i / (n + 1))
     end
     return caps
 end
@@ -1723,4 +1725,33 @@ function test_cut_trim_rules(test_index = "cut_trim"; cuts_retained_small::Int =
         @info("[$(test_index)] $label: total Benders iterations = $(s.total_iterations), MGA iterations = $(s.mga_iterations), MP time = $(round(s.mp_time; digits=3))s, wall = $(round(s.wall_time; digits=1))s, max archive at run start = $(s.max_archive_at_run_start)")
     end
     return summaries
+end
+
+# Checks that wing_caps places every cap strictly inside the wing (never at the central
+# edge or the lens end). Uses the CVaR-wing values from the test (14) cluster run: the
+# central edge (13929.06) and the budget 1 / budget 3 lens ends recovered from that run's caps.
+function test_wing_caps(test_index = "wing_caps")
+    edge = 13929.05591446445
+    span = 20000.0
+    min_gap_frac = 0.03
+    for (label, tight_end, expected) in (("Budget 1", 7686.983378547586, [11848.365069158828, 9767.674223853207]),
+                                         ("Budget 3", 9186.767128728072, [12348.292985885657, 10767.530057306865]))
+        caps = wing_caps(tight_end, edge, span, 2, min_gap_frac)
+        @assert length(caps) == 2 "$label: expected 2 caps, got $(length(caps))"
+        @assert all(isapprox.(caps, expected; rtol = 1e-9)) "$label: caps $caps do not match expected $expected"
+        @assert all(tight_end .< caps .< edge) "$label: a cap lies on or outside the wing boundary"
+        @assert issorted(caps; rev = true) "$label: caps not ordered loose -> tight"
+        @info("[$(test_index)] $label: caps = $(round.(caps; digits=2)), all strictly inside ($(round(tight_end; digits=2)), $(round(edge; digits=2))).")
+    end
+
+    # Narrow wing: room for 3 gaps of min_gap_frac*span (=600) means only 2 caps fit even with n_max = 5
+    caps = wing_caps(0.0, 1900.0, span, 5, min_gap_frac)
+    @assert length(caps) == 2 "narrow wing: expected 2 caps, got $(length(caps))"
+    @assert minimum(diff(vcat(1900.0, caps, 0.0)) .* -1) >= min_gap_frac * span - 1e-9 "narrow wing: gap smaller than minimum spacing"
+
+    # Too narrow for any interior cap (fewer than 2 minimum gaps)
+    @assert isempty(wing_caps(0.0, 1100.0, span, 2, min_gap_frac)) "too-narrow wing should return no caps"
+
+    @info("[$(test_index)] PASSED: wing caps lie strictly inside the wing and respect the minimum spacing.")
+    return true
 end
