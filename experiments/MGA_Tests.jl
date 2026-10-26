@@ -1846,7 +1846,7 @@ function boundary_sampling_test_laptop(test_index; n_samples::Int = 20, fast::Bo
         boundary_settings = merge(Dict{String,Any}("Write gradients" => true), boundary_overrides))
 end
 
-function boundary_sampling_test_della(test_index; n_samples::Int = 500, boundary_overrides::AbstractDict = Dict())
+function boundary_sampling_test_della(test_index; n_samples::Int = 2000, boundary_overrides::AbstractDict = Dict())
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")
