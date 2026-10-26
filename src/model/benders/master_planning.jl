@@ -156,8 +156,10 @@ function build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
         set_optimizer(MP, Gurobi.Optimizer)
         set_optimizer_attribute(MP, "OptimalityTol", 1e-5)
         set_optimizer_attribute(MP, "FeasibilityTol", 1e-3)
-        set_optimizer_attribute(MP, "Crossover", 0)
-        set_optimizer_attribute(MP, "Method", 1)
+        #set_optimizer_attribute(MP, "Crossover", 0)
+        #set_optimizer_attribute(MP, "Method", 1)
+        set_optimizer_attribute(MP, "MultiObjMethod", 0)
+        set_optimizer_attribute(MP, "LPWarmStart", 2)
     end
 
     # Sets and flags
@@ -477,7 +479,7 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
         my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "off")
         set_optimizer(MP, my_optimizer)
     elseif settings["Solver"] == "Gurobi"
-        set_optimizer_attribute(MP, "Method", 1)
+        set_optimizer_attribute(MP, "Method", -1) # changed for testing with simplex warmstarting
         if numerical_trouble
             set_optimizer_attribute(MP, "BarHomogeneous", 0)
         end
