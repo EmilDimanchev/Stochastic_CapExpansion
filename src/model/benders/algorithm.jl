@@ -607,25 +607,49 @@ function compute_cvar(SP_obj, P, P_f, P_k, VaR_Percent)
     # Normalize probabilities to avoid floating-point drift from 1.0.
     prob_flat = prob_flat ./ total_prob
 
-    # Sort outcomes descending so we integrate directly over the worst alpha tail.
-    sorted_indices = sortperm(sp_obj_flat; rev = true)
+    # The tail rule itself lives in _cvar_tail_weights_sorted so the boundary sampler
+    # (src/model/boundary_sampling) uses exactly the same tail set; the sum below is taken
+    # in the same (descending) order as before, so results are bit-for-bit unchanged.
+    sorted_indices, tail_weights = _cvar_tail_weights_sorted(sp_obj_flat, prob_flat, alpha)
     sp_obj_sorted = sp_obj_flat[sorted_indices]
-    prob_sorted = prob_flat[sorted_indices]
 
-    remaining_tail_mass = alpha
     tail_weighted_sum = 0.0
-
-    for i in eachindex(sp_obj_sorted)
-        if remaining_tail_mass <= 1e-14
-            break
-        end
-
-        weight = min(prob_sorted[i], remaining_tail_mass)
-        tail_weighted_sum += sp_obj_sorted[i] * weight
-        remaining_tail_mass -= weight
+    last_in_tail = something(findlast(!iszero, tail_weights), 0)
+    for i in 1:last_in_tail
+        tail_weighted_sum += sp_obj_sorted[i] * tail_weights[i]
     end
 
     return tail_weighted_sum / alpha
+end
+
+# Tail weights behind compute_cvar: sort outcomes descending and take probability mass
+# greedily until alpha is used up (the boundary scenario gets a fractional weight).
+# Returns the sort order and the weight of each sorted outcome (zeros after the tail);
+# the weights sum to alpha. `prob_flat` must already be normalized.
+function _cvar_tail_weights_sorted(sp_obj_flat::AbstractVector, prob_flat::AbstractVector, alpha::Real)
+    sorted_indices = sortperm(sp_obj_flat; rev = true)
+    prob_sorted = prob_flat[sorted_indices]
+    weights = zeros(length(sp_obj_flat))
+
+    remaining_tail_mass = alpha
+    for i in eachindex(prob_sorted)
+        if remaining_tail_mass <= 1e-14
+            break
+        end
+        weights[i] = min(prob_sorted[i], remaining_tail_mass)
+        remaining_tail_mass -= weights[i]
+    end
+    return sorted_indices, weights
+end
+
+# Same tail weights, but returned in the ORIGINAL scenario order, so that
+# dot(w, θ) / alpha == compute_cvar(θ, ...) and dot(w, g) / alpha is the CVaR subgradient.
+function cvar_tail_weights(θ::AbstractVector, p::AbstractVector, alpha::Real)
+    p_norm = p ./ sum(p)
+    sorted_indices, weights_sorted = _cvar_tail_weights_sorted(θ, p_norm, alpha)
+    weights = zeros(length(θ))
+    weights[sorted_indices] = weights_sorted
+    return weights
 end
 
 function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing, mapping = false, cut_archive::Dict{String, Any} = Dict{String, Any}(), cut_stats::Dict{String, Tuple{Int,Int}} = Dict{String, Tuple{Int,Int}}(), cut_clock::Ref{Int} = Ref(0))
