@@ -41,7 +41,7 @@ default_boundary_settings() = Dict{String,Any}(
     "Candidates per pick" => 30,          # candidate pool size per pick
     "Metric" => "active_subspace",        # "active_subspace" or "lengthscale_file"
     "Metric file" => nothing,             # length-scale CSV (tech, cap_max_MW, length_scale); only read for "lengthscale_file"
-    "Energy share" => 0.95,               # keep the fewest eigen-directions reaching this share
+    "Energy share" => 0.999,              # keep the fewest eigen-directions reaching this share (0.95 kept r = 1 on run 13 and over-spread the picks)
     "r max" => 50,                        # ... but at most this many
     "Explicit M max dim" => 200,          # d above this: thin SVD instead of forming the d x d matrix
     "Waves" => 1,                         # split the interior samples into this many select/evaluate rounds
