@@ -38,13 +38,13 @@ function sample_interior_delauney(points, cost_df::DataFrame, num_samples, setti
     # budget itself) - see algorithm.jl:432. Filtered against the loosest (untightened)
     # budget since results from every tightening level are combined here.
     transformed_cost = transform_sys .* (inv .+ ev) .+ transform_cvar .* (cvar)
-    cutoff = budget + settings["Mapping Gap Threshold"]
+    cutoff = budget + settings["Mapping settings"]["Mapping gap threshold"]
     @info("Budget in sampling: $(budget); cutoff: $(cutoff)")
     keep = transformed_cost .<= cutoff
 
     n_dropped = length(keep) - sum(keep)
     if n_dropped > 0
-        @info("Dropping $(n_dropped) of $(length(keep)) mapped solutions with transformed cost above budget + Mapping Gap Threshold ($(cutoff)) before Delaunay sampling.")
+        @info("Dropping $(n_dropped) of $(length(keep)) mapped solutions with transformed cost above budget + Mapping gap threshold ($(cutoff)) before Delaunay sampling.")
     end
 
 

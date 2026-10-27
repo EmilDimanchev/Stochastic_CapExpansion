@@ -141,7 +141,7 @@ function run13_boundary_checks(test_index = "run13"; summary_csv::String = RUN13
     inputs, settings, SPs = _boundary_laptop_setup()
     var_names = capacity_variable_names(inputs)
     α = settings["Value-at-Risk percent"]
-    cfg = merge(default_boundary_settings(), Dict{String,Any}("Metric file" => RUN13_METRIC))
+    cfg = resolve_settings(settings, "Boundary settings", Dict("Metric file" => RUN13_METRIC))
 
     cache = joinpath(results_folder, "run13_bank.jls")
     if isfile(cache)

@@ -11,7 +11,6 @@ Risk aversion weight: 0.5
 Value-at-Risk percent: 0.05
 Risk sharing flag: false
 
-
 # Policy instruments
 Price cap: 2000
 Investment tax credits flag: false
@@ -50,12 +49,64 @@ Parallel flag: true
 Workers: 64
 Memory debug flag: false
 
-Vector Type: random
-Iterations: 50
-Capacity Exploration: true
 Seed: 1234
 
 Budget convergence tolerance: 1e-3
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Settings groups for run_stochastic_exploration_risk_pareto (experiments/mga/run_settings.jl).
+# These are the base values; a run overrides individual keys with the driver's keyword of the
+# same name (budget_settings = Dict(...), cut_settings = Dict(...), ...). Unknown keys error.
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Run settings: # MGA vectors, output naming, evaluation SPs and diagnostics
+  MGA vectors: 50 # number of MGA directions explored after the risk-weight anchors
+  Vector type: "random" # how directions are drawn: "random" or "min/max"
+  Capacity exploration: true # false: anchors only, no MGA vectors
+  Summary name: "new_setup" # Summary_<name>.csv
+  Vector set: null # runtime only: explicit list of directions (null -> generate from Vector type)
+  Eval SPs: null # runtime only: evaluation subproblems to score each final solve on
+  Run log: null # runtime only: Vector to collect per-run diagnostics (see log_run!)
+
+Budget settings: # budget constraint used during capacity exploration, and its tightening schedule
+  Budget type: "Transformed" # "Transformed" or "Box"
+  Budget offset: 1.0 # Transformed: added to the loosest budget
+  Budget multiplier: 1.10 # Box: scales the EV-optimal System Expected cost
+  Tighten budget: false # Transformed only: step the budget down per MGA vector
+  Tighten step size: 0.1
+  Floor offset: 0.01 # tightest budget = min transformed anchor cost + this
+
+Cap settings: # extra caps on one metric (System Expected / CVaR) at selected tightening levels
+  Cap wings: true # only active when tightening a Transformed budget
+  Number of caps: 2 # max caps per wing per level
+  Cap levels: [1] # tightening levels at which caps are run
+
+Mapping settings: # mapping of the feasible space (records Benders iterates, then samples the interior)
+  Mapping: false # record every Benders iterate within the gap threshold
+  Mapping gap threshold: 0.2 # iterates with gap at or below this are recorded / kept by the Delaunay filter
+  Sampling: false # sample the interior after exploration
+  Sampling method: "Delaunay" # "Delaunay" (cost-space simplices) or "Boundary" (see Boundary settings)
+  Interior samples: 3000 # number of interior portfolios to evaluate (either method)
+  Interior sample method: "CVT" # sample_interior_distributed: "Base", "CVT", "Random" or "HitAndRun"
+  Delaunay simplex fraction: 0.1 # share of simplices sampled per round
+  Delaunay repeat mode: "ProgressiveRefinement" # "CycleSampling" or "ProgressiveRefinement"
+
+Boundary settings: # boundary interior sampler (src/model/boundary_sampling); used when Sampling method is "Boundary".
+  # Picks blends of neighbouring final solves just inside the hull boundary, spread out by greedy
+  # max-min distance in a metric built from the Benders capacity gradients. The RNG seed is Seed above.
+  Quotas: [[outer_shell, 0.50], [ev_wing, 0.15], [cvar_wing, 0.15], [interior, 0.20]] # base-region shares, in selection order
+  K neighbours: 6 # neighbours a base vertex can blend with
+  Base weight range: [0.5, 0.85] # weight kept on the base vertex
+  Candidates per pick: 30 # candidate pool size per pick
+  Metric: "active_subspace" # "active_subspace" or "lengthscale_file"
+  Metric file: null # length-scale CSV (tech, cap_max_MW, length_scale); only read for "lengthscale_file"
+  Energy share: 0.999 # keep the fewest eigen-directions reaching this share (0.95 kept r = 1 on run 13 and over-spread the picks)
+  r max: 50 # ... but at most this many
+  Explicit M max dim: 200 # d above this: thin SVD instead of forming the d x d matrix
+  Waves: 1 # split the interior samples into this many select/evaluate rounds
+  Refit metric each wave: false # rebuild the subspace with the interior gradients included
+  Write gradients: false # also write per-solve Gradients.csv files to disk
+
 Cut settings: # cut pool, see src/model/benders/cut_pool.jl
   Cuts retained: 500000 # memory cap on live + archived cuts, applied at each new risk weight / MGA vector
   Trim rule: "recent_binding" # which cuts survive "Cuts retained": "recent_binding" or "earliest"
@@ -64,11 +115,3 @@ Cut settings: # cut pool, see src/model/benders/cut_pool.jl
   Separation tolerance: 1.0e-6 # relative violation (over max(1,|rhs|)) at which an archived cut is restored
   Cuts per round: 500 # most-violated archived cuts restored per separation round
   Max rounds: 5 # separation rounds per MP solve before the sub-problems run
-
-Mapping: true
-Sampling: false
-Mapping Gap Threshold: 0.2
-Sample Method: "CVT"
-Interior Samples: 3000
-"Delaunay Simplex Fraction": 0.1
-"Delaunay Repeat Mode": "ProgressiveRefinement" # options "CycleSampling", "ProgressiveRefinement"

@@ -96,3 +96,39 @@ function test_wing_caps(test_index = "wing_caps")
     @info("[$(test_index)] PASSED: wing caps lie strictly inside the wing and respect the minimum spacing.")
     return true
 end
+
+#=========
+
+Settings groups test (experiments/mga/run_settings.jl): every group block is present in both
+input sets' settings.yaml, overrides replace only the keys they name (a nested block such as
+Cut settings' "Prune window" merges), unknown keys and groups error out, and resolving never
+touches the caller's settings.
+
+==========#
+
+function test_settings_groups(test_index = "settings_groups")
+    for folder in ("Inputs_30d_1000scen_7tech_2z", "Inputs_30d_1000scen_7tech_2z_Della")
+        settings = load_settings(joinpath("inputs", folder))
+        @assert all(g -> haskey(settings, g), SETTINGS_GROUPS) "$folder is missing a settings group"
+        CutPool(resolve_all_settings(settings)) # every Cut settings key is present
+    end
+    settings = load_settings(joinpath("inputs", "Inputs_30d_1000scen_7tech_2z"))
+    before = deepcopy(settings)
+
+    resolved = resolve_all_settings(settings, Dict("Budget settings" => Dict("Tighten budget" => true),
+                                                   "Cut settings" => Dict("Prune window" => Dict("Budget" => 5), "Max rounds" => 9)))
+    @assert resolved["Budget settings"]["Tighten budget"] == true
+    @assert resolved["Budget settings"]["Budget type"] == settings["Budget settings"]["Budget type"] "non-overridden key changed"
+    @assert resolved["Cut settings"]["Max rounds"] == 9
+    window = resolved["Cut settings"]["Prune window"]
+    @assert window["Budget"] == 5 && window["Anchor"] == settings["Cut settings"]["Prune window"]["Anchor"] "nested block should merge, not replace"
+    @assert CutPool(resolved).cfg["Max rounds"] == 9 "the pool should see the resolved cut settings"
+    @assert settings == before "resolving modified the caller's settings"
+
+    errors(f) = try f(); false catch e; e isa ErrorException end
+    @assert errors(() -> resolve_settings(settings, "Budget settings", Dict("Tighten budgte" => true))) "a misspelled key should error"
+    @assert errors(() -> resolve_all_settings(settings, Dict("Budget setings" => Dict()))) "a misspelled group should error"
+    @assert errors(() -> resolve_settings(settings, "Missing settings")) "a missing group should error"
+    @info("[$(test_index)] settings groups resolve and validate as expected for both input sets.")
+    return true
+end

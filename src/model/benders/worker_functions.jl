@@ -303,8 +303,8 @@ end
 # dispatch - since a 2D triangulation solve plus a cheap barycentric-sampling loop isn't worth
 # the @fetchfrom/remotecall_wait machinery used by the CVT/Random/HitAndRun methods.
 function sample_interior_simplex(points, cost_points, num_samples, settings)
-    fraction = get(settings, "Delaunay Simplex Fraction", 0.25)
-    mode = get(settings, "Delaunay Repeat Mode", "CycleSampling")
+    fraction = settings["Mapping settings"]["Delaunay simplex fraction"]
+    mode = settings["Mapping settings"]["Delaunay repeat mode"]
     rng = MersenneTwister(get(settings, "Seed", 1234))
 
     if mode == "CycleSampling"
@@ -320,7 +320,7 @@ end
 function sample_interior_distributed(points, num_samples, settings)
     samples = Vector{Vector{Float64}}(undef, num_samples)
     solver = settings["Solver"]
-    sample_method = settings["Sample Method"]
+    sample_method = settings["Mapping settings"]["Interior sample method"]
     if nprocs() > 1
         pids = workers()
         if sample_method == "HitAndRun"

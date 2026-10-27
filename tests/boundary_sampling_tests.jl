@@ -58,7 +58,7 @@ function toy_bank(rng; d = 5, S = 20, n_vectors = 8, n_budgets = 3)
     return bank, tc
 end
 
-toy_cfg() = merge(default_boundary_settings(), Dict{String,Any}("Candidates per pick" => 10))
+toy_cfg() = resolve_settings(load_settings(joinpath(@__DIR__, "..", "inputs", "Inputs_30d_1000scen_7tech_2z")), "Boundary settings", Dict("Candidates per pick" => 10))
 unit_metric(d) = CapacityMetric("lengthscale_file", ["v$i" for i in 1:d], ones(d), fill(5.0, d), zeros(d, 0), Float64[], d, NaN, NaN, 0, NaN, NaN)
 X_of(bank) = reduce(vcat, [fs.x' for fs in bank])
 

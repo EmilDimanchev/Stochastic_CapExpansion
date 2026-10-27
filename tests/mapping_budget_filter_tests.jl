@@ -6,8 +6,8 @@ using DataFrames
 """
 Standalone probe for the budget-violation filter added to sample_interior_delauney
 (experiments/MGA_Tests.jl). Confirms that mapped solutions whose transformed cost
-(transform_sys*(inv+ev) + transform_cvar*(inv+cvar)) exceeds budget + "Mapping Gap
-Threshold" are dropped before Delaunay interior sampling, while solutions at or under
+(transform_sys*(inv+ev) + transform_cvar*(inv+cvar)) exceeds budget + "Mapping gap
+threshold" (Mapping settings) are dropped before Delaunay interior sampling, while solutions at or under
 the cutoff are kept.
 
 Usage:
@@ -20,8 +20,8 @@ function main()
     budget = 1.0
     transform_sys = 1.0
     transform_cvar = 1.0
-    settings = Dict("Mapping Gap Threshold" => 0.2, "Seed" => 42)
-    cutoff = budget + settings["Mapping Gap Threshold"] # 1.2
+    settings = Dict("Mapping settings" => Dict("Mapping gap threshold" => 0.2, "Delaunay simplex fraction" => 0.25, "Delaunay repeat mode" => "CycleSampling"), "Seed" => 42)
+    cutoff = budget + settings["Mapping settings"]["Mapping gap threshold"] # 1.2
 
     @testset "Mapping budget filter (sample_interior_delauney)" begin
 

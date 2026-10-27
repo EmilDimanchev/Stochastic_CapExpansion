@@ -235,9 +235,6 @@ function test_cut_trim_rules(test_index = "cut_trim"; cuts_retained_small::Int =
     summaries = Dict{String, Any}()
     for (label, n_keep, rule) in configs
         settings = deepcopy(base_settings)
-        settings["Cut settings"]["Cuts retained"] = n_keep
-        settings["Iterations"] = n_vectors # more than one trim event
-        settings["Cut settings"]["Trim rule"] = rule
         results_folder = joinpath("outputs", "Test_"*string(test_index), label)
         summary_folder = joinpath(results_folder, "Summary")
         mkpath(summary_folder)
@@ -245,7 +242,8 @@ function test_cut_trim_rules(test_index = "cut_trim"; cuts_retained_small::Int =
         t = @elapsed run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Pareto"), summary_folder;
             budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
             mapping_settings = Dict("Mapping" => false),
-            run_settings = Dict("Summary name" => "pareto", "Run log" => run_log))
+            run_settings = Dict("Summary name" => "pareto", "Run log" => run_log, "MGA vectors" => n_vectors), # more than one trim event
+            cut_settings = Dict("Cuts retained" => n_keep, "Trim rule" => rule))
         mga_runs = filter(r -> startswith(r.label, "Random_"), run_log)
         summaries[label] = (total_iterations = sum(r.iterations for r in run_log), mga_iterations = sum(r.iterations for r in mga_runs), mp_time = sum(r.mp_time for r in run_log), wall_time = t, max_archive_at_run_start = maximum(r.archive_before for r in run_log), run_log = run_log)
         # Invariant: trimming happens at vector/risk-weight starts, so the archive going *into*
@@ -268,8 +266,9 @@ end
 Cut pool A/B: runs the laptop risk-pareto + MGA exploration (anchors, then `n_vectors` MGA
 vectors with budget tightening and wing caps) on this checkout, writing the Summary CSV and the
 per-solve run log to outputs/Test_<test_index>/new. Pass `old_folder` - the same run made with
-the pre-pool code (run_cut_pool_ab_case copied into a checkout of the old commit; its run log
-only has label/iterations/mp_time/archive_before columns) - to compare per solve:
+the pre-pool code (its run log only has label/iterations/mp_time/archive_before columns; the
+old code reads the flat pre-groups settings keys, so set "Iterations" there rather than reuse
+run_cut_pool_ab_case) - to compare per solve:
 
   - final capacity mix and Transformed / CVaR / EV / Inv values must agree within the 0.1%
     convergence tolerance
@@ -282,11 +281,9 @@ cut counts, not seconds. Writes outputs/Test_<test_index>/comparison.csv.
 
 ==========#
 
-function run_cut_pool_ab_case(folder::String; n_vectors::Int = 3, settings_overrides::Dict = Dict())
+function run_cut_pool_ab_case(folder::String; n_vectors::Int = 3, cut_settings::AbstractDict = Dict())
     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
     settings = load_settings(inputs_folder)
-    merge!(settings, settings_overrides)
-    settings["Iterations"] = n_vectors
     inputs = load_input_data(inputs_folder, settings)
     configure_parallel_workers!(settings)
     SPs = build_all_subproblems(inputs, settings)
@@ -296,7 +293,8 @@ function run_cut_pool_ab_case(folder::String; n_vectors::Int = 3, settings_overr
     run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(folder, "Pareto"), summary_folder;
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
         mapping_settings = Dict("Mapping" => false),
-        run_settings = Dict("Summary name" => "pareto", "Run log" => run_log))
+        run_settings = Dict("Summary name" => "pareto", "Run log" => run_log, "MGA vectors" => n_vectors),
+        cut_settings = cut_settings)
     CSV.write(joinpath(folder, "run_log.csv"), DataFrame(run_log))
     return run_log
 end

@@ -6,13 +6,16 @@ Main MGA functions for running stochastic exploration with Benders and MGA, incl
 
 ==============================#
 
-function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_settings::AbstractDict = Dict(), cap_settings::AbstractDict = Dict(), mapping_settings::AbstractDict = Dict(), run_settings::AbstractDict = Dict(), boundary_settings::AbstractDict = Dict())
+# Each *_settings keyword overrides keys of the matching settings.yaml block (see run_settings.jl).
+function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_settings::AbstractDict = Dict(), cap_settings::AbstractDict = Dict(), mapping_settings::AbstractDict = Dict(), run_settings::AbstractDict = Dict(), boundary_settings::AbstractDict = Dict(), cut_settings::AbstractDict = Dict())
 
-    budget_settings = resolve_settings(default_budget_settings(), budget_settings, "budget_settings")
-    boundary_settings = resolve_settings(default_boundary_settings(), boundary_settings, "boundary_settings")
-    cap_settings = resolve_settings(default_cap_settings(), cap_settings, "cap_settings")
-    mapping_settings = resolve_settings(default_mapping_settings(), mapping_settings, "mapping_settings")
-    run_settings = resolve_settings(default_run_settings(), run_settings, "run_settings")
+    settings = resolve_all_settings(settings, Dict("Budget settings" => budget_settings, "Cap settings" => cap_settings, "Mapping settings" => mapping_settings,
+                                                   "Run settings" => run_settings, "Boundary settings" => boundary_settings, "Cut settings" => cut_settings))
+    budget_settings = settings["Budget settings"]
+    boundary_settings = settings["Boundary settings"]
+    cap_settings = settings["Cap settings"]
+    mapping_settings = settings["Mapping settings"]
+    run_settings = settings["Run settings"]
 
     budget_type = budget_settings["Budget type"]
     budget_offset = budget_settings["Budget offset"]
@@ -63,7 +66,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     gaps = []
 
     # Model Settings
-    iterations = settings["Iterations"]
+    iterations = run_settings["MGA vectors"]
     risk_aversion_weights = [[i for i in 0.5:-0.1:0.1]; [i for i in 0.6:0.1:0.9]; 0.0; 1.0]
     risk_aversion_weight = settings["Risk aversion weight"] ### set as anchor point
     VaR_percent = settings["Value-at-Risk percent"] ### Currently set consistently across runs and ahead of time
@@ -135,7 +138,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         release_heavy_payload!(output)
     end
 
-    if settings["Capacity Exploration"]
+    if run_settings["Capacity exploration"]
         checkpoint_time = 0.0 # cumulative seconds spent on incremental summary writes
         budgets = Dict()
         constraint_dict = Dict()
@@ -172,7 +175,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             error("Unknown budget type: $budget_type")
         end
 
-        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Vector Type"], settings)
+        vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), run_settings["Vector type"], settings)
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
             # Cuts (live + archived) accumulate freely across this vector's runs; trim the pool once per new vector.
@@ -318,7 +321,7 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
     budget = 0.0
 
     # Model Settings
-    iterations = settings["Iterations"]
+    iterations = settings["Run settings"]["MGA vectors"]
     
 
     
@@ -342,7 +345,7 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
         budget = (lc_value) * (budget_multiplier)
     end
     
-    vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Vector Type"], settings)
+    vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Run settings"]["Vector type"], settings)
     @info("Using budget of ", budget, " for Base MGA test")
     percent_over_lc = round((budget - lc_value)/lc_value * 100, digits=2)
     @info("This budget is ", percent_over_lc, "% over the cost optimal solution")

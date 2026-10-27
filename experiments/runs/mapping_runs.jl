@@ -63,7 +63,7 @@ function mapping_test_della(test_index)
     SPs = build_all_subproblems(inputs, settings)
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder;
         budget_settings = Dict("Budget multiplier" => 1.001),
-        mapping_settings = Dict("Mapping" => true, "Interior samples" => settings["Interior Samples"]),
+        mapping_settings = Dict("Mapping" => true),
         run_settings = Dict("Summary name" => "mapping"))
 
 end
@@ -88,7 +88,7 @@ function mapping_test_della_001(test_index)
     SPs = build_all_subproblems(inputs, settings)
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Mapping_Test"), summary_folder;
         budget_settings = Dict("Budget multiplier" => 1.001),
-        mapping_settings = Dict("Mapping" => true, "Interior samples" => settings["Interior Samples"]),
+        mapping_settings = Dict("Mapping" => true),
         run_settings = Dict("Summary name" => "mapping"))
 
 end

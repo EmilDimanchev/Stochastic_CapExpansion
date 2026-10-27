@@ -29,10 +29,9 @@ function risk_pareto_test_della(test_index, budget_type; budget_multiplier = 1.0
     summary_name = "pareto"
     Eval_SPs = nothing
     mapping=false
-    n_samples = settings["Interior Samples"]
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
         budget_settings = Dict("Budget type" => budget_type, "Budget multiplier" => budget_multiplier),
-        mapping_settings = Dict("Mapping" => false, "Interior samples" => settings["Interior Samples"]),
+        mapping_settings = Dict("Mapping" => false),
         run_settings = Dict("Summary name" => "pareto"))
 
 end
@@ -62,10 +61,9 @@ function risk_pareto_test_della_deterministic(test_index, budget_type; budget_mu
     summary_name = "pareto"
     Eval_SPs = nothing
     mapping=false
-    n_samples = settings["Interior Samples"]
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
         budget_settings = Dict("Budget type" => budget_type, "Budget multiplier" => budget_multiplier),
-        mapping_settings = Dict("Mapping" => false, "Interior samples" => settings["Interior Samples"]),
+        mapping_settings = Dict("Mapping" => false),
         run_settings = Dict("Summary name" => "pareto"))
 
 end
@@ -95,10 +93,9 @@ function risk_pareto_test_laptop_5(test_index)
     summary_name = "pareto"
     Eval_SPs = nothing
     mapping=true
-    n_samples = settings["Interior Samples"]
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
         budget_settings = Dict("Budget type" => "Transformed", "Budget multiplier" => budget_multiplier),
-        mapping_settings = Dict("Mapping" => mapping, "Interior samples" => settings["Interior Samples"]),
+        mapping_settings = Dict("Mapping" => mapping),
         run_settings = Dict("Summary name" => "pareto"))
 
 end
@@ -124,7 +121,7 @@ function risk_pareto_tighten_test_laptop(test_index)
     results_folder = joinpath(results_folder, "Pareto5")
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
-        mapping_settings = Dict("Mapping" => true, "Interior samples" => settings["Interior Samples"]),
+        mapping_settings = Dict("Mapping" => true),
         run_settings = Dict("Summary name" => "pareto"))
 
 end
@@ -150,7 +147,7 @@ function risk_pareto_tighten_test_della(test_index)
     results_folder = joinpath(results_folder, "Pareto5")
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
-        mapping_settings = Dict("Mapping" => true, "Interior samples" => settings["Interior Samples"]),
+        mapping_settings = Dict("Mapping" => true),
         run_settings = Dict("Summary name" => "pareto"))
 
 end
@@ -176,7 +173,7 @@ function risk_pareto_test_no_tighten_della(test_index)
     results_folder = joinpath(results_folder, "Pareto5")
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => false),
-        mapping_settings = Dict("Mapping" => false, "Interior samples" => settings["Interior Samples"]),
+        mapping_settings = Dict("Mapping" => false),
         run_settings = Dict("Summary name" => "pareto"))
 
 end
@@ -203,7 +200,7 @@ function wing_caps_test_della(test_index)
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
         cap_settings = Dict("Cap wings" => true, "Cap levels" => [1, 3]),
-        mapping_settings = Dict("Mapping" => true, "Sampling" => false, "Interior samples" => settings["Interior Samples"]),
+        mapping_settings = Dict("Mapping" => true, "Sampling" => false),
         run_settings = Dict("Summary name" => "pareto"))
 
 end
@@ -232,7 +229,7 @@ function wing_caps_test_laptop(test_index)
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
         cap_settings = Dict("Cap wings" => true),
-        mapping_settings = Dict("Mapping" => false, "Interior samples" => settings["Interior Samples"]),
+        mapping_settings = Dict("Mapping" => false),
         run_settings = Dict("Summary name" => "pareto"))
 
 end
