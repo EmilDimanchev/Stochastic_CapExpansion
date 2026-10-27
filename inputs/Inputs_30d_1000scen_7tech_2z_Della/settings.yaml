@@ -56,11 +56,14 @@ Capacity Exploration: true
 Seed: 1234
 
 Budget convergence tolerance: 1e-3
-Cut deactivation threshold: 8
-MGA cut deactivation threshold: 2
-Cut deactivation strategy: "in benders" # options are "in benders" and "in mga"
-Cuts retained: 500000
-Cut trim rule: "recent_binding"
+Cut settings: # cut pool, see src/model/benders/cut_pool.jl
+  Cuts retained: 500000 # memory cap on live + archived cuts, applied at each new risk weight / MGA vector
+  Trim rule: "recent_binding" # which cuts survive "Cuts retained": "recent_binding" or "earliest"
+  Prune window: {Anchor: 8, Budget: 2, EV cap: 2, CVaR cap: 3} # iterations without binding before a live cut is archived, per solve type
+  Binding tolerance: 1.0e-6 # a cut whose MP dual is at least this counts as binding
+  Separation tolerance: 1.0e-6 # relative violation (over max(1,|rhs|)) at which an archived cut is restored
+  Cuts per round: 500 # most-violated archived cuts restored per separation round
+  Max rounds: 5 # separation rounds per MP solve before the sub-problems run
 
 Mapping: true
 Sampling: false

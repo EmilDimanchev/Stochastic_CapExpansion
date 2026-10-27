@@ -41,13 +41,19 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
 
     #configure_parallel_workers!(settings)
 
-    # Optional per-run diagnostics (used by test_cut_trim_rules): (label, benders iterations,
-    # sum of MP solve time, archive size before/after the run).
+    # Optional per-run diagnostics (used by test_cut_trim_rules / test_cut_pool_ab): SP rounds
+    # (= Benders iterations), MP solves including separation re-solves, live cuts at the first
+    # MP solve, MP and separation time, and the pool size (live + archived) before/after.
     log_run!(label, out, archive_before) = run_log === nothing || begin
-        entry = (label = label, iterations = length(out["Gaps"]), mp_time = sum(out["Time MP hist"]), archive_before = archive_before, archive_after = length(cut_archive))
+        sep = out["Sep hist"]
+        entry = (label = label, iterations = length(out["Gaps"]), sp_rounds = length(out["Time SP hist"]),
+                 mp_solves = length(sep) + sum(s.rounds for s in sep), live_at_start = out["Live cuts at start"],
+                 mp_time = sum(out["Time MP hist"]), sep_time = sum(s.t_check for s in sep),
+                 archive_before = archive_before, archive_after = length(cut_pool.live) + n_archived(cut_pool))
         push!(run_log, entry)
-        @info("TRIMRUN|$(entry.label)|iters=$(entry.iterations)|mp_time=$(round(entry.mp_time; digits=3))|cuts_before=$(entry.archive_before)|archive_after=$(entry.archive_after)")
+        @info("TRIMRUN|$(entry.label)|iters=$(entry.iterations)|sp_rounds=$(entry.sp_rounds)|mp_solves=$(entry.mp_solves)|live_at_start=$(entry.live_at_start)|mp_time=$(round(entry.mp_time; digits=3))|sep_time=$(round(entry.sep_time; digits=3))|cuts_before=$(entry.archive_before)|archive_after=$(entry.archive_after)")
     end
+    pool_size() = length(cut_pool.live) + n_archived(cut_pool)
 
     # Result containers
     results_cap = []
@@ -55,7 +61,6 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     results_emissions = []
     run_labels = []
     gaps = []
-    cuts_to_keep = []
 
     # Model Settings
     iterations = settings["Iterations"]
@@ -78,17 +83,9 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
 
     MP = build_planning_model(inputs, settings; risk_aversion_weight = risk_aversion_weight)
 
-    # Shared across every risk weight / MGA direction solved against this MP so that cuts
-    # pruned while solving one problem get a fresh look (and are rebuilt losslessly, since
-    # deactivate_cuts now archives the exact constraint rather than discarding it) when a
-    # later problem starts.
-    cut_archive = Dict{String, Any}()
-    # Per-cut (created, last_bound) stamps used to decide which archived cuts survive trimming.
-    cut_stats = Dict{String, Tuple{Int,Int}}()
-    cut_clock = Ref(0)
-    # Hard-index (no default): a missing key must fail loudly, not silently disable trimming.
-    cuts_retained = settings["Cut deactivation strategy"] == "in benders" ? settings["Cuts retained"] : typemax(Int)
-    trim_rule = get(settings, "Cut trim rule", "recent_binding")
+    # Shared across every risk weight / MGA direction solved against this MP, so cuts built
+    # for one problem can be brought back (seed!/separate!) when a later problem needs them.
+    cut_pool = CutPool(settings)
 
     # Gradient bank for the boundary sampler: one FinalSolve (capacity, per-scenario op cost
     # and capacity gradients) per final solve. The converged subproblem outputs in out["SPs"]
@@ -105,11 +102,9 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         # Base Runs
         case_name = "Risk_Weight_"*string(risk)
         set_objective_bendersMP!(MP, "System_Weighted_CVaR", inputs, settings; obj_weight = risk)
-        if settings["Cut deactivation strategy"] == "in benders"
-            trim_cuts!(MP, cut_archive, cut_stats, cuts_retained, trim_rule, cut_clock[])
-        end
-        archive_before = count_live_cuts(MP) + length(cut_archive)
-        output = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping, risk_aversion_weight = risk, cut_archive = cut_archive, cut_stats = cut_stats, cut_clock = cut_clock)
+        trim_cuts!(MP, cut_pool)
+        archive_before = pool_size()
+        output = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping, risk_aversion_weight = risk, cut_pool = cut_pool, solve_type = "Anchor", mga_vector = 0)
         log_run!(case_name, output, archive_before)
         log_result_memory!(case_name*" output", output)
         gap_cvar = output["Gaps"]
@@ -134,16 +129,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         @info("Risk weight $risk solution has investment cost of $(output["MP"]["Inv_cost"])")
         @info("Expected value system cost of " * "Risk weight $risk" * " solution: $(output["Expected Value"] + output["MP"]["Inv_cost"])")
         @info("Risk adjusted system cost of " * "Risk weight $risk" * " solution: $((1-risk_aversion_weight)*output["CVaR"] + risk_aversion_weight*output["Expected Value"]+ output["MP"]["Inv_cost"])")
-        
-        if settings["Cut deactivation strategy"] == "in mga"
-            
-            cuts_to_keep = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if ((startswith(string(con), "optimality_cut_") && (split(string(con), "_")[3] == string(risk))) || (startswith(string(con), "cvar_tail_cuts_") && (split(string(con), "_")[3] == string(risk))))]
-        
-            if mapping
-                cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output["first_write"] + 10, cuts_to_keep)
-            end
-            cuts_to_keep = manage_cuts(MP, cuts_to_keep)
-        end
+
 
         bank_record!(case_name, output, results_destination)
         release_heavy_payload!(output)
@@ -186,40 +172,24 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             error("Unknown budget type: $budget_type")
         end
 
-        if settings["Cut deactivation strategy"] == "in mga"
-            cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if (startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_"))]
-            cuts_to_keep = copy(cuts)
-
-            if mapping
-                cuts_to_keep = filter(cut -> parse(Int, split(string(cut), "_")[end-1]) <= output["first_write"] + 10, cuts_to_keep)
-            end
-
-        end
         vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Vector Type"], settings)
-        #@info("Keeping $(length(cuts_to_keep)) cuts for MGA iterations")
         for iteration in 1:iterations
             set_objective_bendersMP!(MP, "Capacity", inputs, settings; set_coeffs = vectors[iteration])
-            if settings["Cut deactivation strategy"] == "in mga"
-                cuts_to_keep = manage_cuts(MP, cuts_to_keep)
-            elseif settings["Cut deactivation strategy"] == "in benders"
-                # Cuts (live + archived) accumulate freely across this vector's runs; re-prune the pool once per new vector.
-                trim_cuts!(MP, cut_archive, cut_stats, cuts_retained, trim_rule, cut_clock[])
-            end
-            #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
+            # Cuts (live + archived) accumulate freely across this vector's runs; trim the pool once per new vector.
+            trim_cuts!(MP, cut_pool)
 
             levels = tighten_budget ? budget_schedule : [budget_val_transform]
-            local output_random, avg_time_mp
+            local output_random
             for (level, budget_level_val) in enumerate(levels)
                 if tighten_budget
                     budgets = update_budget_constraint_bendersMP!(MP, budget_level_val, "Transformed", budgets)
                 end
                 run_name = tighten_budget ? "Random_$(iteration)_Budget_$(level)" : "Random_"*string(iteration)
                 try
-                    archive_before = count_live_cuts(MP) + length(cut_archive)
-                    output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = mapping, cut_archive = cut_archive, cut_stats = cut_stats, cut_clock = cut_clock)
+                    archive_before = pool_size()
+                    output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = mapping, cut_pool = cut_pool, solve_type = "Budget", mga_vector = iteration)
                     log_run!(run_name, output_random, archive_before)
                     log_result_memory!(run_name*" output", output_random)
-                    avg_time_mp = mean(output_random["Time MP hist"])
                     gap = output_random["Gaps"]
                     push!(run_labels, run_name)
                     push!(gaps, gap)
@@ -253,11 +223,10 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                                 cap_run_name = "Random_$(iteration)_Budget_$(level)_$(key)_Cap_$(cap_level)"
 
                                 try
-                                    archive_before = count_live_cuts(MP) + length(cut_archive)
-                                    cap_output = mga_benders(inputs, settings, MP, SPs, budgets, cap_run_name; Eval_SPs = Eval_SPs, mapping = mapping, cut_archive = cut_archive, cut_stats = cut_stats, cut_clock = cut_clock)
+                                    archive_before = pool_size()
+                                    cap_output = mga_benders(inputs, settings, MP, SPs, budgets, cap_run_name; Eval_SPs = Eval_SPs, mapping = mapping, cut_pool = cut_pool, solve_type = key == "CVaR" ? "CVaR cap" : "EV cap", mga_vector = iteration)
                                     log_run!(cap_run_name, cap_output, archive_before)
                                     log_result_memory!(cap_run_name*" output", cap_output)
-                                    avg_time_mp = mean(cap_output["Time MP hist"])
                                     push!(run_labels, cap_run_name)
                                     push!(gaps, cap_output["Gaps"])
                                     results_destination = joinpath(results_folder, cap_run_name)
@@ -303,12 +272,6 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
                     @warn("Summary checkpoint failed", exception = (e, catch_backtrace()))
                 end
             end
-            if settings["Cut deactivation strategy"] == "in mga"
-                if length(cuts_to_keep) < settings["Cuts retained"] && !mapping && avg_time_mp < 3*balanced_avg_time_mp
-                    push!(cuts_to_keep, [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]...)
-                end
-            end
-
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
 
@@ -362,7 +325,8 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
 
     MP = build_planning_model(new_inputs, settings) #### When loaded with one scenario weighted, this is equivalent to a deterministic model with that scenario selected
     SP_one_scen = build_all_subproblems(new_inputs, settings)
-    output = benders_algorithm(new_inputs, settings, MP, SP_one_scen, "OneScenarioLC"; Eval_SPs = SPs)
+    cut_pool = CutPool(settings)
+    output = benders_algorithm(new_inputs, settings, MP, SP_one_scen, "OneScenarioLC"; Eval_SPs = SPs, cut_pool = cut_pool)
     log_result_memory!("OneScenarioLC output", output)
     gap = output["Gaps"]
     push!(labels, "OneScenarioLC")
@@ -384,13 +348,11 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
     @info("This budget is ", percent_over_lc, "% over the cost optimal solution")
     budgets = Dict()
     budgets, _ = add_budget_constraint_bendersMP(MP, budget/settings["Scaling factor cost"], "System_Expected", budgets)
-    cuts_to_keep = [name(con) for (F, S) in list_of_constraint_types(MP) for con in all_constraints(MP, F, S) if startswith(string(con), "optimality_cut_") || startswith(string(con), "cvar_tail_cuts_")]
 
     for iteration in 1:iterations
         set_objective_bendersMP!(MP, "Capacity", new_inputs, settings; set_coeffs = vectors[iteration])
-        output_random = mga_benders(new_inputs, settings, MP, SP_one_scen, budgets, "Base_MGA_"*string(iteration); Eval_SPs = SPs)
+        output_random = mga_benders(new_inputs, settings, MP, SP_one_scen, budgets, "Base_MGA_"*string(iteration); Eval_SPs = SPs, cut_pool = cut_pool, mga_vector = iteration)
         log_result_memory!("Base_MGA_"*string(iteration)*" output", output_random)
-        #cuts_to_keep = manage_cuts(MP, cuts_to_keep)
         gap = output_random["Gaps"]
         results_destination = joinpath(results_path,"Base_MGA_"*string(iteration))
         df_cap, df_syscost, df_emissions = write_results_benders(output_random, new_inputs, settings, results_destination; budgets = budgets)

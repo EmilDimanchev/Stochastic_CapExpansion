@@ -291,7 +291,7 @@ function add_optimality_cuts!(MP, SP_obj, cap_dual, line_dual, x_prev, x_prev_li
 
     # Capture the ConstraintRefs JuMP hands back from constraint creation so callers can
     # cache them (name => ConstraintRef) instead of later paying for constraint_by_name,
-    # which forces MathOptInterface to rebuild its entire name index (see deactivate_cuts).
+    # which forces MathOptInterface to rebuild its entire name index (see CutPool).
     new_cut_refs = Dict{String, ConstraintRef}()
     if cvar_tail
         cvar_cuts = @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:u][s,f,k] >= SP_obj[s,f,k] + sum(cap_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) + sum(line_dual[l,s,f,k]*(MP[:x_line][l]-x_prev_line[l]) for l in 1:L) - MP[:ζ], base_name = "cvar_tail_cuts_"*case*"_"*string(iteration)*"_")
@@ -525,7 +525,7 @@ function qtr_regularization(MP, stab_cent_cap, stab_cent_line, gamma_qtr, settin
     end
     
     # Write outputs
-    output = write_outputs(MP, settings; reg=true)
+    output = write_outputs(MP, settings)
 
     delete(MP,MP[:cTrust_region])
     unregister(MP,:cTrust_region)
@@ -564,7 +564,7 @@ Outputs
 =====================================#
 
 
-function write_outputs(MP, settings; reg=false, risk_aversion_weight=0.5)
+function write_outputs(MP, settings; risk_aversion_weight=0.5)
     scaling_factor_cost = settings["Scaling factor cost"]
     output = Dict{String, Any}()
     output["Planning objective"] = value(MP[:eObj])*scaling_factor_cost
@@ -588,13 +588,6 @@ function write_outputs(MP, settings; reg=false, risk_aversion_weight=0.5)
         output["CVaR Loss"] = 0
         output["VaR"] = 0
         output["CVaR term"] = 0
-    end
-    
-    if !reg
-        cuts = [con for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(name(con), "optimality_cut") || startswith(name(con), "cvar_tail_cuts")]
-        cut_names = [name(con) for con in cuts]
-        cut_duals = [dual(con) for con in cuts]
-        output["Cut Duals"] = Dict(zip(cut_names, cut_duals))
     end
 
     return output
@@ -717,176 +710,6 @@ function update_budget_constraint_bendersMP!(model::Model, new_budget::Float64, 
     end
     @info("Updated budget constraint ($budget_type) RHS to: ", new_budget)
     return existing_budgets
-end
-
-function manage_cuts(MP::Model, cuts_to_keep::Vector{String})
-    # Get all cut constraints in the model. Filter on name(con), not string(con): the latter
-    # pretty-prints the full constraint (every term), which is far more expensive than the
-    # O(1) name lookup and runs over every constraint in the model.
-    all_cuts = [con for con in all_constraints(MP, include_variable_in_set_constraints = false) if startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_")]
-
-    # Batch delete: a scalar delete(MP, cut) per cut forces both HiGHS.jl and Gurobi.jl to
-    # redo an O(total constraints in MP) reindex pass - and on Gurobi, a full GRBupdatemodel
-    # sync - once per deleted cut, i.e. O(n_deleted * total_constraints) overall. JuMP's
-    # vector delete(MP, ::Vector{ConstraintRef}) lets both solvers' MOI wrappers do that
-    # reindex/sync exactly once for the whole batch. See deactivate_cuts below for the same
-    # pattern with more detail.
-    cuts_to_delete = [cut for cut in all_cuts if !(name(cut) in cuts_to_keep)]
-    if !isempty(cuts_to_delete)
-        delete(MP, cuts_to_delete)
-    end
-    return cuts_to_keep
-end
-
-
-# Deactivating a cut now means removing it from the model entirely, rather than masking
-# it with a huge RHS (-1e6 rows sitting next to ~1e5-scale rows is exactly the kind of
-# bad row-bound ratio that was driving level-set regularization to numerical infeasibility).
-# Each removed cut's exact constraint (function + set, i.e. its original coefficients and
-# RHS) is archived under its name in cut_archive so it can be rebuilt losslessly later via
-# reactivate_cuts, instead of being lost.
-#
-# cut_refs is a name => ConstraintRef cache (populated by add_optimality_cuts! and
-# reactivate_cuts) that the caller maintains across iterations. Looking a cut up there is
-# O(1); calling constraint_by_name here instead would force MathOptInterface to rebuild its
-# entire name index from scratch (it's invalidated on every delete), turning this loop
-# quadratic in the number of constraints in MP. Entries are consumed (deleted) as each cut
-# is deactivated, so the cache only ever tracks currently-active cuts.
-#
-# The actual delete is batched (one delete(MP, ::Vector{ConstraintRef}) call after the
-# archive loop) rather than called once per cut inside it. Both HiGHS.jl and Gurobi.jl's MOI
-# wrappers implement a scalar delete that reindexes every remaining constraint in MP (an
-# O(total constraints) walk) on every single call - and Gurobi's scalar path additionally
-# forces a GRBupdatemodel sync per call. Deleting N cuts one at a time is therefore
-# O(N * total_constraints), which is what made large deactivations slower than solving the
-# bigger master problem outright. Their vector delete methods do that reindex/sync exactly
-# once for the whole batch, so this is a call-batching change only - it doesn't touch any
-# RHS, coefficient, or constraint value, so it carries none of the numerical risk that the
-# RHS-loosening approach above ran into.
-function deactivate_cuts(MP::Model, cuts_to_deactivate::Vector{String}, cut_archive::Dict{String, Any}, cut_refs::Dict{String, ConstraintRef})
-    @info("Deactivating $(length(cuts_to_deactivate)) cuts")
-    time_1 = time()
-    cons_to_delete = ConstraintRef[]
-    names_to_delete = String[]
-    for cut_name in cuts_to_deactivate
-        con = get(cut_refs, cut_name, nothing)
-        if con === nothing
-            con = constraint_by_name(MP, cut_name) # fallback for cuts not tracked in cut_refs
-        end
-        if con === nothing
-            continue # already removed (e.g. via manage_cuts)
-        end
-        cut_archive[cut_name] = constraint_object(con)
-        push!(cons_to_delete, con)
-        push!(names_to_delete, cut_name)
-    end
-    if !isempty(cons_to_delete)
-        delete(MP, cons_to_delete)
-    end
-    for cut_name in names_to_delete
-        delete!(cut_refs, cut_name)
-        #unregister(MP, Symbol(cut_name)) # They aren't registered in the first place bc of anonymous + base name construction! That's a new thing I've learned today - thanks, Claude!
-    end
-    time_1 = time() - time_1
-    @info("Deactivated $(length(cuts_to_deactivate)) cuts in $(round(time_1, digits=2)) seconds")
-    return cut_archive
-end
-
-# Per-cut bookkeeping used to decide which cuts survive trim_cuts!.
-# cut_stats maps cut name => (created, last_bound), both stamped from a shared monotone clock
-# (cut_clock, bumped once per Benders iteration by the algorithms) so they're comparable across
-# runs. `created` is set once and survives deactivation/reactivation; `last_bound` is the most
-# recent clock value at which the cut had a nonzero dual (0 = never seen binding).
-function stamp_cut!(cut_stats::Dict{String, Tuple{Int,Int}}, cut_name::String, clock::Int; bound::Bool = false)
-    created, last_bound = get(cut_stats, cut_name, (clock, 0))
-    cut_stats[cut_name] = (created, bound ? clock : last_bound)
-    return nothing
-end
-
-# Number of optimality/CVaR-tail cuts currently live in MP.
-function count_live_cuts(MP::Model)
-    return count(con -> startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_"), all_constraints(MP, include_variable_in_set_constraints = false))
-end
-
-# Trims the combined pool of cuts - those live in MP *and* those in cut_archive - down to at most
-# n_keep, permanently discarding the rest (live ones are deleted from MP; their cut_stats go too).
-# Trimming only the archive isn't enough: runs shorter than the deactivation threshold never prune,
-# so reactivated cuts just stay live in MP and the pool grows without bound. rule:
-#   "recent_binding" - keep the cuts that bound most recently (ties: later-created first)
-#   "earliest"       - keep the earliest-created cuts
-# Cuts with no stats yet (added after the last cataloguing pass) count as newest, so they survive.
-# Always logs, including when it's a no-op, so a trim that never engages is visible in the logs.
-# Returns (live cuts deleted, archived cuts deleted).
-function trim_cuts!(MP::Model, cut_archive::Dict{String, Any}, cut_stats::Dict{String, Tuple{Int,Int}}, n_keep::Int, rule::String, clock::Int)
-    live = Dict{String, ConstraintRef}()
-    for con in all_constraints(MP, include_variable_in_set_constraints = false)
-        n = name(con)
-        if startswith(n, "optimality_cut_") || startswith(n, "cvar_tail_cuts_")
-            live[n] = con
-        end
-    end
-    n_live, n_arch = length(live), length(cut_archive)
-    if n_live + n_arch <= n_keep
-        @info("Cut trim ($rule): $n_live live + $n_arch archived = $(n_live + n_arch) cuts <= Cuts retained ($n_keep); nothing trimmed")
-        return (0, 0)
-    end
-    names = vcat(collect(keys(live)), collect(keys(cut_archive)))
-    stat(n) = get(cut_stats, n, (clock, clock))
-    if rule == "recent_binding"
-        sort!(names; by = n -> (stat(n)[2], stat(n)[1]), rev = true)
-    elseif rule == "earliest"
-        sort!(names; by = n -> stat(n)[1])
-    else
-        error("Unknown cut trim rule \"$rule\". Choose \"recent_binding\" or \"earliest\".")
-    end
-    live_to_delete = ConstraintRef[]
-    n_arch_deleted = 0
-    for n in names[n_keep+1:end]
-        if haskey(live, n)
-            push!(live_to_delete, live[n])
-        else
-            delete!(cut_archive, n)
-            n_arch_deleted += 1
-        end
-        delete!(cut_stats, n)
-    end
-    if !isempty(live_to_delete)
-        delete(MP, live_to_delete) # one batched delete, see manage_cuts
-    end
-    @info("Cut trim ($rule): $n_live live + $n_arch archived -> kept $n_keep; deleted $(length(live_to_delete)) live and $n_arch_deleted archived cuts")
-    return (length(live_to_delete), n_arch_deleted)
-end
-
-# Rebuilds cuts from cut_archive and re-adds them to MP under their original names,
-# removing each from the archive as it's restored. Pass `cut_names` to reactivate a
-# specific subset; omit it to reactivate everything currently archived. Returns a
-# name => ConstraintRef map of everything that was reactivated, so the caller can merge it
-# into its cut_refs cache (see deactivate_cuts) instead of relying on constraint_by_name to
-# find these constraints again later.
-#
-# Intended use: at the start of a new problem (e.g. a new risk weight or MGA direction)
-# that reuses the same MP, reactivate everything that was pruned while solving previous
-# problems so it gets a fresh look. Since reactivated cuts are new to MP again, the normal
-# per-iteration cataloguing in benders_algorithm/mga_benders treats them as brand new cuts
-# and gives them the usual `cut_deactivation_threshold` iterations of grace before they're
-# eligible to be pruned again - so only the ones that still don't bind for the new problem
-# get re-removed.
-function reactivate_cuts(MP::Model, cut_archive::Dict{String, Any}, cut_names::Union{Vector{String}, Nothing} = nothing)
-    time_1 = time()
-    names_to_reactivate = cut_names === nothing ? collect(keys(cut_archive)) : cut_names
-    @info("Reactivating $(length(names_to_reactivate)) cuts")
-    reactivated = Dict{String, ConstraintRef}()
-    for cut_name in names_to_reactivate
-        if !haskey(cut_archive, cut_name)
-            continue
-        end
-        con = add_constraint(MP, cut_archive[cut_name], cut_name)
-        delete!(cut_archive, cut_name)
-        reactivated[cut_name] = con
-    end
-    time_1 = time() - time_1
-    @info("Reactivated $(length(reactivated)) cuts in $(round(time_1, digits=2)) seconds")
-    return reactivated
 end
 
 

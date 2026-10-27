@@ -186,7 +186,9 @@ end
 
 ####TODO - modify containers to be preallocated sizes to avoid memory over runs from push! and append!
 
-function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_archive::Dict{String, Any} = Dict{String, Any}(), cut_stats::Dict{String, Tuple{Int,Int}} = Dict{String, Tuple{Int,Int}}(), cut_clock::Ref{Int} = Ref(0))
+# cut_pool holds every cut built against MP across solves (see cut_pool.jl); solve_type picks
+# the prune window and mga_vector the binding-set group (0 = anchor sweep).
+function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_pool = CutPool(settings), solve_type::String = "Anchor", mga_vector::Int = 0)
     # Iterations
     J_max = 150
 
@@ -243,7 +245,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     lb_stall_limit = get(settings, "LB stall limit", 10)
     lb_stall_tol = get(settings, "LB stall tolerance", 1e-6)
     lb_stall_count = 0
-    cut_deactivation_threshold = settings["Cut deactivation threshold"]
+    prune_window_j = prune_window(cut_pool, solve_type)
     gamma = 0.25 # Initial regularization parameter; will be adjusted based on gap. Starts
                  # loose (few/unreliable cuts early on) and adjust_gamma tightens it down
                  # to a floor of 0.05 as iterations prove the cut model trustworthy.
@@ -260,9 +262,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
     minimal_payload = true
     first_write = 1
     indicator_written = false
-    last_iteration_cuts = Dict{String, Int64}()
-    rhs_values = Dict{String, Float64}()
-    cut_refs = Dict{String, ConstraintRef}() # name => ConstraintRef cache; avoids constraint_by_name in the hot loop below
+    sep_hist = []
 
     if mapping 
         if risk_aversion_weight == 0.0
@@ -272,15 +272,11 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         minimal_payload = false
     end
 
-    if !isempty(cut_archive)
-        reactivated = reactivate_cuts(MP, cut_archive)
-        merge!(cut_refs, reactivated)
-        @info("Reactivated $(length(reactivated)) previously-pruned cuts for this problem; will re-prune whichever don't bind within $(cut_deactivation_threshold) iterations.")
-    end
-
+    live_cuts_at_start = seed!(cut_pool, MP, mga_vector)
     time_mp = time()
-    output_mp = run_planning_model(MP, settings, risk_aversion_weight)
+    output_mp, sep = separate!(cut_pool, MP, settings, risk_aversion_weight)
     time_mp = time() - time_mp
+    push!(sep_hist, sep)
     alpha_ev = output_mp["Expected alpha"]/settings["Scaling factor cost"]
 
     if risk_aversion_flag
@@ -421,9 +417,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 results["All MP outputs per iteration"] = all_outputs_mp[first_write:j]
                 results["first_write"] = first_write 
             end
-            results["Removed cuts"] = collect(keys(cut_archive))
-            results["RHS Values"] = rhs_values
-            results["Cut archive"] = cut_archive
+            results["Sep hist"] = sep_hist
+            results["Live cuts at start"] = live_cuts_at_start
 
             # Evaluate MP sol on Eval SPs if needed
             if Eval_SPs !== nothing
@@ -451,13 +446,13 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
                 end
             end
 
-            new_cut_refs = add_optimality_cuts!(MP, sp_obj_per_iter, capacity_duals_sp_per_iter, line_duals_sp_per_iter, capacity_mix[j], line_expansion[j], coeffs, inputs,settings, j, case_name)
-            merge!(cut_refs, new_cut_refs)
+            add_cuts!(cut_pool, add_optimality_cuts!(MP, sp_obj_per_iter, capacity_duals_sp_per_iter, line_duals_sp_per_iter, capacity_mix[j], line_expansion[j], coeffs, inputs,settings, j, case_name))
             @info("Running investment problem")
             time_mp = time()
-            output_mp_unst = run_planning_model(MP, settings, risk_aversion_weight)
+            output_mp_unst, sep = separate!(cut_pool, MP, settings, risk_aversion_weight)
             time_mp = time() - time_mp
             push!(time_mp_hist, time_mp)
+            push!(sep_hist, sep)
             alpha_ev = output_mp_unst["Expected alpha"]/settings["Scaling factor cost"]
             if risk_aversion_flag
                 u_cvar = output_mp_unst["CVaR term"]/settings["Scaling factor cost"]
@@ -472,35 +467,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             lb_stall_count = (LB - LB_prev) <= lb_stall_tol*abs(LB) ? lb_stall_count + 1 : 0
             push!(LB_hist, LB)
 
-            all_cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_")]
-
-            cut_clock[] += 1
-            cuts_to_remove = String[]
-            for cut in all_cuts
-                if !haskey(last_iteration_cuts, cut)
-                    # catalog and update last iteration
-                    last_iteration_cuts[cut] = j
-                    stamp_cut!(cut_stats, cut, cut_clock[])
-                    if !haskey(cut_refs, cut)
-                        # Cut is live in MP but wasn't created or reactivated by this call
-                        # (e.g. carried over, still active, from a previous problem that
-                        # reused this same MP). Fall back once to constraint_by_name and
-                        # cache the ref so it's O(1) from here on.
-                        cut_refs[cut] = constraint_by_name(MP, cut)
-                    end
-                    rhs_values[cut] = normalized_rhs(cut_refs[cut])
-                elseif output_mp_unst["Cut Duals"][cut] >= 0.00000001
-                    # only update
-                    last_iteration_cuts[cut] = j
-                    stamp_cut!(cut_stats, cut, cut_clock[]; bound = true)
-                elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold
-                    # deactivate
-                    push!(cuts_to_remove, cut)
-                end
-            end
-            if length(cuts_to_remove) >= 1
-                deactivate_cuts(MP, cuts_to_remove, cut_archive, cut_refs)
-            end
+            # Before regularization, so MP still holds the unstabilized solve's duals
+            prune!(cut_pool, MP, j, prune_window_j)
 
             skip_reg_for_stall = lb_stall_count >= lb_stall_limit
             if skip_reg_for_stall && regularization_flag
@@ -652,7 +620,8 @@ function cvar_tail_weights(θ::AbstractVector, p::AbstractVector, alpha::Real)
     return weights
 end
 
-function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing, mapping = false, cut_archive::Dict{String, Any} = Dict{String, Any}(), cut_stats::Dict{String, Tuple{Int,Int}} = Dict{String, Tuple{Int,Int}}(), cut_clock::Ref{Int} = Ref(0))
+# solve_type is "Budget", "EV cap" or "CVaR cap" (the keys of Cut settings' "Prune window").
+function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing, mapping = false, cut_pool = CutPool(settings), solve_type::String = "Budget", mga_vector::Int = 0)
     # Iterations 
     J_max = 150
 
@@ -721,24 +690,18 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
     all_outputs_mp = Vector{Any}(undef, J_max)
     indicator_written = false
     first_write = 1
-    last_iteration_cuts = Dict{String, Int64}()
-    rhs_values = Dict{String, Float64}()
-    cut_deactivation_threshold = settings["MGA cut deactivation threshold"]
-    cut_refs = Dict{String, ConstraintRef}() # name => ConstraintRef cache; avoids constraint_by_name in the hot loop below
+    prune_window_j = prune_window(cut_pool, solve_type)
+    sep_hist = []
 
     if mapping
         @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
     end
 
-    if !isempty(cut_archive)
-        reactivated = reactivate_cuts(MP, cut_archive)
-        merge!(cut_refs, reactivated)
-        @info("Reactivated $(length(reactivated)) previously-pruned cuts for this problem; will re-prune whichever don't bind within $(cut_deactivation_threshold) iterations.")
-    end
-
+    live_cuts_at_start = seed!(cut_pool, MP, mga_vector)
     time_mp = time()
-    output_mp = run_planning_model(MP, settings, risk_aversion_weight)
+    output_mp, sep = separate!(cut_pool, MP, settings, risk_aversion_weight)
     time_mp = time() - time_mp
+    push!(sep_hist, sep)
      
     capacity_mix_initial = output_mp["Capacity"]
     line_expansion_initial = output_mp["Line expansion"]
@@ -875,9 +838,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
             #results["Lower bounds"] = lower_bounds
             results["UB_hist"] = UB_hist
             results["Gaps"] = gap_hist
-            results["RHS Values"] = rhs_values
-            results["Removed cuts"] = collect(keys(cut_archive))
-            results["Cut archive"] = cut_archive
+            results["Sep hist"] = sep_hist
+            results["Live cuts at start"] = live_cuts_at_start
 
             println("Gaps at convergence: ", gap_hist[end])
             
@@ -908,13 +870,13 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 end
             end
 
-            new_cut_refs = add_optimality_cuts!(MP, sp_obj_per_iter, capacity_duals_sp_per_iter, line_duals_sp_per_iter, capacity_mix[j], line_expansion[j], coeffs, inputs,settings, j, case_name)
-            merge!(cut_refs, new_cut_refs)
+            add_cuts!(cut_pool, add_optimality_cuts!(MP, sp_obj_per_iter, capacity_duals_sp_per_iter, line_duals_sp_per_iter, capacity_mix[j], line_expansion[j], coeffs, inputs,settings, j, case_name))
             @info("Running investment problem")
             time_mp = time()
-            output_mp = run_planning_model(MP, settings, risk_aversion_weight)
+            output_mp, sep = separate!(cut_pool, MP, settings, risk_aversion_weight)
             time_mp = time() - time_mp
             push!(time_MP_hist, time_mp)
+            push!(sep_hist, sep)
 
             # Update MP solution outputs
             push!(capacity_mix, output_mp["Capacity"])
@@ -928,34 +890,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
                 "gap_hist" => gap_hist,
             ])
 
-            all_cuts = [name(con) for con in all_constraints(MP, include_variable_in_set_constraints=false) if startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_")]
-            cut_clock[] += 1
-            cuts_to_remove = String[]
-            for cut in all_cuts
-                if !haskey(last_iteration_cuts, cut)
-                    # catalog and update last iteration
-                    last_iteration_cuts[cut] = j
-                    stamp_cut!(cut_stats, cut, cut_clock[])
-                    if !haskey(cut_refs, cut)
-                        # Cut is live in MP but wasn't created or reactivated by this call
-                        # (e.g. carried over, still active, from a previous problem that
-                        # reused this same MP). Fall back once to constraint_by_name and
-                        # cache the ref so it's O(1) from here on.
-                        cut_refs[cut] = constraint_by_name(MP, cut)
-                    end
-                    rhs_values[cut] = normalized_rhs(cut_refs[cut])
-                elseif output_mp["Cut Duals"][cut] >= 0.0001
-                    # only update
-                    last_iteration_cuts[cut] = j
-                    stamp_cut!(cut_stats, cut, cut_clock[]; bound = true)
-                elseif j - last_iteration_cuts[cut] >= cut_deactivation_threshold
-                    # deactivate
-                    push!(cuts_to_remove, cut)
-                end
-            end
-            if length(cuts_to_remove) >= 1
-                deactivate_cuts(MP, cuts_to_remove, cut_archive, cut_refs)
-            end
+            prune!(cut_pool, MP, j, prune_window_j)
 
         end
     end
