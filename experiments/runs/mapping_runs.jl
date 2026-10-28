@@ -37,7 +37,8 @@ function mapping_test_laptop(test_index)
 
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
         budget_settings = Dict("Budget multiplier" => 1.001),
-        mapping_settings = Dict("Mapping" => true, "Interior samples" => 50),
+        mapping_settings = Dict("Mapping" => true),
+        sampling_settings = Dict("Samples" => 50),
         run_settings = Dict("Summary name" => "mapping"))
     rmprocs(workers())
 

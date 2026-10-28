@@ -129,6 +129,166 @@ function test_settings_groups(test_index = "settings_groups")
     @assert errors(() -> resolve_settings(settings, "Budget settings", Dict("Tighten budgte" => true))) "a misspelled key should error"
     @assert errors(() -> resolve_all_settings(settings, Dict("Budget setings" => Dict()))) "a misspelled group should error"
     @assert errors(() -> resolve_settings(settings, "Missing settings")) "a missing group should error"
+
+    # Sampling settings: method sub-blocks merge, misspelled nested keys and the retired
+    # Mapping / Boundary keys error out
+    sampling = resolve_settings(settings, "Sampling settings", Dict("Method" => "GridFill", "GridFill" => Dict("Cell size" => 0.1)))
+    @assert sampling["GridFill"]["Cell size"] == 0.1 && sampling["GridFill"]["Per cell"] == settings["Sampling settings"]["GridFill"]["Per cell"] "GridFill block should merge"
+    @assert sampling["Method"] in SAMPLING_METHODS
+    @assert boundary_cfg(sampling)["Candidates"] == sampling["Candidates"] && haskey(boundary_cfg(sampling), "K neighbours")
+    @assert errors(() -> resolve_settings(settings, "Sampling settings", Dict("GridFill" => Dict("Cell sise" => 0.1)))) "a misspelled nested key should error"
+    @assert errors(() -> resolve_settings(settings, "Mapping settings", Dict("Sampling" => true))) "the retired Mapping \"Sampling\" key should error"
+    @assert errors(() -> resolve_settings(settings, "Mapping settings", Dict("Interior samples" => 5))) "the retired \"Interior samples\" key should error"
+    @assert errors(() -> resolve_all_settings(settings, Dict("Boundary settings" => Dict()))) "the retired Boundary settings group should error"
     @info("[$(test_index)] settings groups resolve and validate as expected for both input sets.")
+    return true
+end
+
+#=========
+
+Batched subproblem test (src/model/benders/worker_functions.jl): run_subproblems_batch solves
+several capacity points with one call per worker over its own scenarios. Its objectives and
+duals must match run_all_subproblems point by point (gas price uncertainty off: 10 scenarios).
+
+==========#
+
+function test_subproblems_batch(test_index = "sp_batch")
+    settings = load_settings(joinpath("inputs", "Inputs_30d_1000scen_7tech_2z"))
+    settings["Gas price uncertainty"] = false
+    inputs = load_input_data(joinpath("inputs", "Inputs_30d_1000scen_7tech_2z"), settings)
+    configure_parallel_workers!(settings)
+    SPs = build_all_subproblems(inputs, settings)
+    R, L = length(inputs["Resources"]), inputs["Number of lines"]
+    ub = inputs["Capacity upper bounds"]
+    rng = Xoshiro(3)
+    caps = [0.2 .* ub .* rand(rng, R) for _ in 1:3]
+    lines = [100 .* rand(rng, L) for _ in 1:3]
+    batch = run_subproblems_batch(SPs, inputs, settings, caps, lines; minimal_payload = false)
+    for i in 1:3
+        single = run_all_subproblems(SPs, inputs, settings, caps[i], lines[i]; minimal_payload = false)
+        for I in CartesianIndices(single)
+            a, b = batch[i][I], single[I]
+            @assert isapprox(a["SP objective"], b["SP objective"]; rtol = 1e-6) "point $i scenario $(Tuple(I)): objective $(a["SP objective"]) vs $(b["SP objective"])"
+            @assert isapprox(a["capacity dual"], b["capacity dual"]; rtol = 1e-5, atol = 1e-3) "point $i scenario $(Tuple(I)): capacity duals differ"
+            @assert haskey(a, "Power price") "full payload expected"
+        end
+    end
+    @info("[$(test_index)] PASSED: run_subproblems_batch matches run_all_subproblems on 3 points × $(length(SPs)) scenarios.")
+    return true
+end
+
+#=========
+
+GridFill on the real model (src/model/boundary_sampling/gridfill_*.jl), without a Benders run:
+  - add_pool_cuts! reads the master's optimality cuts (live and archived, as add_optimality_cuts!
+    writes them) into exactly the cuts add_final_solve! builds from the same subproblem solves;
+  - evaluate_gridfill_batch gives Summary rows with the per-scenario columns and the GF_ lineage
+    columns, solved labels inside the bracket, and write_exploration_results! writes them.
+Gas price uncertainty off (10 scenarios).
+
+==========#
+
+function test_gridfill_real_model(test_index = "gridfill_real")
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    settings = load_settings(inputs_folder)
+    settings["Gas price uncertainty"] = false
+    settings["Risk aversion flag"] = true          # also writes cvar_tail_cuts_*, which must be skipped
+    inputs = load_input_data(inputs_folder, settings)
+    configure_parallel_workers!(settings)
+    SPs = build_all_subproblems(inputs, settings)
+    R, L = length(inputs["Resources"]), inputs["Number of lines"]
+    S, F, K = size(SPs)
+    p, α = scenario_probabilities(inputs), settings["Value-at-Risk percent"]
+
+    MP = build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
+    pool = CutPool(settings)
+    rng = Xoshiro(4)
+    ub = inputs["Capacity upper bounds"]
+    solves = FinalSolve[]
+    for j in 1:4
+        cap, line = 0.3 .* ub .* rand(rng, R), 200 .* rand(rng, L)
+        sp = run_all_subproblems(SPs, inputs, settings, cap, line; minimal_payload = true)
+        obj = reshape([sp[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K))
+        cd = reshape([sp[s,f,k]["capacity dual"][r] for r in 1:R, s in 1:S, f in 1:F, k in 1:K], (R, S, F, K))
+        ld = reshape([sp[s,f,k]["line dual"][l] for l in 1:L, s in 1:S, f in 1:F, k in 1:K], (L, S, F, K))
+        co = reshape([sp[s,f,k]["coeff"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K))
+        add_cuts!(pool, add_optimality_cuts!(MP, obj, cd, ld, cap, line, co, inputs, settings, j, "gfcheck"))
+        x = vcat(cap, line)
+        fs = final_solve_from_sp_outputs("Point_$j", x, sp, p, investment_cost(x, inputs)[1])
+        push!(solves, fs)
+    end
+    _archive!(pool, MP, [n for n in keys(pool.live) if occursin("_gfcheck_2_", n)])   # read both paths
+    cb_pool = add_pool_cuts!(CutBank(S * F * K, R + L), pool, MP, settings)
+    cb_ref = CutBank(S * F * K, R + L)
+    foreach(fs -> add_final_solve!(cb_ref, fs), solves)
+    @assert n_cuts(cb_pool) == n_cuts(cb_ref) == 4 * S * F * K "pool gave $(n_cuts(cb_pool)) cuts, expected $(4 * S * F * K)"
+    Y = hcat([fs.x for fs in solves]..., [0.3 .* vcat(ub, 200) .* rand(rng, R + L) for _ in 1:5]...)
+    @assert isapprox(cut_values(cb_pool, Y), cut_values(cb_ref, Y); rtol = 1e-8) "pool cuts differ from the (θ, β, x) cuts"
+
+    # Two blends of the points through the GridFill evaluator
+    Θ = reduce(hcat, [fs.θ for fs in solves]); inv = [fs.inv_cost for fs in solves]
+    tri = [1 2 3; 2 3 4]; W = [0.5 0.3 0.2; 0.2 0.2 0.6]
+    X = blend_capacities(reduce(vcat, [fs.x' for fs in solves]), tri, W)
+    br = blend_bracket(cb_pool, Θ, inv, p, α, tri, W, permutedims(X))
+    picks = [GridFillPick("GridFill_$i", 1, (i, i), [0.1, 0.2], [solves[j].name for j in tri[i, :]], W[i, :], X[i, :], 0.5,
+                          br.inv[i], br.ub_ev[i], br.lb_ev[i], br.mid_ev[i], br.ub_cvar[i], br.lb_cvar[i], br.mid_cvar[i], [0.1, 0.2]) for i in 1:2]
+    c, s, e, solved = evaluate_gridfill_batch(picks, SPs, inputs, settings, 0.1)
+    tol(v) = 1e-6 * abs(v)
+    for (pk, fs) in zip(picks, solved)
+        ev, cv = solve_ev(fs), solve_cvar(fs, α)
+        @assert pk.lb_ev - tol(ev) <= ev <= pk.ub_ev + tol(ev) "$(pk.name): EV $ev outside [$(pk.lb_ev), $(pk.ub_ev)]"
+        @assert pk.lb_cvar - tol(cv) <= cv <= pk.ub_cvar + tol(cv) "$(pk.name): CVaR $cv outside [$(pk.lb_cvar), $(pk.ub_cvar)]"
+        @assert isapprox(fs.inv_cost, pk.inv; rtol = 1e-9) "investment cost should blend exactly"
+        @info("[$(test_index)] $(pk.name): EV $(round(ev; sigdigits = 6)) in [$(round(pk.lb_ev; sigdigits = 6)), $(round(pk.ub_ev; sigdigits = 6))], midpoint error $(round(100 * abs(pk.mid_ev - ev) / ev; sigdigits = 3))% vs blend $(round(100 * abs(pk.ub_ev - ev) / ev; sigdigits = 3))%")
+    end
+    folder = joinpath("outputs", "Test_" * test_index, "Summary")
+    write_exploration_results!(c, s, e, folder, [pk.name for pk in picks], "gridfill_check")
+    df = CSV.read(joinpath(folder, "Summary_gridfill_check.csv"), DataFrame)
+    @assert df.Index == ["GridFill_1", "GridFill_2"]
+    for col in ("EV_OpCost", "CVaR_OpCost", "Parents", "Weights", "GF_Batch", "GF_Mid_EV", "GF_LB_CVaR", "GF_Pred_v", "GF_Novelty")
+        @assert col in names(df) "Summary is missing $col"
+    end
+    settings["Write all scenarios flag"] && @assert count(startswith("OperatingCost_D_"), names(df)) == S * F * K "per-scenario op cost columns missing"
+    @assert isapprox(df.EV_OpCost, [solve_ev(fs) for fs in solved]; rtol = 1e-9) "Summary labels must be the solved values"
+    @info("[$(test_index)] PASSED: pool cuts match, GridFill rows bracketed and written to $(folder).")
+    return true
+end
+
+#=========
+
+Forced-GC test (src/model/benders/worker_functions.jl): _gc_all_processes! replaces the blocking
+`@everywhere GC.gc()` with a full GC on the master plus a fire-and-forget full GC on each worker.
+Checks that the master and every worker each ran a full collection, that the workers' collection
+happens before the next request they receive (so memory at the next solve is the same as before),
+that every worker stays responsive, and that a master-only call works.
+
+==========#
+
+function test_gc_all_processes(test_index = "gc_all_processes")
+    settings = load_settings(joinpath("inputs", "Inputs_30d_1000scen_7tech_2z"))
+    configure_parallel_workers!(settings)
+    pids = workers()
+    @assert nworkers() > 1 || pids != [myid()] "expected distributed workers for this test, got $(pids)"
+
+    full_sweeps() = Base.gc_num().full_sweep
+    master_before = full_sweeps()
+    workers_before = Dict(pid => remotecall_fetch(full_sweeps, pid) for pid in pids)
+
+    _gc_all_processes!(pids)
+
+    @assert full_sweeps() > master_before "master did not run a full GC"
+    for pid in pids
+        # Queued behind the remote GC, so this both checks the worker is responsive and that its
+        # collection ran before the next request.
+        after = remotecall_fetch(full_sweeps, pid)
+        @assert after > workers_before[pid] "worker $(pid) did not run a full GC before its next request ($(workers_before[pid]) -> $(after))"
+        @assert remotecall_fetch(myid, pid) == pid "worker $(pid) not responsive after GC"
+    end
+
+    master_before = full_sweeps()
+    _gc_all_processes!(Int[])
+    @assert full_sweeps() > master_before "master-only call did not run a full GC"
+
+    @info("[$(test_index)] master and all $(length(pids)) workers ran a full GC; workers stayed responsive.")
     return true
 end

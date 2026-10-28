@@ -30,9 +30,9 @@ include("mga/interpolate_evaluation.jl")  # evaluate_interpolates, evaluate_subp
 include("runs/mapping_runs.jl")           # mapping_test_*
 include("runs/risk_pareto_runs.jl")       # risk_pareto_*, wing_caps_test_*, warmstart_verification_laptop, simple_comp
 include("runs/interpolate_runs.jl")       # run_interpolate_evaluation_*
-include("runs/boundary_sampling_runs.jl") # boundary_sampling_test_*, gradient_check, run13_boundary_checks
+include("runs/boundary_sampling_runs.jl") # boundary_sampling_test_*, gridfill_test_*, gradient_check, run13_boundary_checks
 
 # Diagnostic checks
 include("checks/cut_checks.jl")           # test_cut_management, test_cut_trim_rules
-include("checks/model_checks.jl")         # test_capacity_bound_tightening, test_wing_caps, test_settings_groups
+include("checks/model_checks.jl")         # test_capacity_bound_tightening, test_wing_caps, test_settings_groups, test_subproblems_batch, test_gridfill_real_model, test_gc_all_processes
 include("checks/sampler_checks.jl")       # test_hit_and_run_sampler, test_sample_interior_delaunay

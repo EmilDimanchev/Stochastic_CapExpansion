@@ -6,13 +6,15 @@ Main MGA functions for running stochastic exploration with Benders and MGA, incl
 
 ==============================#
 
+const SAMPLING_METHODS = ("None", "Delaunay", "Boundary", "GridFill")
+
 # Each *_settings keyword overrides keys of the matching settings.yaml block (see run_settings.jl).
-function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_settings::AbstractDict = Dict(), cap_settings::AbstractDict = Dict(), mapping_settings::AbstractDict = Dict(), run_settings::AbstractDict = Dict(), boundary_settings::AbstractDict = Dict(), cut_settings::AbstractDict = Dict())
+function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_settings::AbstractDict = Dict(), cap_settings::AbstractDict = Dict(), mapping_settings::AbstractDict = Dict(), run_settings::AbstractDict = Dict(), sampling_settings::AbstractDict = Dict(), cut_settings::AbstractDict = Dict())
 
     settings = resolve_all_settings(settings, Dict("Budget settings" => budget_settings, "Cap settings" => cap_settings, "Mapping settings" => mapping_settings,
-                                                   "Run settings" => run_settings, "Boundary settings" => boundary_settings, "Cut settings" => cut_settings))
+                                                   "Run settings" => run_settings, "Sampling settings" => sampling_settings, "Cut settings" => cut_settings))
     budget_settings = settings["Budget settings"]
-    boundary_settings = settings["Boundary settings"]
+    sampling_settings = settings["Sampling settings"]
     cap_settings = settings["Cap settings"]
     mapping_settings = settings["Mapping settings"]
     run_settings = settings["Run settings"]
@@ -32,10 +34,9 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     if mapping
         @info("Mapping on")
     end
-    sampling = mapping_settings["Sampling"]
-    n_samples = mapping_settings["Interior samples"]
-    sampling_method = mapping_settings["Sampling method"]
-    sampling_method in ("Delaunay", "Boundary") || error("Unknown \"Sampling method\" $(sampling_method); use \"Delaunay\" or \"Boundary\".")
+    sampling_method = sampling_settings["Method"]
+    sampling_method in SAMPLING_METHODS || error("Unknown sampling \"Method\" $(sampling_method); use one of $(SAMPLING_METHODS).")
+    n_samples = sampling_settings["Samples"]
 
     vector_set = run_settings["Vector set"]
     summary_name = run_settings["Summary name"]
@@ -90,15 +91,16 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     # for one problem can be brought back (seed!/separate!) when a later problem needs them.
     cut_pool = CutPool(settings)
 
-    # Gradient bank for the boundary sampler: one FinalSolve (capacity, per-scenario op cost
-    # and capacity gradients) per final solve. The converged subproblem outputs in out["SPs"]
-    # already hold these duals, so this copies them before release_heavy_payload! drops them.
+    # Gradient bank for the Boundary / GridFill samplers: one FinalSolve (capacity, per-scenario
+    # op cost and capacity gradients) per final solve. The converged subproblem outputs in
+    # out["SPs"] already hold these duals, so this copies them before release_heavy_payload!
+    # drops them.
     bank = FinalSolve[]
-    use_bank = sampling && sampling_method == "Boundary"
+    use_bank = sampling_method in ("Boundary", "GridFill")
     var_names = capacity_variable_names(inputs)
     bank_record!(label, out, folder) = use_bank && begin
         fs = record_final_solve!(bank, label, out, inputs)
-        boundary_settings["Write gradients"] && write_gradient_file(folder, fs, var_names)
+        sampling_settings["Write gradients"] && write_gradient_file(folder, fs, var_names)
     end
 
     for (i, risk) in enumerate(risk_aversion_weights)
@@ -279,15 +281,26 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
 
         # Map interior after exterior mapping
-        if sampling && sampling_method == "Boundary"
+        if sampling_method == "Boundary"
             # Interior_k rows carry their own labels plus lineage/bound columns; their
             # bracket check is written to Summary/Interior_brackets_<summary name>.csv
-            @time rows_cap, rows_syscost, rows_emissions, interior_labels, _, _ = run_boundary_sampling!(bank, SPs, inputs, settings, boundary_settings, n_samples, results_folder, summary_folder, summary_name)
+            @time rows_cap, rows_syscost, rows_emissions, interior_labels, _, _ = run_boundary_sampling!(bank, SPs, inputs, settings, sampling_settings, results_folder, summary_folder, summary_name)
             append!(results_cap, rows_cap)
             append!(results_syscost, rows_syscost)
             append!(results_emissions, rows_emissions)
             append!(run_labels, interior_labels)
-        elseif sampling
+        elseif sampling_method == "GridFill"
+            # GridFill_k rows carry lineage + prediction columns (GF_*). The Summary is rewritten
+            # after every batch with the MGA rows plus the samples solved so far.
+            n_mga = length(results_cap)
+            checkpoint(c, s, e, l) = write_exploration_results!(vcat(results_cap[1:n_mga], c), vcat(results_syscost[1:n_mga], s), vcat(results_emissions[1:n_mga], e),
+                                                                summary_folder, vcat(run_labels, l), summary_name; mapping = mapping)
+            @time rows_cap, rows_syscost, rows_emissions, gf_labels = run_gridfill_sampling!(bank, cut_pool, MP, SPs, inputs, settings, sampling_settings; checkpoint = checkpoint, results_folder = results_folder)
+            append!(results_cap, rows_cap)
+            append!(results_syscost, rows_syscost)
+            append!(results_emissions, rows_emissions)
+            append!(run_labels, gf_labels)
+        elseif sampling_method == "Delaunay"
             all_caps = Matrix(vcat(results_cap...))
             all_costs = vcat(results_syscost...)
             @time samples = sample_interior_delauney(all_caps, all_costs, n_samples, settings, budget_val_transform, transform_sys, transform_cvar, scaling)

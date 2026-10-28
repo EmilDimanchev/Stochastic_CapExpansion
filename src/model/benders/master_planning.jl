@@ -468,7 +468,7 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
 
     # Relax rather than delete: keeps the row (and MOI's row indexing) stable across
     # calls. Sized relative to UB rather than an arbitrary large constant, to avoid the
-    # "huge RHS next to small-scale rows" numerical range issue noted in deactivate_cuts.
+    # "huge RHS next to small-scale rows" numerical range issue noted in cut_pool.jl (_archive!).
     set_normalized_rhs(MP[:cLevel_set], 1e3 * max(abs(UB), 1.0))
     @objective(MP,Min, MP[:eObj])
     if settings["Solver"] == "HiGHS"
@@ -783,6 +783,6 @@ function run_distributed_sampling(samples::Vector{Vector{Float64}})
         end
     end
     #@everywhere _clear_worker_mp_cache!()
-    @everywhere GC.gc()
+    _gc_all_processes!()
     return outputs
 end

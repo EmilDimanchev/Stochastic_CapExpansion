@@ -63,9 +63,27 @@ function _run_cached_subproblem!(scenario_key::Tuple{Int, Int, Int}, capacity::V
     return result
 end
 
+# Several capacity points on this worker's own scenarios, one after the other. Each cached
+# model only ever sees one point at a time and warm-starts from the previous point's basis.
+# Returns results[point][key index].
+function _run_cached_batch!(scenario_keys::Vector{Tuple{Int, Int, Int}}, capacities::Vector{Vector{Float64}}, capacity_lines::Vector{Vector{Float64}}, minimal_payload::Bool)
+    return [[_run_cached_subproblem!(key, cap, line, minimal_payload) for key in scenario_keys] for (cap, line) in zip(capacities, capacity_lines)]
+end
+
 function _clear_worker_mgca_cache!()
     empty!(WORKER_MGCA_CACHE)
     GC.gc(false)
+    return nothing
+end
+
+# Full GC on the master (blocking) and on each worker (fire-and-forget). Same collections as
+# `@everywhere GC.gc()`, but the master doesn't wait on the workers: each worker collects while the
+# master carries on, and its next request just queues behind the collection.
+function _gc_all_processes!(pids = workers())
+    for pid in pids
+        pid == myid() || remote_do(GC.gc, pid)
+    end
+    GC.gc()
     return nothing
 end
 
@@ -303,8 +321,8 @@ end
 # dispatch - since a 2D triangulation solve plus a cheap barycentric-sampling loop isn't worth
 # the @fetchfrom/remotecall_wait machinery used by the CVT/Random/HitAndRun methods.
 function sample_interior_simplex(points, cost_points, num_samples, settings)
-    fraction = settings["Mapping settings"]["Delaunay simplex fraction"]
-    mode = settings["Mapping settings"]["Delaunay repeat mode"]
+    fraction = settings["Sampling settings"]["Delaunay"]["Simplex fraction"]
+    mode = settings["Sampling settings"]["Delaunay"]["Repeat mode"]
     rng = MersenneTwister(get(settings, "Seed", 1234))
 
     if mode == "CycleSampling"
@@ -320,7 +338,7 @@ end
 function sample_interior_distributed(points, num_samples, settings)
     samples = Vector{Vector{Float64}}(undef, num_samples)
     solver = settings["Solver"]
-    sample_method = settings["Mapping settings"]["Interior sample method"]
+    sample_method = settings["Sampling settings"]["Delaunay"]["Interior sample method"]
     if nprocs() > 1
         pids = workers()
         if sample_method == "HitAndRun"
@@ -359,7 +377,7 @@ function sample_interior_distributed(points, num_samples, settings)
         else
             error("Unsupported sample method: $sample_method. Supported methods are: CVT, Random, HitAndRun")
         end
-        @everywhere GC.gc()
+        _gc_all_processes!()
     else
         if sample_method == "HitAndRun"
             @info "Sampling using hit-and-run MCMC method with $num_samples samples (serial, single chain)..."
@@ -881,7 +899,7 @@ function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Ve
                 
             end
         end
-        @everywhere GC.gc()
+        _gc_all_processes!()
     else
         if settings["Parallel flag"] && nworkers() == 0
             @warn("Parallel flag is true but no distributed workers are available. Falling back to serial subproblem solves.")
@@ -894,6 +912,32 @@ function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Ve
         end
     end
     return sp_results
+end
+
+# run_all_subproblems for a batch of capacity points. Scenario models stay on the workers that
+# own them (build_all_subproblems); each worker gets ONE call that loops over the batch for its
+# own scenarios, so no two in-flight calls share a cached model and no per-point GC/dispatch.
+# Returns one S × F × K results array per point, identical to run_all_subproblems' output.
+function run_subproblems_batch(SPs::Array{Model,3}, inputs, settings, capacities::Vector{Vector{Float64}}, capacity_lines::Vector{Vector{Float64}}; minimal_payload::Bool=get(settings, "Minimal worker payload flag", true))
+    n = length(capacities)
+    length(capacity_lines) == n || error("run_subproblems_batch: $(n) capacity vectors but $(length(capacity_lines)) line vectors.")
+    if !(settings["Parallel flag"] && nworkers() > 0 && size(SPs) != (1, 1, 1))
+        return [run_all_subproblems(SPs, inputs, settings, capacities[i], capacity_lines[i]; minimal_payload=minimal_payload) for i in 1:n]
+    end
+    results = [Array{Dict{String, Any},3}(undef, size(SPs)...) for _ in 1:n]
+    owned = Dict(pid => sort!(collect(keys_set)) for (pid, keys_set) in MASTER_WORKER_SP_KEYS if pid in workers() && !isempty(keys_set))
+    n_owned = sum(length, values(owned); init = 0)
+    n_owned == length(SPs) || error("run_subproblems_batch: workers own $(n_owned) of $(length(SPs)) subproblems. Call build_all_subproblems() first.")
+    @sync for (pid, scenario_keys) in owned
+        @async begin
+            out = remotecall_fetch(_run_cached_batch!, pid, scenario_keys, capacities, capacity_lines, minimal_payload)
+            for i in 1:n, (j, key) in enumerate(scenario_keys)
+                results[i][key...] = out[i][j]
+            end
+        end
+    end
+    _gc_all_processes!()
+    return results
 end
 
 function write_subproblem_results(ED::Model, inputs, settings; minimal_payload::Bool=false)

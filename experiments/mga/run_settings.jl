@@ -3,15 +3,16 @@
 #
 # Each group is a block in settings.yaml - the base values for that machine/input set, with the
 # meaning of every key documented next to it there:
-#   "Budget settings", "Cap settings", "Mapping settings", "Boundary settings",
+#   "Budget settings", "Cap settings", "Mapping settings", "Sampling settings",
 #   "Run settings", "Cut settings"
 # A run overrides individual keys through the matching keyword argument of the driver
 # (budget_settings = Dict("Tighten budget" => true), cut_settings = Dict("Max rounds" => 10), ...).
 # Unknown keys error out, so a typo can't silently fall back to the base value. A nested
-# block (e.g. Cut settings' "Prune window") can be overridden partially; the rest is kept.
+# block (e.g. Cut settings' "Prune window", Sampling settings' "GridFill") can be overridden
+# partially; the rest is kept.
 #-------------------------------------------------------------------------------------------
 
-const SETTINGS_GROUPS = ("Budget settings", "Cap settings", "Mapping settings", "Boundary settings", "Run settings", "Cut settings")
+const SETTINGS_GROUPS = ("Budget settings", "Cap settings", "Mapping settings", "Sampling settings", "Run settings", "Cut settings")
 
 # Base block settings[group] with `overrides` applied.
 function resolve_settings(settings::AbstractDict, group::String, overrides::AbstractDict = Dict())
@@ -20,7 +21,13 @@ function resolve_settings(settings::AbstractDict, group::String, overrides::Abst
     unknown = setdiff(keys(overrides), keys(base))
     isempty(unknown) || error("Unknown key(s) $(collect(unknown)) in $group. Valid keys: $(sort(collect(keys(base)))).")
     for (k, v) in overrides
-        base[k] = base[k] isa AbstractDict && v isa AbstractDict ? merge(Dict{String,Any}(base[k]), v) : v
+        if base[k] isa AbstractDict && v isa AbstractDict
+            bad = setdiff(keys(v), keys(base[k]))
+            isempty(bad) || error("Unknown key(s) $(collect(bad)) in $group → $k. Valid keys: $(sort(collect(keys(base[k])))).")
+            base[k] = merge(Dict{String,Any}(base[k]), v)
+        else
+            base[k] = v
+        end
     end
     return base
 end

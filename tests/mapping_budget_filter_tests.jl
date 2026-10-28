@@ -20,7 +20,7 @@ function main()
     budget = 1.0
     transform_sys = 1.0
     transform_cvar = 1.0
-    settings = Dict("Mapping settings" => Dict("Mapping gap threshold" => 0.2, "Delaunay simplex fraction" => 0.25, "Delaunay repeat mode" => "CycleSampling"), "Seed" => 42)
+    settings = Dict("Mapping settings" => Dict("Mapping gap threshold" => 0.2), "Sampling settings" => Dict("Delaunay" => Dict("Simplex fraction" => 0.25, "Repeat mode" => "CycleSampling")), "Seed" => 42)
     cutoff = budget + settings["Mapping settings"]["Mapping gap threshold"] # 1.2
 
     @testset "Mapping budget filter (sample_interior_delauney)" begin

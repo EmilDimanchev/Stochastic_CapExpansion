@@ -81,31 +81,36 @@ Cap settings: # extra caps on one metric (System Expected / CVaR) at selected ti
   Number of caps: 2 # max caps per wing per level
   Cap levels: [1] # tightening levels at which caps are run
 
-Mapping settings: # mapping of the feasible space (records Benders iterates, then samples the interior)
-  Mapping: false # record every Benders iterate within the gap threshold
+Mapping settings: # records every Benders iterate within the gap threshold (Summary rows <label>_iter_<k>)
+  Mapping: false
   Mapping gap threshold: 0.2 # iterates with gap at or below this are recorded / kept by the Delaunay filter
-  Sampling: false # sample the interior after exploration
-  Sampling method: "Delaunay" # "Delaunay" (cost-space simplices) or "Boundary" (see Boundary settings)
-  Interior samples: 3000 # number of interior portfolios to evaluate (either method)
-  Interior sample method: "CVT" # sample_interior_distributed: "Base", "CVT", "Random" or "HitAndRun"
-  Delaunay simplex fraction: 0.1 # share of simplices sampled per round
-  Delaunay repeat mode: "ProgressiveRefinement" # "CycleSampling" or "ProgressiveRefinement"
 
-Boundary settings: # boundary interior sampler (src/model/boundary_sampling); used when Sampling method is "Boundary".
-  # Picks blends of neighbouring final solves just inside the hull boundary, spread out by greedy
-  # max-min distance in a metric built from the Benders capacity gradients. The RNG seed is Seed above.
-  Quotas: [[outer_shell, 0.50], [ev_wing, 0.15], [cvar_wing, 0.15], [interior, 0.20]] # base-region shares, in selection order
-  K neighbours: 6 # neighbours a base vertex can blend with
-  Base weight range: [0.5, 0.85] # weight kept on the base vertex
-  Candidates per pick: 30 # candidate pool size per pick
-  Metric: "active_subspace" # "active_subspace" or "lengthscale_file"
-  Metric file: null # length-scale CSV (tech, cap_max_MW, length_scale); only read for "lengthscale_file"
-  Energy share: 0.999 # keep the fewest eigen-directions reaching this share (0.95 kept r = 1 on run 13 and over-spread the picks)
-  r max: 50 # ... but at most this many
-  Explicit M max dim: 200 # d above this: thin SVD instead of forming the d x d matrix
-  Waves: 1 # split the interior samples into this many select/evaluate rounds
-  Refit metric each wave: false # rebuild the subspace with the interior gradients included
-  Write gradients: false # also write per-solve Gradients.csv files to disk
+Sampling settings: # portfolios evaluated after exploration, labelled by subproblem solves only. The RNG seed is Seed above.
+  Method: "None" # "None", "Delaunay" (cost-space simplices), "Boundary" (region blends) or "GridFill" (cost-space gap filling)
+  Samples: 3000 # portfolios to evaluate (GridFill: upper limit; it stops early once no empty cell is left)
+  Batch size: 64 # Boundary / GridFill: solves per select -> evaluate round; solved points feed the next round
+  Candidates: 30 # Boundary: candidate pool per pick; GridFill: candidates kept per cell
+  Write gradients: false # Boundary / GridFill: also write per-solve Gradients.csv files to disk
+  Delaunay: # sample_interior_delauney / sample_interior_distributed
+    Interior sample method: "CVT" # "Base", "CVT", "Random" or "HitAndRun"
+    Simplex fraction: 0.1 # share of simplices sampled per round
+    Repeat mode: "ProgressiveRefinement" # "CycleSampling" or "ProgressiveRefinement"
+  Boundary: # src/model/boundary_sampling/boundary_sampler.jl. Blends of neighbouring final solves just inside the
+    # hull boundary, spread out by greedy max-min distance in a metric built from the Benders capacity gradients.
+    Quotas: [[outer_shell, 0.50], [ev_wing, 0.15], [cvar_wing, 0.15], [interior, 0.20]] # base-region shares, in selection order
+    K neighbours: 6 # neighbours a base vertex can blend with
+    Base weight range: [0.5, 0.85] # weight kept on the base vertex
+    Metric: "active_subspace" # "active_subspace" or "lengthscale_file"
+    Metric file: null # length-scale CSV (tech, cap_max_MW, length_scale); only read for "lengthscale_file"
+    Energy share: 0.999 # keep the fewest eigen-directions reaching this share (0.95 kept r = 1 on run 13 and over-spread the picks)
+    r max: 50 # ... but at most this many
+    Explicit M max dim: 200 # d above this: thin SVD instead of forming the d x d matrix
+    Refit metric each wave: false # rebuild the subspace with the interior gradients included
+  GridFill: # src/model/boundary_sampling/gridfill_*.jl. Grid over (c_hat, v_hat) = anchor-normalised (Inv + EV, Inv + CVaR);
+    # each empty cell is targeted with barycentric blends of three solved points, aimed with the cut bracket midpoint.
+    Cell size: 0.025 # cell edge in (c_hat, v_hat)
+    Delta cap: 1.1 # only cells with c_hat + v_hat at or below this (the near-optimal region)
+    Per cell: "auto" # samples per cell: an integer cap, or "auto" to fill in layers (1 per reachable cell, then 2, ...) until Samples is spent
 
 Cut settings: # cut pool, see src/model/benders/cut_pool.jl
   Cuts retained: 500000 # memory cap on live + archived cuts, applied at each new risk weight / MGA vector

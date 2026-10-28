@@ -82,7 +82,7 @@ function generate_candidates(rng::AbstractRNG, regions::Vector{String}, nbr::Vec
             @warn("No final solves in region $region; its $n_r picks are skipped.")
             continue
         end
-        for _ in 1:(n_r * cfg["Candidates per pick"])
+        for _ in 1:(n_r * cfg["Candidates"])
             b = rand(rng, bases)                                  # base vertex, uniform in region
             m = min(rand(rng, 1:3), length(nbr[b]))               # 1 to 3 partners
             partners = nbr[b][randperm(rng, length(nbr[b]))[1:m]] # m distinct neighbours

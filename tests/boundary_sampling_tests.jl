@@ -17,48 +17,9 @@ the bounds can be checked against the true value of any blend.
 
 isdefined(Main, :run_stochastic_exploration_risk_pareto) || include(joinpath(@__DIR__, "..", "experiments", "MGA_Tests.jl"))
 
-#---- Synthetic convex op-cost model -------------------------------------------------------
-struct ToyCost
-    a::Array{Float64, 2}   # S × L intercepts
-    c::Array{Float64, 3}   # S × L × d slopes
-end
-function toy_cost(rng, S, L, d)
-    return ToyCost(100 .+ 50 .* rand(rng, S, L), -rand(rng, S, L, d))
-end
-function toy_eval(tc::ToyCost, x)
-    S, L, d = size(tc.c)
-    θ, β = zeros(S), zeros(d, S)
-    for s in 1:S
-        vals = [tc.a[s, l] + dot(tc.c[s, l, :], x) for l in 1:L]
-        l = argmax(vals)
-        θ[s], β[:, s] = vals[l], tc.c[s, l, :]
-    end
-    return θ, β
-end
+include(joinpath(@__DIR__, "sampling_toy_helpers.jl"))   # ToyCost, toy_cost, toy_eval, toy_bank
 
-# A bank with every solve family. x is random in [0, 20]^d; θ and β come from the toy model.
-function toy_bank(rng; d = 5, S = 20, n_vectors = 8, n_budgets = 3)
-    tc = toy_cost(rng, S, 4, d)
-    p = fill(1 / S, S)
-    names = ["Risk_Weight_0.0", "Risk_Weight_1.0", "Risk_Weight_0.5"]
-    for k in 1:n_vectors, b in 1:n_budgets
-        push!(names, "Random_$(k)_Budget_$(b)")
-        if b == 1
-            append!(names, ["Random_$(k)_Budget_1_System_Expected_Cap_$j" for j in 1:2])
-            append!(names, ["Random_$(k)_Budget_1_CVaR_Cap_$j" for j in 1:2])
-        end
-    end
-    bank = FinalSolve[]
-    for n in names
-        x = 20 .* rand(rng, d)
-        θ, β = toy_eval(tc, x)
-        push!(bank, FinalSolve(n, "", x, θ, β, p, sum(x), true))
-    end
-    assign_regions!(bank)
-    return bank, tc
-end
-
-toy_cfg() = resolve_settings(load_settings(joinpath(@__DIR__, "..", "inputs", "Inputs_30d_1000scen_7tech_2z")), "Boundary settings", Dict("Candidates per pick" => 10))
+toy_cfg() = boundary_cfg(resolve_settings(load_settings(joinpath(@__DIR__, "..", "inputs", "Inputs_30d_1000scen_7tech_2z")), "Sampling settings", Dict("Candidates" => 10)))
 unit_metric(d) = CapacityMetric("lengthscale_file", ["v$i" for i in 1:d], ones(d), fill(5.0, d), zeros(d, 0), Float64[], d, NaN, NaN, 0, NaN, NaN)
 X_of(bank) = reduce(vcat, [fs.x' for fs in bank])
 

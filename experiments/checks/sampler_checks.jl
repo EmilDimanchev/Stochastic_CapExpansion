@@ -20,7 +20,7 @@ workers (serial path) and once after (distributed path).
 function test_hit_and_run_sampler(test_index = "hit_and_run")
     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
     settings = load_settings(inputs_folder)
-    settings["Mapping settings"]["Interior sample method"] = "HitAndRun"
+    settings["Sampling settings"]["Delaunay"]["Interior sample method"] = "HitAndRun"
     settings["Workers"] = 2
 
     points = [1.0 0.0 0.0 0.0;
@@ -113,7 +113,7 @@ function test_sample_interior_delaunay(test_index = "sample_interior_delaunay")
 
     # --- CycleSampling mode: single triangulation, cycles through top-fraction pool with fresh
     # random Dirichlet draws each pass, so re-running with the same Seed must reproduce exactly ---
-    settings["Mapping settings"]["Delaunay repeat mode"] = "CycleSampling"
+    settings["Sampling settings"]["Delaunay"]["Repeat mode"] = "CycleSampling"
     settings["Seed"] = 4321
     samples_cycle_a = sample_interior_distributed(points, cost_points, n_samples, settings)
     samples_cycle_b = sample_interior_distributed(points, cost_points, n_samples, settings)
@@ -128,7 +128,7 @@ function test_sample_interior_delaunay(test_index = "sample_interior_delaunay")
 
     # --- ProgressiveRefinement mode: fixed centroids only, so it is fully deterministic
     # regardless of Seed/rng ---
-    settings["Mapping settings"]["Delaunay repeat mode"] = "ProgressiveRefinement"
+    settings["Sampling settings"]["Delaunay"]["Repeat mode"] = "ProgressiveRefinement"
     samples_prog_a = sample_interior_distributed(points, cost_points, n_samples, settings)
     settings["Seed"] = 9999
     samples_prog_b = sample_interior_distributed(points, cost_points, n_samples, settings)

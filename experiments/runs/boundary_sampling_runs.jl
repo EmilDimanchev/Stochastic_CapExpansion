@@ -1,11 +1,13 @@
 #======================
 
-Boundary interior sampler: entry points and checks (src/model/boundary_sampling)
+Interior samplers: entry points and checks (src/model/boundary_sampling)
 
   test_boundary_sampling_units()        - solver-free unit tests (tests/boundary_sampling_tests.jl)
+  test_gridfill_units()                 - solver-free unit tests (tests/gridfill_tests.jl)
   gradient_check("grad_chk")            - finite-difference check of the Benders gradients β_s
   run13_boundary_checks("run13")        - metric + sampler + bracket checks on run 13's finals
-  boundary_sampling_test_laptop("bs_1") - end-to-end pareto run with "Sampling method" => "Boundary"
+  boundary_sampling_test_laptop("bs_1") - end-to-end pareto run with Sampling "Method" => "Boundary"
+  gridfill_test_laptop("gf_1")          - end-to-end pareto run with Sampling "Method" => "GridFill"
 
 =======================#
 
@@ -13,6 +15,7 @@ Boundary interior sampler: entry points and checks (src/model/boundary_sampling)
 #const RUN13_METRIC = joinpath(@__DIR__, "..", "..", ".claude", "files for claude", "run13_metric.csv")   # run-13 length scales, for comparison only
 
 test_boundary_sampling_units(test_index = "boundary_units") = include(joinpath(@__DIR__, "..", "..", "tests", "boundary_sampling_tests.jl"))
+test_gridfill_units(test_index = "gridfill_units") = include(joinpath(@__DIR__, "..", "..", "tests", "gridfill_tests.jl"))
 
 # Laptop inputs, workers and subproblems, shared by the checks below. `fast` turns off the
 # gas price uncertainty set (10 instead of 100 scenarios), keeping demand uncertainty on.
@@ -27,7 +30,7 @@ function _boundary_laptop_setup(; fast::Bool = false)
 end
 
 # End-to-end: full risk-pareto + MGA + wing caps, then the boundary sampler on the finals.
-function boundary_sampling_test_laptop(test_index; n_samples::Int = 20, fast::Bool = false, boundary_overrides::AbstractDict = Dict())
+function boundary_sampling_test_laptop(test_index; n_samples::Int = 20, fast::Bool = false, sampling_overrides::AbstractDict = Dict())
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     mkpath(summary_folder)
@@ -35,12 +38,12 @@ function boundary_sampling_test_laptop(test_index; n_samples::Int = 20, fast::Bo
     run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Pareto5"), summary_folder;
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
         cap_settings = Dict("Cap wings" => true),
-        mapping_settings = Dict("Mapping" => false, "Sampling" => true, "Sampling method" => "Boundary", "Interior samples" => n_samples),
+        mapping_settings = Dict("Mapping" => false),
         run_settings = Dict("Summary name" => "pareto"),
-        boundary_settings = merge(Dict{String,Any}("Write gradients" => true), boundary_overrides))
+        sampling_settings = merge(Dict{String,Any}("Method" => "Boundary", "Samples" => n_samples, "Batch size" => n_samples, "Write gradients" => true), sampling_overrides))
 end
 
-function boundary_sampling_test_della(test_index; n_samples::Int = 2000, boundary_overrides::AbstractDict = Dict())
+function boundary_sampling_test_della(test_index; n_samples::Int = 2000, sampling_overrides::AbstractDict = Dict())
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")
@@ -61,9 +64,44 @@ function boundary_sampling_test_della(test_index; n_samples::Int = 2000, boundar
     run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Pareto5"), summary_folder;
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
         cap_settings = Dict("Cap wings" => true, "Cap levels" => [1, 3]),
-        mapping_settings = Dict("Mapping" => false, "Sampling" => true, "Sampling method" => "Boundary", "Interior samples" => n_samples),
+        mapping_settings = Dict("Mapping" => false),
         run_settings = Dict("Summary name" => "Boundary"),
-        boundary_settings = merge(Dict{String,Any}("Write gradients" => true), boundary_overrides))
+        sampling_settings = merge(Dict{String,Any}("Method" => "Boundary", "Samples" => n_samples, "Batch size" => n_samples, "Write gradients" => true), sampling_overrides))
+end
+
+# End-to-end: full risk-pareto + MGA + wing caps, then GridFill on the finals. Laptop defaults
+# are small (coarse 0.1 cells, batches of 8) so the whole loop, feedback included, runs in a
+# few minutes; `fast` turns off the gas price uncertainty set (demand stays stochastic).
+function gridfill_test_laptop(test_index; n_samples::Int = 24, fast::Bool = true, sampling_overrides::AbstractDict = Dict())
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    mkpath(summary_folder)
+    inputs, settings, SPs = _boundary_laptop_setup(; fast = fast)
+    run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Pareto5"), summary_folder;
+        budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
+        cap_settings = Dict("Cap wings" => true),
+        mapping_settings = Dict("Mapping" => false),
+        run_settings = Dict("Summary name" => "pareto"),
+        sampling_settings = merge(Dict{String,Any}("Method" => "GridFill", "Samples" => n_samples, "Batch size" => 8,
+                                                   "GridFill" => Dict("Cell size" => 0.1)), sampling_overrides))
+end
+
+function gridfill_test_della(test_index; n_samples::Int = 2000, sampling_overrides::AbstractDict = Dict())
+    results_folder = joinpath("outputs", "Test_"*string(test_index))
+    summary_folder = joinpath(results_folder, "Summary")
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")
+    mkpath(summary_folder)
+    settings = load_settings(inputs_folder)
+    inputs = load_input_data(inputs_folder, settings)
+    configure_parallel_workers!(settings)
+    SPs = build_all_subproblems(inputs, settings)
+    results_folder = joinpath(results_folder, "GridFill")
+    run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Pareto5"), summary_folder;
+        budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
+        cap_settings = Dict("Cap wings" => true, "Cap levels" => [1, 3]),
+        mapping_settings = Dict("Mapping" => false),
+        run_settings = Dict("Summary name" => "GridFill"),
+        sampling_settings = merge(Dict{String,Any}("Method" => "GridFill", "Samples" => n_samples, "Write gradients" => true), sampling_overrides))
 end
 
 # Gradient check: for a few final solves of run 13 and a couple of scenarios, perturb each
@@ -141,7 +179,7 @@ function run13_boundary_checks(test_index = "run13"; summary_csv::String = RUN13
     inputs, settings, SPs = _boundary_laptop_setup()
     var_names = capacity_variable_names(inputs)
     α = settings["Value-at-Risk percent"]
-    cfg = resolve_settings(settings, "Boundary settings", Dict("Metric file" => RUN13_METRIC))
+    cfg = boundary_cfg(resolve_settings(settings, "Sampling settings", Dict("Boundary" => Dict("Metric file" => RUN13_METRIC))))
 
     cache = joinpath(results_folder, "run13_bank.jls")
     if isfile(cache)

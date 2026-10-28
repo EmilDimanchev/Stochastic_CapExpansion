@@ -84,11 +84,17 @@ function check_brackets(picks::AbstractVector, solved::AbstractVector, α::Real,
 end
 
 #---- The whole interior phase -------------------------------------------------------------
-# bank: FinalSolves recorded during the MGA phase. n_samples: total picks over all waves
-# (mapping_settings["Interior samples"]). The seed is settings["Seed"], as for the Delaunay
-# sampler. Returns the Summary rows and labels for the evaluated picks (to be appended after
-# the MGA rows), plus the picks and solved points.
-function run_boundary_sampling!(bank::AbstractVector, SPs, inputs::Dict, settings::Dict, cfg::AbstractDict, n_samples::Int, results_folder::String, summary_folder::String, summary_name::String)
+# The boundary sampler's own config: the "Boundary" sub-block of Sampling settings plus the
+# shared candidate pool size.
+boundary_cfg(sampling::AbstractDict) = merge(Dict{String,Any}(sampling["Boundary"]), Dict{String,Any}("Candidates" => sampling["Candidates"]))
+
+# bank: FinalSolves recorded during the MGA phase. sampling: the resolved "Sampling settings"
+# block; "Samples" picks in total, split into waves of at most "Batch size". The seed is
+# settings["Seed"], as for the Delaunay sampler. Returns the Summary rows and labels for the
+# evaluated picks (to be appended after the MGA rows), plus the picks and solved points.
+function run_boundary_sampling!(bank::AbstractVector, SPs, inputs::Dict, settings::Dict, sampling::AbstractDict, results_folder::String, summary_folder::String, summary_name::String)
+    cfg = boundary_cfg(sampling)
+    n_samples = sampling["Samples"]
     α = settings["Value-at-Risk percent"]
     var_names = capacity_variable_names(inputs)
     assign_regions!(bank)
@@ -102,7 +108,7 @@ function run_boundary_sampling!(bank::AbstractVector, SPs, inputs::Dict, setting
     metric = build_metric(finals, var_names, cfg, α)
     write_metric(joinpath(results_folder, "Metric"), metric; tag = "wave_0")
 
-    W = cfg["Waves"]
+    W = cld(n_samples, sampling["Batch size"])
     n_total = n_samples
     rows_cap, rows_syscost, rows_emissions = DataFrame[], DataFrame[], DataFrame[]
     picks_all, solved_all = BoundaryPick[], FinalSolve[]
@@ -121,7 +127,7 @@ function run_boundary_sampling!(bank::AbstractVector, SPs, inputs::Dict, setting
         c, s, e, solved = evaluate_picks(picks, SPs, inputs, settings)
         append!(rows_cap, c); append!(rows_syscost, s); append!(rows_emissions, e)
         append!(picks_all, picks); append!(solved_all, solved)
-        if cfg["Write gradients"]
+        if sampling["Write gradients"]
             for fs in solved
                 write_gradient_file(joinpath(results_folder, "Interior", fs.name), fs, var_names)
             end

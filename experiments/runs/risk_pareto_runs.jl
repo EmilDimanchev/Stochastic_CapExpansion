@@ -200,7 +200,8 @@ function wing_caps_test_della(test_index)
     vectors = run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
         cap_settings = Dict("Cap wings" => true, "Cap levels" => [1, 3]),
-        mapping_settings = Dict("Mapping" => true, "Sampling" => false),
+        mapping_settings = Dict("Mapping" => true),
+        sampling_settings = Dict("Method" => "None"),
         run_settings = Dict("Summary name" => "pareto"))
 
 end
