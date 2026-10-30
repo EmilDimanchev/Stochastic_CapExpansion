@@ -262,7 +262,7 @@ function run_candidate_stage(ctx::GridFillContext, cells::Vector{Tuple{Int,Int}}
         @sync for pid in pids
             @async remotecall_wait(_clear_gridfill_ctx!, pid)
         end
-        _gc_all_processes!()
+        @everywhere GC.gc()
     end
     results = reduce(vcat, out)
     return results[sortperm([r.cell for r in results])]

@@ -76,17 +76,6 @@ function _clear_worker_mgca_cache!()
     return nothing
 end
 
-# Full GC on the master (blocking) and on each worker (fire-and-forget). Same collections as
-# `@everywhere GC.gc()`, but the master doesn't wait on the workers: each worker collects while the
-# master carries on, and its next request just queues behind the collection.
-function _gc_all_processes!(pids = workers())
-    for pid in pids
-        pid == myid() || remote_do(GC.gc, pid)
-    end
-    GC.gc()
-    return nothing
-end
-
 function _set_worker_mgca_problem_data!(points, solver)
     WORKER_MGCA_CACHE[:points] = points
     WORKER_MGCA_CACHE[:solver] = solver
@@ -377,7 +366,7 @@ function sample_interior_distributed(points, num_samples, settings)
         else
             error("Unsupported sample method: $sample_method. Supported methods are: CVT, Random, HitAndRun")
         end
-        _gc_all_processes!()
+        @everywhere GC.gc()
     else
         if sample_method == "HitAndRun"
             @info "Sampling using hit-and-run MCMC method with $num_samples samples (serial, single chain)..."
@@ -899,7 +888,7 @@ function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Ve
                 
             end
         end
-        _gc_all_processes!()
+        @everywhere GC.gc()
     else
         if settings["Parallel flag"] && nworkers() == 0
             @warn("Parallel flag is true but no distributed workers are available. Falling back to serial subproblem solves.")
@@ -936,7 +925,7 @@ function run_subproblems_batch(SPs::Array{Model,3}, inputs, settings, capacities
             end
         end
     end
-    _gc_all_processes!()
+    @everywhere GC.gc()
     return results
 end
 

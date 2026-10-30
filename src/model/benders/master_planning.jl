@@ -783,6 +783,6 @@ function run_distributed_sampling(samples::Vector{Vector{Float64}})
         end
     end
     #@everywhere _clear_worker_mp_cache!()
-    _gc_all_processes!()
+    @everywhere GC.gc()
     return outputs
 end
