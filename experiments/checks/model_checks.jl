@@ -253,3 +253,67 @@ function test_gridfill_real_model(test_index = "gridfill_real")
     @info("[$(test_index)] PASSED: pool cuts match, GridFill rows bracketed and written to $(folder).")
     return true
 end
+
+#=========
+
+Design CSV evaluation test:
+  - read_design_csv maps the planner CSVs' <Tech>_Z<z>/Transmission columns (GW) onto
+    capacity_variable_names (MW), reproducing Investment_B, and rejects a CSV with a missing or
+    unknown capacity column.
+  - evaluate_design_csv (batched, with a partial last batch) writes one Summary row per design
+    with the Design_ metadata, and its EV/CVaR match a direct run_all_subproblems solve.
+Gas price uncertainty off (10 scenarios).
+
+==========#
+
+function test_design_csv_evaluation(test_index = "design_csv")
+    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    settings = load_settings(inputs_folder)
+    settings["Gas price uncertainty"] = false
+    inputs = load_input_data(inputs_folder, settings)
+    R = length(inputs["Resources"])
+    planner_file = joinpath("experiments", "designs", "run13_planner_designs.csv")
+    ra_file = joinpath("experiments", "designs", "run13_RA_planner_designs.csv")
+
+    # Parsing
+    for (file, n) in ((planner_file, 500), (ra_file, 100))
+        df = CSV.read(file, DataFrame)
+        labels, X, meta = read_design_csv(df, inputs)
+        @assert length(X) == n && all(length(x) == R + inputs["Number of lines"] for x in X) "$file: $(length(X)) designs"
+        @assert labels == string.(df.point_id)
+        @assert all("Design_" * c in names(meta) for c in ("Investment_B", "EV_Op_ceil_B", "CVaR_Op_ceil_B"))
+        for i in 1:n
+            @assert isapprox(investment_cost(X[i], inputs)[1], df[i, "Investment_B"] * 1e9; rtol = 1e-3) "$file row $i: investment mismatch"
+        end
+    end
+    labels, X, _ = read_design_csv(planner_file, inputs)
+    names_x = capacity_variable_names(inputs)
+    @assert labels[1] == "P0001"
+    @assert X[1][findfirst(==("Gas-z1"), names_x)] ≈ 2840.5
+    @assert X[1][findfirst(==("Line 1"), names_x)] ≈ 2041.6
+    df = CSV.read(ra_file, DataFrame)
+    for bad in (select(df, Not("Coal_Z2")), rename(df, "Wind_Z1" => "Wind_Z9"))
+        threw = try read_design_csv(bad, inputs); false catch; true end
+        @assert threw "a design CSV with a missing/unknown capacity column should error"
+    end
+
+    # Batched evaluation of 3 designs, batch size 2
+    configure_parallel_workers!(settings)
+    SPs = build_all_subproblems(inputs, settings)
+    folder = joinpath("outputs", "Test_"*string(test_index), "Design_Evaluation", "Summary")
+    done = evaluate_design_csv(SPs, inputs, settings, ra_file, folder; batch_size = 2, rows = 1:3)
+    summary = CSV.read(joinpath(folder, "Summary_run13_RA_planner_designs.csv"), DataFrame)
+    @assert done == ["RA0001", "RA0002", "RA0003"] && nrow(summary) == 3 && string.(summary.Index) == done
+    @assert all(c in names(summary) for c in ("Design_Investment_B", "Design_ELCC_GasCC", "Design_Solve_OK"))
+    _, X_ra, _ = read_design_csv(ra_file, inputs)
+    for i in 1:3
+        sp = run_all_subproblems(SPs, inputs, settings, X_ra[i][1:R], X_ra[i][R+1:end]; minimal_payload = false)
+        ev, cvar = evaluate_subproblems(sp, inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"],
+                                        inputs["Weather scenario probabilities"], settings["Value-at-Risk percent"])
+        @assert isapprox(summary[i, "EV_OpCost"], ev; rtol = 1e-6) "$(done[i]): EV $(summary[i, "EV_OpCost"]) vs direct $ev"
+        @assert isapprox(summary[i, "CVaR_OpCost"], cvar; rtol = 1e-6) "$(done[i]): CVaR $(summary[i, "CVaR_OpCost"]) vs direct $cvar"
+        @assert isapprox(summary[i, "Investment_Cost"], summary[i, "Design_Investment_B"] * 1e9; rtol = 1e-3)
+    end
+    @info("[$(test_index)] PASSED: design CSVs parse (600 designs) and 3 batched evaluations match direct solves.")
+    return true
+end

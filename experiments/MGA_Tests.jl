@@ -24,15 +24,15 @@ include("mga/budget_schedules.jl")        # budget floor/tightening schedule, wi
 include("mga/run_settings.jl")            # default_*_settings + resolve_settings
 include("mga/risk_pareto.jl")             # run_stochastic_exploration_risk_pareto, run_base_mga
 include("mga/interior_sampling.jl")       # MGCA problem, Delaunay interior sampling
-include("mga/interpolate_evaluation.jl")  # evaluate_interpolates, evaluate_subproblems
+include("mga/interpolate_evaluation.jl")  # evaluate_interpolates, evaluate_subproblems, read_design_csv, evaluate_design_csv
 
 # Experiment runners
 include("runs/mapping_runs.jl")           # mapping_test_*
 include("runs/risk_pareto_runs.jl")       # risk_pareto_*, wing_caps_test_*, warmstart_verification_laptop, simple_comp
-include("runs/interpolate_runs.jl")       # run_interpolate_evaluation_*
+include("runs/interpolate_runs.jl")       # run_interpolate_evaluation_*, run_design_csv_evaluation_*
 include("runs/boundary_sampling_runs.jl") # boundary_sampling_test_*, gridfill_test_*, gradient_check, run13_boundary_checks
 
 # Diagnostic checks
 include("checks/cut_checks.jl")           # test_cut_management, test_cut_trim_rules
-include("checks/model_checks.jl")         # test_capacity_bound_tightening, test_wing_caps, test_settings_groups, test_subproblems_batch, test_gridfill_real_model
+include("checks/model_checks.jl")         # test_capacity_bound_tightening, test_wing_caps, test_settings_groups, test_subproblems_batch, test_gridfill_real_model, test_design_csv_evaluation
 include("checks/sampler_checks.jl")       # test_hit_and_run_sampler, test_sample_interior_delaunay
