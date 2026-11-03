@@ -13,12 +13,15 @@ never from the Summary's CVaR_SystemCost (a risk-weighted blend).
 1. Targets: a grid of cell size g over (ĉ, v̂), restricted to cells above the risk-weight
    sweep (piecewise-linear through the Risk_Weight_* points) and with ĉ + v̂ <= Delta cap.
    A cell is a target if no solved point sat in it when the phase started; it stays open
-   until "Per cell" solved points sit in it.
+   until "Per cell" solved points sit in it, or until it is exhausted (GridFillCellState):
+   outside the parents' cost hull, or "Max misses" samples/rounds aimed at it landed elsewhere.
 2. Candidates, one task per open cell (cell_candidates): aim points spread over the cell;
    random parent triples from ALL solved points; the barycentric coordinates of the aim in
    the triple's cost triangle are the blend weights. The weights are then re-aimed so the
-   bracket MIDPOINT (gridfill_bounds.jl), not the raw blend, lands on the aim. Seeded per
-   (Seed, cell, round), so results don't depend on how cells are spread over workers.
+   predicted position LB + f·(UB − LB) of the bracket (gridfill_bounds.jl; f = "Aim fraction"),
+   not the raw blend, lands on the aim. Op cost is convex, so a blend's true cost sits near
+   the cut lower bound, not the midpoint. Seeded per (Seed, cell, round), so results don't
+   depend on how cells are spread over workers.
 3. Selection (select_gridfill): greedy max-min distance in range-scaled capacity space with
    a per-cell quota, against every solved point and every earlier pick in any cell. The
    score is a function argument (novelty_score / bracket_novelty_score / your own).
@@ -141,19 +144,26 @@ struct GridFillContext
     cuts::CutBank
     g::Float64
     hull::Vector{NTuple{2,Float64}}
+    aim_frac::Float64           # predicted op cost = LB + aim_frac·(UB − LB) (0.5 = bracket midpoint)
 end
 
-function GridFillContext(solves::AbstractVector, cuts::CutBank, anchors::GridFillAnchors, α::Real, g::Real)
+function GridFillContext(solves::AbstractVector, cuts::CutBank, anchors::GridFillAnchors, α::Real, g::Real; aim_frac::Real = 0.05)
     X = reduce(vcat, [fs.x' for fs in solves])
     K = cost_coords(solves, anchors, α)
     rng = vec(maximum(X; dims = 1) .- minimum(X; dims = 1))
     scale = [r > 0 ? r : 1.0 for r in rng]
     return GridFillContext(X, reduce(hcat, [fs.θ for fs in solves]), [fs.inv_cost for fs in solves], K, scale,
-                           solves[1].p ./ sum(solves[1].p), Float64(α), anchors, cuts, Float64(g), convex_hull_2d(K))
+                           solves[1].p ./ sum(solves[1].p), Float64(α), anchors, cuts, Float64(g), convex_hull_2d(K), Float64(aim_frac))
 end
 
-# Predicted (ĉ, v̂) of the bracket midpoints (m × 2)
-predicted_position(ctx::GridFillContext, br) = hcat(c_hat(ctx.anchors, br.inv .+ br.mid_ev), v_hat(ctx.anchors, br.inv .+ br.mid_cvar))
+# Predicted op costs LB + f·(UB − LB) for EV and CVaR (m-vectors)
+aimed_costs(br, f::Real) = (ev = br.lb_ev .+ f .* (br.ub_ev .- br.lb_ev), cvar = br.lb_cvar .+ f .* (br.ub_cvar .- br.lb_cvar))
+
+# Predicted (ĉ, v̂) of the blends (m × 2)
+function predicted_position(ctx::GridFillContext, br)
+    ac = aimed_costs(br, ctx.aim_frac)
+    return hcat(c_hat(ctx.anchors, br.inv .+ ac.ev), v_hat(ctx.anchors, br.inv .+ ac.cvar))
+end
 
 # m × d blended capacities Σ_k W[i,k] X[tri[i,k], :]
 function blend_capacities(X::AbstractMatrix, tri::AbstractMatrix{Int}, W::AbstractMatrix)
@@ -214,7 +224,7 @@ function cell_candidates(ctx::GridFillContext, cell::Tuple{Int,Int}, tuning, n_k
     top = sortperm(nov; rev = true)[1:min(tuning.reaim_pool, length(nov))]
     tri, aim = tri[top, :], aim[top, :]
 
-    # Re-aim: shift each blend's aim by the miss of its predicted midpoint, same triple
+    # Re-aim: shift each blend's aim by the miss of its predicted position, same triple
     aim_eff = copy(aim)
     local X, br, P
     for it in 0:tuning.reaim_iters
@@ -266,6 +276,42 @@ function run_candidate_stage(ctx::GridFillContext, cells::Vector{Tuple{Int,Int}}
     end
     results = reduce(vcat, out)
     return results[sortperm([r.cell for r in results])]
+end
+
+#---- Target-cell bookkeeping ----------------------------------------------------------------
+# attempts: tries per target cell (a pick, or a round without a candidate for it).
+# misses:   tries that did not fill it (the sample landed elsewhere / failed / no candidate),
+#           cumulative across layers.
+# exhausted: cells dropped from the open set for good, in this layer and every later one
+#           (:outside_hull on first occurrence, :missed after "Max misses" misses).
+struct GridFillCellState
+    attempts::Dict{Tuple{Int,Int},Int}
+    misses::Dict{Tuple{Int,Int},Int}
+    exhausted::Dict{Tuple{Int,Int},Symbol}
+end
+
+GridFillCellState() = GridFillCellState(Dict{Tuple{Int,Int},Int}(), Dict{Tuple{Int,Int},Int}(), Dict{Tuple{Int,Int},Symbol}())
+
+is_exhausted(st::GridFillCellState, cell) = haskey(st.exhausted, cell)
+exhausted_cells(st::GridFillCellState, reason::Symbol) = sort([c for (c, r) in st.exhausted if r == reason])
+
+# Returns the attempt number (1, 2, ...) for this cell
+record_attempt!(st::GridFillCellState, cell) = (st.attempts[cell] = get(st.attempts, cell, 0) + 1)
+
+# Returns true if this miss exhausts the cell. A cell already at its quota (open = false) is
+# not exhausted; its next miss in a later layer does that.
+function record_miss!(st::GridFillCellState, cell, max_misses::Integer; open::Bool = true)
+    st.misses[cell] = get(st.misses, cell, 0) + 1
+    (open && st.misses[cell] >= max_misses && !is_exhausted(st, cell)) || return false
+    st.exhausted[cell] = :missed
+    return true
+end
+
+function mark_outside_hull!(st::GridFillCellState, results::AbstractVector)
+    for r in results
+        r.status == :outside_hull && (st.exhausted[r.cell] = :outside_hull)
+    end
+    return st
 end
 
 #---- Step 3: selection --------------------------------------------------------------------

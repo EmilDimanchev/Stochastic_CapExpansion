@@ -273,4 +273,69 @@ end
         @test length(l2) == n_total
         @test all(f1.x == f2.x for (f1, f2) in zip(bank1[n0+1:end], bank2[n0+1:n0+length(l1)]))
     end
+
+    @testset "Aim: LB + f·(UB − LB), bracket columns unchanged" begin
+        ctx = gf_context(bank)
+        @test ctx.aim_frac == 0.05
+        ctx_mid = GridFillContext(bank, ctx.cuts, a, GF_ALPHA, 0.1; aim_frac = 0.5)
+        tri = [1 2 3; 4 5 6]; W = [0.5 0.3 0.2; 0.2 0.2 0.6]
+        X = blend_capacities(ctx.X, tri, W)
+        br = blend_bracket(ctx.cuts, ctx.Θ, ctx.inv, ctx.p, ctx.α, tri, W, permutedims(X))
+        @test br.mid_ev ≈ (br.ub_ev .+ br.lb_ev) ./ 2
+        @test predicted_position(ctx_mid, br) ≈ hcat(c_hat(a, br.inv .+ br.mid_ev), v_hat(a, br.inv .+ br.mid_cvar))
+        @test predicted_position(ctx, br) ≈ hcat(c_hat(a, br.inv .+ br.lb_ev .+ 0.05 .* (br.ub_ev .- br.lb_ev)),
+                                                 v_hat(a, br.inv .+ br.lb_cvar .+ 0.05 .* (br.ub_cvar .- br.lb_cvar)))
+    end
+
+    @testset "Cell state: attempts, misses, exhaustion" begin
+        st = GridFillCellState()
+        @test record_attempt!(st, (1, 1)) == 1 && record_attempt!(st, (1, 1)) == 2 && record_attempt!(st, (2, 2)) == 1
+        @test !record_miss!(st, (1, 1), 3) && !record_miss!(st, (1, 1), 3) && !is_exhausted(st, (1, 1))
+        @test !record_miss!(st, (1, 1), 3; open = false) && !is_exhausted(st, (1, 1))   # at quota: not exhausted yet
+        @test record_miss!(st, (1, 1), 3) && is_exhausted(st, (1, 1))
+        @test !record_miss!(st, (1, 1), 3)                                              # only newly exhausted counts
+        # Outside the hull: exhausted on the first occurrence, with its own reason
+        far = cell_candidates(gf_context(bank), (40, 40), GF_FAST, 10, 7, 1)
+        mark_outside_hull!(st, [far])
+        @test exhausted_cells(st, :outside_hull) == [(40, 40)] && exhausted_cells(st, :missed) == [(1, 1)]
+    end
+
+    # Rows carry the GF_* columns, solves optionally reported as failed (every pick then misses)
+    gf_column_evaluator(tc, p; ok = true) = (picks, SPs, inputs, settings, g) -> begin
+        solved = [(fs = gf_solve(pk.name, pk.x, tc, p); fs.region = "gridfill_sample"; fs.ok = ok; fs) for pk in picks]
+        rows = [add_gridfill_columns!(DataFrame(Name = [pk.name]), pk, g) for pk in picks]
+        rows, rows, rows, solved
+    end
+
+    @testset "Retry cap: cells that always miss are dropped and the loop stops" begin
+        bank1, tc, p = gf_bank()
+        _, s, _, labels = run_gridfill_sampling!(bank1, nothing, nothing, nothing, GF_INPUTS, GF_SETTINGS, gf_sampling(samples = 5000, per_cell = "auto");
+                                                 tuning = GF_FAST, evaluate = gf_column_evaluator(tc, p; ok = false), parallel = false)
+        @test 0 < length(labels) < 5000          # auto only stops early once every target is exhausted
+        df = reduce(vcat, s)
+        @test maximum(df.GF_Attempt) <= 3 && all(==(1), df.GF_Layer)
+        # A lower cap gives up sooner
+        bank2, _, _ = gf_bank()
+        sampling = gf_sampling(samples = 5000, per_cell = "auto"); sampling["GridFill"]["Max misses"] = 1
+        _, s2, _, l2 = run_gridfill_sampling!(bank2, nothing, nothing, nothing, GF_INPUTS, GF_SETTINGS, sampling;
+                                              tuning = GF_FAST, evaluate = gf_column_evaluator(tc, p; ok = false), parallel = false)
+        @test 0 < length(l2) < length(labels) && maximum(reduce(vcat, s2).GF_Attempt) == 1
+    end
+
+    @testset "Layers advance past exhausted cells; GF_Layer and GF_Attempt" begin
+        bank1, tc, p = gf_bank()
+        _, _, _, l1 = run_gridfill_sampling!(bank1, nothing, nothing, nothing, GF_INPUTS, GF_SETTINGS, gf_sampling(samples = 500, per_cell = 1);
+                                             tuning = GF_FAST, evaluate = gf_toy_evaluator(tc, p), parallel = false)
+        n_total = length(l1) + 12
+        bank2, _, _ = gf_bank()
+        _, s, _, l2 = run_gridfill_sampling!(bank2, nothing, nothing, nothing, GF_INPUTS, GF_SETTINGS, gf_sampling(samples = n_total, per_cell = "auto");
+                                             tuning = GF_FAST, evaluate = gf_column_evaluator(tc, p), parallel = false)
+        df = reduce(vcat, s)
+        @test length(l2) == n_total
+        @test issorted(df.GF_Layer) && maximum(df.GF_Layer) >= 2
+        @test count(==(1), df.GF_Layer) == length(l1)
+        for sub in groupby(df, [:GF_Cell_c, :GF_Cell_v])
+            @test all(diff(sub.GF_Attempt) .> 0)   # attempts count up per target cell
+        end
+    end
 end

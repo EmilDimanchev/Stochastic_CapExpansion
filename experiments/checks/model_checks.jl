@@ -231,7 +231,7 @@ function test_gridfill_real_model(test_index = "gridfill_real")
     X = blend_capacities(reduce(vcat, [fs.x' for fs in solves]), tri, W)
     br = blend_bracket(cb_pool, Θ, inv, p, α, tri, W, permutedims(X))
     picks = [GridFillPick("GridFill_$i", 1, (i, i), [0.1, 0.2], [solves[j].name for j in tri[i, :]], W[i, :], X[i, :], 0.5,
-                          br.inv[i], br.ub_ev[i], br.lb_ev[i], br.mid_ev[i], br.ub_cvar[i], br.lb_cvar[i], br.mid_cvar[i], [0.1, 0.2]) for i in 1:2]
+                          br.inv[i], br.ub_ev[i], br.lb_ev[i], br.mid_ev[i], br.ub_cvar[i], br.lb_cvar[i], br.mid_cvar[i], [0.1, 0.2], 1, 1) for i in 1:2]
     c, s, e, solved = evaluate_gridfill_batch(picks, SPs, inputs, settings, 0.1)
     tol(v) = 1e-6 * abs(v)
     for (pk, fs) in zip(picks, solved)
@@ -245,7 +245,7 @@ function test_gridfill_real_model(test_index = "gridfill_real")
     write_exploration_results!(c, s, e, folder, [pk.name for pk in picks], "gridfill_check")
     df = CSV.read(joinpath(folder, "Summary_gridfill_check.csv"), DataFrame)
     @assert df.Index == ["GridFill_1", "GridFill_2"]
-    for col in ("EV_OpCost", "CVaR_OpCost", "Parents", "Weights", "GF_Batch", "GF_Mid_EV", "GF_LB_CVaR", "GF_Pred_v", "GF_Novelty")
+    for col in ("EV_OpCost", "CVaR_OpCost", "Parents", "Weights", "GF_Batch", "GF_Layer", "GF_Attempt", "GF_Mid_EV", "GF_LB_CVaR", "GF_Pred_v", "GF_Novelty")
         @assert col in names(df) "Summary is missing $col"
     end
     settings["Write all scenarios flag"] && @assert count(startswith("OperatingCost_D_"), names(df)) == S * F * K "per-scenario op cost columns missing"

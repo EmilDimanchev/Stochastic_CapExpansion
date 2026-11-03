@@ -18,7 +18,8 @@ Bracket for a blend x = Σ w_j x_j of solved parents (θ_j their per-scenario co
          EV <= p·θ̄,  CVaR <= CVaR(θ̄)  (tighter than Σ w_j CVaR_j)
   lower: θ_s(x) >= l_s := max over scenario-s cuts
          EV >= p·l,  CVaR >= CVaR(l)  (CVaR is monotone in the scenario costs)
-The midpoint of each bracket is the aiming predictor; it is never used as a label.
+The aiming predictor is LB + f·(UB − LB) ("Aim fraction" f, see predicted_position); it is
+never used as a label. The midpoint (f = 0.5) is kept as a lineage column.
 
 ==========================================================================================#
 

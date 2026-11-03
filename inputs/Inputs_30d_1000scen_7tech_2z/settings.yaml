@@ -108,10 +108,12 @@ Sampling settings: # portfolios evaluated after exploration, labelled by subprob
     Explicit M max dim: 200 # d above this: thin SVD instead of forming the d x d matrix
     Refit metric each wave: false # rebuild the subspace with the interior gradients included
   GridFill: # src/model/boundary_sampling/gridfill_*.jl. Grid over (c_hat, v_hat) = anchor-normalised (Inv + EV, Inv + CVaR);
-    # each empty cell is targeted with barycentric blends of three solved points, aimed with the cut bracket midpoint.
+    # each empty cell is targeted with barycentric blends of three solved points, aimed with the cut bracket (see Aim fraction).
     Cell size: 0.025 # cell edge in (c_hat, v_hat)
     Delta cap: 1.1 # only cells with c_hat + v_hat at or below this (the near-optimal region)
     Per cell: "auto" # samples per cell: an integer cap, or "auto" to fill in layers (1 per reachable cell, then 2, ...) until Samples is spent
+    Max misses: 3 # misses (sample landed elsewhere or failed, or a round with no candidate) before a target cell is exhausted
+    Aim fraction: 0.05 # aim with LB + f * (UB - LB) of the op-cost bracket, for EV and CVaR (0.5 = midpoint)
 
 Cut settings: # cut pool, see src/model/benders/cut_pool.jl
   Cuts retained: 200000 # memory cap on live + archived cuts, applied at each new risk weight / MGA vector
