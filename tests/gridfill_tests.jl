@@ -54,6 +54,17 @@ const GF_INPUTS = Dict{String,Any}("Resources" => ["r1", "r2", "r3"], "Number of
 const GF_SETTINGS = Dict{String,Any}("Value-at-Risk percent" => GF_ALPHA, "Seed" => 7, "Convergence tolerance" => 1e-9)
 const GF_FAST = merge(GRIDFILL_TUNING, (triples_per_aim = 3000, prune_blends = 300))
 
+# Tuning whose triple count can be switched off mid-run, to force rounds with no candidates
+mutable struct GFSwitchableTuning
+    aims_per_cell::Int
+    triples_per_aim::Int
+    max_weight::Float64
+    reaim_pool::Int
+    reaim_iters::Int
+    prune_blends::Int
+end
+GFSwitchableTuning(t::NamedTuple) = GFSwitchableTuning(t.aims_per_cell, t.triples_per_aim, t.max_weight, t.reaim_pool, t.reaim_iters, t.prune_blends)
+
 function gf_context(bank; g = 0.1)
     a = gridfill_anchors(bank, GF_ALPHA)
     cb = CutBank(length(bank[1].θ), length(bank[1].x))
@@ -276,15 +287,57 @@ end
 
     @testset "Aim: LB + f·(UB − LB), bracket columns unchanged" begin
         ctx = gf_context(bank)
-        @test ctx.aim_frac == 0.05
+        @test ctx.aim_frac == (ev = 0.10, cvar = 0.13)
         ctx_mid = GridFillContext(bank, ctx.cuts, a, GF_ALPHA, 0.1; aim_frac = 0.5)
         tri = [1 2 3; 4 5 6]; W = [0.5 0.3 0.2; 0.2 0.2 0.6]
         X = blend_capacities(ctx.X, tri, W)
         br = blend_bracket(ctx.cuts, ctx.Θ, ctx.inv, ctx.p, ctx.α, tri, W, permutedims(X))
         @test br.mid_ev ≈ (br.ub_ev .+ br.lb_ev) ./ 2
         @test predicted_position(ctx_mid, br) ≈ hcat(c_hat(a, br.inv .+ br.mid_ev), v_hat(a, br.inv .+ br.mid_cvar))
-        @test predicted_position(ctx, br) ≈ hcat(c_hat(a, br.inv .+ br.lb_ev .+ 0.05 .* (br.ub_ev .- br.lb_ev)),
-                                                 v_hat(a, br.inv .+ br.lb_cvar .+ 0.05 .* (br.ub_cvar .- br.lb_cvar)))
+        @test predicted_position(ctx, br) ≈ hcat(c_hat(a, br.inv .+ br.lb_ev .+ 0.10 .* (br.ub_ev .- br.lb_ev)),
+                                                 v_hat(a, br.inv .+ br.lb_cvar .+ 0.13 .* (br.ub_cvar .- br.lb_cvar)))
+        # Each metric uses its own fraction; one number applies to both
+        ctx_split = GridFillContext(bank, ctx.cuts, a, GF_ALPHA, 0.1; aim_frac = [0.5, 0.0])
+        @test predicted_position(ctx_split, br) ≈ hcat(c_hat(a, br.inv .+ br.mid_ev), v_hat(a, br.inv .+ br.lb_cvar))
+        @test aim_fractions(0.3) == (ev = 0.3, cvar = 0.3) && aim_fractions([0.1, 0.2]) == (ev = 0.1, cvar = 0.2)
+        @test_throws ErrorException aim_fractions([0.1, 0.2, 0.3])
+        @test_throws ErrorException aim_fractions(1.5)
+    end
+
+    @testset "Aim margin bounds the aim box" begin
+        ctx = gf_context(bank)
+        counts = cell_counts(ctx.K, ctx.g)
+        targets = [c for c in grid_cells(cost_coords([fs for fs in bank if startswith(fs.name, "Risk_Weight")], a, GF_ALPHA), 0.1, 1.1) if !haskey(counts, c)]
+        for margin in (0.1, 0.2, 0.5)
+            m_ctx = GridFillContext(bank, ctx.cuts, a, GF_ALPHA, 0.1; aim_margin = margin)
+            results = [r for r in (cell_candidates(m_ctx, c, GF_FAST, 1000, 7, 1) for c in targets) if r.status == :ok]
+            @test !isempty(results)
+            fracs = reduce(vcat, [r.aim ./ 0.1 .- [r.cell[1] r.cell[2]] for r in results])
+            @test minimum(fracs) >= 0.1 - 1e-9 && maximum(fracs) <= 1 - margin + 1e-9
+        end
+        @test_throws ErrorException GridFillContext(bank, ctx.cuts, a, GF_ALPHA, 0.1; aim_margin = 0.9)
+    end
+
+    @testset "Hull depth, nearest edge and unreached labels" begin
+        hull = convex_hull_2d([0.0 0.0; 4.0 0.0; 4.0 4.0; 0.0 4.0])   # square, counter-clockwise
+        e = hull_nearest_edge(hull, (2.0, 0.5))
+        @test e.depth ≈ 0.5 && e.lower
+        e = hull_nearest_edge(hull, (2.0, 3.5))
+        @test e.depth ≈ 0.5 && !e.lower
+        @test hull_nearest_edge(hull, (2.0, -1.0)).depth ≈ -1.0
+        @test hull_nearest_edge(hull[1:2], (0.0, 0.0)).depth == -Inf
+        # g = 1: centres at 0.5 cells above the lower edge, 1.5 above it, and 0.5 below the upper edge
+        @test near_lower_frontier([(2, 0), (2, 1), (2, 3)], hull, 1.0, 1.0) == [(2, 0)]
+        @test isempty(near_lower_frontier([(2, 0)], hull, 1.0, 0.0))
+        st = GridFillCellState()
+        for c in [(2, 0), (1, 1), (2, 3), (1, 0), (3, 3)]
+            st.exhausted[c] = :missed
+        end
+        st.exhausted[(0, 3)] = :outside_hull
+        push!(st.picked, (1, 0))                  # a sample was aimed here: a real gap, not unreachable
+        counts = Dict((3, 3) => 1)                # holds a sample: not unreached
+        lab = label_unreached_cells(st, counts, hull, 1.0, 1.0)
+        @test lab.frontier == [(2, 0)] && lab.out_of_reach == [(2, 3)]     # (1, 1) is 1.5 deep on the lower side
     end
 
     @testset "Cell state: attempts, misses, exhaustion" begin
@@ -298,6 +351,24 @@ end
         far = cell_candidates(gf_context(bank), (40, 40), GF_FAST, 10, 7, 1)
         mark_outside_hull!(st, [far])
         @test exhausted_cells(st, :outside_hull) == [(40, 40)] && exhausted_cells(st, :missed) == [(1, 1)]
+        # Solved misses stay cumulative: hits in between don't reset the count
+        st2 = GridFillCellState()
+        record_miss!(st2, (1, 1), 3); record_attempt!(st2, (1, 1)); record_miss!(st2, (1, 1), 3)
+        @test record_miss!(st2, (1, 1), 3) && is_exhausted(st2, (1, 1))
+    end
+
+    @testset "No candidate: empty cells take a miss, cells with samples are parked" begin
+        st = GridFillCellState()
+        # Empty cell: three rounds exhaust it, nothing parked
+        @test !record_no_candidate!(st, (1, 1), 0, 3, 3) && !record_no_candidate!(st, (1, 1), 0, 3, 3)
+        @test record_no_candidate!(st, (1, 1), 0, 3, 3) && is_exhausted(st, (1, 1)) && isempty(st.parked)
+        # Holding samples: no misses charged, parked at the cap, never exhausted
+        for _ in 1:3
+            @test !record_no_candidate!(st, (2, 2), 4, 3, 3)
+        end
+        @test (2, 2) in st.parked && !is_exhausted(st, (2, 2)) && get(st.misses, (2, 2), 0) == 0
+        unpark_all!(st)
+        @test isempty(st.parked) && isempty(st.dry) && is_exhausted(st, (1, 1))
     end
 
     # Rows carry the GF_* columns, solves optionally reported as failed (every pick then misses)
@@ -320,6 +391,17 @@ end
         _, s2, _, l2 = run_gridfill_sampling!(bank2, nothing, nothing, nothing, GF_INPUTS, GF_SETTINGS, sampling;
                                               tuning = GF_FAST, evaluate = gf_column_evaluator(tc, p; ok = false), parallel = false)
         @test 0 < length(l2) < length(labels) && maximum(reduce(vcat, s2).GF_Attempt) == 1
+    end
+
+    @testset "Termination: stops when a whole layer has no candidates" begin
+        # Candidates exist for the first batch only; afterwards every open cell stays dry
+        bank1, tc, p = gf_bank()
+        tuning = GFSwitchableTuning(GF_FAST)
+        base = gf_toy_evaluator(tc, p)
+        evaluate = (picks, SPs, inputs, settings, g) -> (tuning.triples_per_aim = 0; base(picks, SPs, inputs, settings, g))
+        _, _, _, labels = run_gridfill_sampling!(bank1, nothing, nothing, nothing, GF_INPUTS, GF_SETTINGS, gf_sampling(samples = 5000, per_cell = "auto");
+                                                 tuning = tuning, evaluate = evaluate, parallel = false)
+        @test length(labels) == 8               # one batch, then no samples, and the loop ended
     end
 
     @testset "Layers advance past exhausted cells; GF_Layer and GF_Attempt" begin

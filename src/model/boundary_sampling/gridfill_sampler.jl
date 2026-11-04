@@ -15,10 +15,15 @@ never from the Summary's CVaR_SystemCost (a risk-weighted blend).
    A cell is a target if no solved point sat in it when the phase started; it stays open
    until "Per cell" solved points sit in it, or until it is exhausted (GridFillCellState):
    outside the parents' cost hull, or "Max misses" samples/rounds aimed at it landed elsewhere.
-2. Candidates, one task per open cell (cell_candidates): aim points spread over the cell;
+   A cell that already holds samples is never exhausted by rounds without a candidate: after
+   "Max dry rounds" of them it is parked until the next layer. Solved misses stay cumulative,
+   which caps how many samples one cell can send elsewhere.
+2. Candidates, one task per open cell (cell_candidates): aim points spread over the cell
+   (0.1 to 1 − "Aim margin" of its width on each axis, away from the top and right edges);
    random parent triples from ALL solved points; the barycentric coordinates of the aim in
    the triple's cost triangle are the blend weights. The weights are then re-aimed so the
-   predicted position LB + f·(UB − LB) of the bracket (gridfill_bounds.jl; f = "Aim fraction"),
+   predicted position LB + f·(UB − LB) of the bracket (gridfill_bounds.jl; f = "Aim fraction",
+   one value or [EV, CVaR]),
    not the raw blend, lands on the aim. Op cost is convex, so a blend's true cost sits near
    the cut lower bound, not the midpoint. Seeded per (Seed, cell, round), so results don't
    depend on how cells are spread over workers.
@@ -30,7 +35,7 @@ never from the Summary's CVaR_SystemCost (a risk-weighted blend).
 
 # Internal tuning (not in settings.yaml); override with run_gridfill_sampling!(...; tuning = ...).
 const GRIDFILL_TUNING = (
-    aims_per_cell = 6,        # aim points spread over each cell (uniform in its central 80%)
+    aims_per_cell = 6,        # aim points spread over each cell (uniform in the box set by "Aim margin")
     triples_per_aim = 8000,   # random parent triples tested per aim point
     max_weight = 0.95,        # drop blends that are almost a copy of one parent
     reaim_pool = 300,         # most novel valid blends per cell that get re-aimed
@@ -112,6 +117,27 @@ end
 
 in_hull(hull, t) = length(hull) >= 3 && all(cross2(hull[i], hull[mod1(i + 1, length(hull))], t) >= -1e-12 for i in eachindex(hull))
 
+# Distance from t to the nearest hull edge (positive inside) and whether that edge is on the
+# lower chain. The hull is counter-clockwise, so lower-chain edges run left to right.
+function hull_nearest_edge(hull, t)
+    length(hull) >= 3 || return (depth = -Inf, lower = false)
+    depth, lower = Inf, false
+    for i in eachindex(hull)
+        a, b = hull[i], hull[mod1(i + 1, length(hull))]
+        d = cross2(a, b, t) / hypot(b[1] - a[1], b[2] - a[2])
+        d < depth && ((depth, lower) = (d, b[1] > a[1]))
+    end
+    return (depth = depth, lower = lower)
+end
+
+cell_centre(cell, g::Real) = ((cell[1] + 0.5) * g, (cell[2] + 0.5) * g)
+
+# Cells whose centre is inside the hull but less than `margin` cells from its lower chain
+function near_lower_frontier(cells, hull, g::Real, margin::Real)
+    margin > 0 || return Tuple{Int,Int}[]
+    return [c for c in cells if (e = hull_nearest_edge(hull, cell_centre(c, g)); e.lower && 0 <= e.depth / g < margin)]
+end
+
 #---- Barycentric weights ------------------------------------------------------------------
 # Weights of aim t[i, :] in the triangle K[tri[i, :], :], for every row i (m × 3).
 # Degenerate triangles give non-finite weights (filtered by valid_weights).
@@ -144,20 +170,33 @@ struct GridFillContext
     cuts::CutBank
     g::Float64
     hull::Vector{NTuple{2,Float64}}
-    aim_frac::Float64           # predicted op cost = LB + aim_frac·(UB − LB) (0.5 = bracket midpoint)
+    aim_frac::NamedTuple{(:ev, :cvar), NTuple{2,Float64}}   # predicted op cost = LB + f·(UB − LB), per metric (0.5 = bracket midpoint)
+    aim_margin::Float64         # aims stay below 1 − aim_margin of the cell's width on each axis
 end
 
-function GridFillContext(solves::AbstractVector, cuts::CutBank, anchors::GridFillAnchors, α::Real, g::Real; aim_frac::Real = 0.05)
+const GRIDFILL_DEFAULT_AIM_FRAC = [0.10, 0.13]   # [EV, CVaR]; typical bracket position of the true cost
+const GRIDFILL_DEFAULT_AIM_MARGIN = 0.2
+const GRIDFILL_AIM_LOW = 0.1                     # aims stay above this fraction of the cell's width
+
+# "Aim fraction" as (ev, cvar): one number for both metrics, or [EV, CVaR]
+function aim_fractions(f)
+    vals = f isa Real ? (f, f) : (f isa AbstractVector && length(f) == 2) ? (f[1], f[2]) : error("GridFill \"Aim fraction\" must be a number or [EV, CVaR], got $f.")
+    all(v -> v isa Real && 0 <= v <= 1, vals) || error("GridFill \"Aim fraction\" values must be in [0, 1], got $f.")
+    return (ev = Float64(vals[1]), cvar = Float64(vals[2]))
+end
+
+function GridFillContext(solves::AbstractVector, cuts::CutBank, anchors::GridFillAnchors, α::Real, g::Real; aim_frac = GRIDFILL_DEFAULT_AIM_FRAC, aim_margin::Real = GRIDFILL_DEFAULT_AIM_MARGIN)
+    0 <= aim_margin < 1 - GRIDFILL_AIM_LOW || error("GridFill \"Aim margin\" must be in [0, $(1 - GRIDFILL_AIM_LOW)), got $aim_margin.")
     X = reduce(vcat, [fs.x' for fs in solves])
     K = cost_coords(solves, anchors, α)
     rng = vec(maximum(X; dims = 1) .- minimum(X; dims = 1))
     scale = [r > 0 ? r : 1.0 for r in rng]
     return GridFillContext(X, reduce(hcat, [fs.θ for fs in solves]), [fs.inv_cost for fs in solves], K, scale,
-                           solves[1].p ./ sum(solves[1].p), Float64(α), anchors, cuts, Float64(g), convex_hull_2d(K), Float64(aim_frac))
+                           solves[1].p ./ sum(solves[1].p), Float64(α), anchors, cuts, Float64(g), convex_hull_2d(K), aim_fractions(aim_frac), Float64(aim_margin))
 end
 
-# Predicted op costs LB + f·(UB − LB) for EV and CVaR (m-vectors)
-aimed_costs(br, f::Real) = (ev = br.lb_ev .+ f .* (br.ub_ev .- br.lb_ev), cvar = br.lb_cvar .+ f .* (br.ub_cvar .- br.lb_cvar))
+# Predicted op costs LB + f·(UB − LB) for EV and CVaR (m-vectors); f = (ev, cvar)
+aimed_costs(br, f::NamedTuple) = (ev = br.lb_ev .+ f.ev .* (br.ub_ev .- br.lb_ev), cvar = br.lb_cvar .+ f.cvar .* (br.ub_cvar .- br.lb_cvar))
 
 # Predicted (ĉ, v̂) of the blends (m × 2)
 function predicted_position(ctx::GridFillContext, br)
@@ -206,7 +245,7 @@ function cell_candidates(ctx::GridFillContext, cell::Tuple{Int,Int}, tuning, n_k
     g, n, d = ctx.g, size(ctx.X, 1), size(ctx.X, 2)
     tris, aims = Matrix{Int}[], Matrix{Float64}[]
     for _ in 1:tuning.aims_per_cell
-        aim = (collect(cell) .+ 0.1 .+ 0.8 .* rand(rng, 2)) .* g
+        aim = (collect(cell) .+ GRIDFILL_AIM_LOW .+ (1 - ctx.aim_margin - GRIDFILL_AIM_LOW) .* rand(rng, 2)) .* g
         tri = rand(rng, 1:n, tuning.triples_per_aim, 3)
         A = repeat(aim', size(tri, 1))
         ok = valid_weights(barycentric(ctx.K, tri, A), tuning.max_weight)
@@ -214,7 +253,7 @@ function cell_candidates(ctx::GridFillContext, cell::Tuple{Int,Int}, tuning, n_k
     end
     tri, aim = reduce(vcat, tris), reduce(vcat, aims)
     if isempty(tri)
-        centre = ((cell[1] + 0.5) * g, (cell[2] + 0.5) * g)
+        centre = cell_centre(cell, g)
         return empty_cell_result(cell, in_hull(ctx.hull, centre) ? :no_blend : :outside_hull, d)
     end
 
@@ -280,17 +319,24 @@ end
 
 #---- Target-cell bookkeeping ----------------------------------------------------------------
 # attempts: tries per target cell (a pick, or a round without a candidate for it).
-# misses:   tries that did not fill it (the sample landed elsewhere / failed / no candidate),
-#           cumulative across layers.
+# misses:   tries that did not fill it (the sample landed elsewhere / failed, or no candidate
+#           while the cell was empty), cumulative across layers; a hit does not reset them.
 # exhausted: cells dropped from the open set for good, in this layer and every later one
 #           (:outside_hull on first occurrence, :missed after "Max misses" misses).
+# dry:      rounds without a candidate for a cell that already holds samples, this layer.
+# parked:   cells out of the open set until the next layer (after "Max dry rounds" dry rounds).
+# picked:   cells that had at least one sample aimed at them.
 struct GridFillCellState
     attempts::Dict{Tuple{Int,Int},Int}
     misses::Dict{Tuple{Int,Int},Int}
     exhausted::Dict{Tuple{Int,Int},Symbol}
+    dry::Dict{Tuple{Int,Int},Int}
+    parked::Set{Tuple{Int,Int}}
+    picked::Set{Tuple{Int,Int}}
 end
 
-GridFillCellState() = GridFillCellState(Dict{Tuple{Int,Int},Int}(), Dict{Tuple{Int,Int},Int}(), Dict{Tuple{Int,Int},Symbol}())
+GridFillCellState() = GridFillCellState(Dict{Tuple{Int,Int},Int}(), Dict{Tuple{Int,Int},Int}(), Dict{Tuple{Int,Int},Symbol}(),
+                                        Dict{Tuple{Int,Int},Int}(), Set{Tuple{Int,Int}}(), Set{Tuple{Int,Int}}())
 
 is_exhausted(st::GridFillCellState, cell) = haskey(st.exhausted, cell)
 exhausted_cells(st::GridFillCellState, reason::Symbol) = sort([c for (c, r) in st.exhausted if r == reason])
@@ -305,6 +351,35 @@ function record_miss!(st::GridFillCellState, cell, max_misses::Integer; open::Bo
     (open && st.misses[cell] >= max_misses && !is_exhausted(st, cell)) || return false
     st.exhausted[cell] = :missed
     return true
+end
+
+# A round without a candidate. An empty cell is charged a miss. A cell already holding samples
+# is charged a dry round instead, and parked for this layer once it has max_dry of them.
+function record_no_candidate!(st::GridFillCellState, cell, held::Integer, max_misses::Integer, max_dry::Integer)
+    held > 0 || return record_miss!(st, cell, max_misses)
+    st.dry[cell] = get(st.dry, cell, 0) + 1
+    st.dry[cell] >= max_dry && push!(st.parked, cell)
+    return false
+end
+
+# New layer: parked cells are tried again
+unpark_all!(st::GridFillCellState) = (empty!(st.dry); empty!(st.parked); st)
+
+# Exhausted cells that ended with no solved point and never had a sample aimed at them:
+# :frontier if less than frontier_depth cells from the hull's lower chain, :out_of_reach if
+# nearest its upper chain. Anything else stays unlabelled and counts as a real gap in coverage.
+function label_unreached_cells(st::GridFillCellState, counts::AbstractDict, hull, g::Real, frontier_depth::Real)
+    frontier, out_of_reach = Tuple{Int,Int}[], Tuple{Int,Int}[]
+    for (c, reason) in st.exhausted
+        (reason == :missed && get(counts, c, 0) == 0 && !(c in st.picked)) || continue
+        e = hull_nearest_edge(hull, cell_centre(c, g))
+        if !e.lower
+            push!(out_of_reach, c)
+        elseif e.depth / g < frontier_depth
+            push!(frontier, c)
+        end
+    end
+    return (frontier = sort(frontier), out_of_reach = sort(out_of_reach))
 end
 
 function mark_outside_hull!(st::GridFillCellState, results::AbstractVector)
@@ -346,11 +421,13 @@ function select_gridfill(cands, ctx::GridFillContext, quota::AbstractDict, n::In
     Y = cands.X ./ ctx.scale'
     dmin = nearest_distance(cands.X, ctx.X, ctx.scale)
     picks = Tuple{Int,Float64}[]
+    used = falses(length(dmin))           # a row is picked at most once, even if its cell has quota left
     while length(picks) < n
         s = score(dmin, cands, ctx)
-        s = [get(quota, cands.cell[i], 0) > 0 ? s[i] : -Inf for i in eachindex(s)]
+        s = [get(quota, cands.cell[i], 0) > 0 && !used[i] ? s[i] : -Inf for i in eachindex(s)]
         i = argmax(s)
         isfinite(s[i]) || break
+        used[i] = true
         push!(picks, (i, dmin[i]))
         quota[cands.cell[i]] -= 1
         dmin .= min.(dmin, vec(pairwise_distances(Y, Y[i:i, :])))

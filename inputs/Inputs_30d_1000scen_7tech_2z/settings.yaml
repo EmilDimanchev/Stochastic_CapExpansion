@@ -112,8 +112,12 @@ Sampling settings: # portfolios evaluated after exploration, labelled by subprob
     Cell size: 0.025 # cell edge in (c_hat, v_hat)
     Delta cap: 1.1 # only cells with c_hat + v_hat at or below this (the near-optimal region)
     Per cell: "auto" # samples per cell: an integer cap, or "auto" to fill in layers (1 per reachable cell, then 2, ...) until Samples is spent
-    Max misses: 3 # misses (sample landed elsewhere or failed, or a round with no candidate) before a target cell is exhausted
-    Aim fraction: 0.05 # aim with LB + f * (UB - LB) of the op-cost bracket, for EV and CVaR (0.5 = midpoint)
+    Max misses: 3 # misses (sample landed elsewhere or failed, or a round with no candidate while the cell is empty) before a target cell is exhausted; cumulative, not reset by a hit
+    Max dry rounds: 3 # rounds with no candidate before a cell already holding samples is parked until the next layer
+    Aim fraction: [0.10, 0.13] # aim with LB + f * (UB - LB) of the op-cost bracket: [EV, CVaR], or one number for both (0.5 = midpoint)
+    Aim margin: 0.2 # aims are drawn from 0.1 to (1 - this) of the cell's width on each axis, away from the top and right edges
+    Frontier depth: 1.0 # after the run, unreached cells less than this many cells from the hull's lower edge are labelled frontier and left out of adjusted coverage
+    Boundary margin: 0.0 # drop target cells less than this many cells from the hull's lower edge before sampling (0 = off)
 
 Cut settings: # cut pool, see src/model/benders/cut_pool.jl
   Cuts retained: 200000 # memory cap on live + archived cuts, applied at each new risk weight / MGA vector

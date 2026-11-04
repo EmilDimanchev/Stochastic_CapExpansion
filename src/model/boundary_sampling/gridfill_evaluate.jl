@@ -95,8 +95,8 @@ function gridfill_batch_stats(picks::Vector{GridFillPick}, solved::AbstractVecto
     viol = count(i -> ev[i] < picks[i].lb_ev - tol(ev[i]) || ev[i] > picks[i].ub_ev + tol(ev[i]) ||
                       cv[i] < picks[i].lb_cvar - tol(cv[i]) || cv[i] > picks[i].ub_cvar + tol(cv[i]), eachindex(picks))
     mrel(x, y) = median(abs.(x .- y) ./ abs.(y))
-    aimed(lb, ub) = lb + ctx.aim_frac * (ub - lb)
-    return (pred_ev = mrel([aimed(pk.lb_ev, pk.ub_ev) for pk in picks], ev), pred_cvar = mrel([aimed(pk.lb_cvar, pk.ub_cvar) for pk in picks], cv),
+    aimed(lb, ub, f) = lb + f * (ub - lb)
+    return (pred_ev = mrel([aimed(pk.lb_ev, pk.ub_ev, ctx.aim_frac.ev) for pk in picks], ev), pred_cvar = mrel([aimed(pk.lb_cvar, pk.ub_cvar, ctx.aim_frac.cvar) for pk in picks], cv),
             mid_ev = mrel([pk.mid_ev for pk in picks], ev), blend_ev = mrel([pk.ub_ev for pk in picks], ev),
             mid_cvar = mrel([pk.mid_cvar for pk in picks], cv), blend_cvar = mrel([pk.ub_cvar for pk in picks], cv),
             pred_cells = median(vec(maximum(abs.(mid_pos .- pos); dims = 2))) / g,
@@ -133,7 +133,10 @@ function run_gridfill_sampling!(bank::AbstractVector, cut_pool, MP, SPs, inputs:
     # until "Samples" is spent; the level rises once every open cell is full or exhausted.
     auto = gcfg["Per cell"] == "auto"
     per_cell = auto ? 1 : Int(gcfg["Per cell"])
-    max_misses, aim_frac = Int(get(gcfg, "Max misses", 3)), Float64(get(gcfg, "Aim fraction", 0.05))
+    max_misses, max_dry = Int(get(gcfg, "Max misses", 3)), Int(get(gcfg, "Max dry rounds", 3))
+    aim_frac = aim_fractions(get(gcfg, "Aim fraction", GRIDFILL_DEFAULT_AIM_FRAC))
+    aim_margin = Float64(get(gcfg, "Aim margin", GRIDFILL_DEFAULT_AIM_MARGIN))
+    frontier_depth, boundary_margin = Float64(get(gcfg, "Frontier depth", 1.0)), Float64(get(gcfg, "Boundary margin", 0.0))
     n_max, batch_size, n_keep = Int(sampling["Samples"]), Int(sampling["Batch size"]), Int(sampling["Candidates"])
     α, seed = settings["Value-at-Risk percent"], settings["Seed"]
     var_names = capacity_variable_names(inputs)
@@ -151,44 +154,51 @@ function run_gridfill_sampling!(bank::AbstractVector, cut_pool, MP, SPs, inputs:
     cells = grid_cells(sweep, g, δcap)
     counts0 = cell_counts(cost_coords(solves, anchors, α), g)
     targets = [c for c in cells if get(counts0, c, 0) == 0]
-    @info("GridFill: $(length(cells)) cells of size $g in the near-optimal region (δ <= $δcap), $(length(cells) - length(targets)) already occupied, $(length(targets)) targets; $(auto ? "samples per cell raised in layers until" : "up to $per_cell samples per cell,") $n_max in total, batches of $batch_size; gf_max_misses = $max_misses, gf_aim_frac = $aim_frac.")
+    excluded = near_lower_frontier(targets, convex_hull_2d(cost_coords(solves, anchors, α)), g, boundary_margin)
+    setdiff!(targets, excluded)
+    @info("GridFill: $(length(cells)) cells of size $g in the near-optimal region (δ <= $δcap), $(length(cells) - length(targets) - length(excluded)) already occupied, $(length(excluded)) excluded by gf_boundary_margin = $boundary_margin, $(length(targets)) targets; $(auto ? "samples per cell raised in layers until" : "up to $per_cell samples per cell,") $n_max in total, batches of $batch_size; gf_max_misses = $max_misses, gf_max_dry = $max_dry, gf_aim_frac = EV $(aim_frac.ev), CVaR $(aim_frac.cvar), gf_aim_margin = $aim_margin.")
 
     rows_cap, rows_syscost, rows_emissions, labels = DataFrame[], DataFrame[], DataFrame[], String[]
     state = GridFillCellState()
-    rnd, layer = 0, 1
+    rnd, layer, picks_in_layer = 0, 1, 0
     while length(labels) < n_max && !isempty(targets)
         rnd += 1
         solves = solved()
         counts = cell_counts(cost_coords(solves, anchors, α), g)
-        open_cells = [c for c in targets if get(counts, c, 0) < per_cell && !is_exhausted(state, c)]
+        open_cells = [c for c in targets if get(counts, c, 0) < per_cell && !is_exhausted(state, c) && !(c in state.parked)]
         if isempty(open_cells)
             all(c -> is_exhausted(state, c), targets) && (@info("GridFill: every target cell is exhausted; stopping."); break)
-            auto || (@info("GridFill: every target cell holds $per_cell samples or is exhausted."); break)
-            per_cell += 1; layer += 1
-            @info("GridFill: every target cell holds $(per_cell - 1) samples or is exhausted; layer $layer, raising to $per_cell per cell.")
+            auto || (@info("GridFill: every target cell holds $per_cell samples, is exhausted or has no candidates."); break)
+            # Parked cells get retried next layer, so a layer with no picks at all could repeat forever
+            (picks_in_layer == 0 && !isempty(state.parked)) && (@info("GridFill: layer $layer produced no samples and its $(length(state.parked)) remaining cells have no candidates; stopping."); break)
+            unpark_all!(state)
+            per_cell += 1; layer += 1; picks_in_layer = 0
+            @info("GridFill: every target cell holds $(per_cell - 1) samples, is exhausted or has no candidates; layer $layer, raising to $per_cell per cell.")
             continue
         end
         n_exhausted0 = length(state.exhausted)
 
         X = reduce(vcat, [fs.x' for fs in solves])
         Xref = hcat(permutedims(X), random_parent_blends(X, tuning.prune_blends, Xoshiro(hash((seed, rnd)))))
-        ctx = GridFillContext(solves, prune_cuts(cuts, Xref), anchors, α, g; aim_frac = aim_frac)
+        ctx = GridFillContext(solves, prune_cuts(cuts, Xref), anchors, α, g; aim_frac = [aim_frac.ev, aim_frac.cvar], aim_margin = aim_margin)
         t_cand = @elapsed results = run_candidate_stage(ctx, open_cells, tuning, n_keep, seed, rnd; parallel = parallel)
         mark_outside_hull!(state, results)
         for r in results
-            r.status in (:no_blend, :aim_missed) || continue   # no candidate this round: one try that missed
+            r.status in (:no_blend, :aim_missed) || continue   # no candidate this round: a miss if empty, else a dry round
             record_attempt!(state, r.cell)
-            record_miss!(state, r.cell, max_misses)
+            record_no_candidate!(state, r.cell, get(counts, r.cell, 0), max_misses, max_dry)
         end
         cands = pool_candidates(results)
         quota = Dict(c => per_cell - get(counts, c, 0) for c in open_cells)
         sel = select_gridfill(cands, ctx, quota, min(batch_size, n_max - length(labels)); score = score)
         if isempty(sel)
-            # Every open cell was just charged a try, so this can't repeat forever
+            # Every open cell was just charged a miss or a dry round, so this can't repeat forever
             @info("GridFill round $rnd: none of the $(length(open_cells)) open cells has a candidate; exhausted this round $(length(state.exhausted) - n_exhausted0) (total $(length(state.exhausted))).")
             continue
         end
         attempts = [record_attempt!(state, cands.cell[i]) for (i, _) in sel]
+        foreach(((i, _),) -> push!(state.picked, cands.cell[i]), sel)
+        picks_in_layer += length(sel)
         picks = make_gridfill_picks(cands, sel, solves, rnd, length(labels) + 1, layer, attempts)
 
         t_eval = @elapsed c, s, e, new_solves = evaluate(picks, SPs, inputs, settings, g)
@@ -218,7 +228,7 @@ function run_gridfill_sampling!(bank::AbstractVector, cut_pool, MP, SPs, inputs:
               "raw blend: EV $(round(100 * st.blend_ev; sigdigits = 3))%, CVaR $(round(100 * st.blend_cvar; sigdigits = 3))%, position $(round(st.blend_cells; sigdigits = 3)) cells. " *
               "Landed in target cell: $(st.landed)/$(length(picks)); bracket violations: $(st.violations); failed solves: $(st.failed). " *
               "Layer $layer (quota $per_cell). Target cells reached $reached/$(length(targets)), full ($per_cell per cell) $full, still empty $(length(targets) - reached), " *
-              "exhausted this round $(length(state.exhausted) - n_exhausted0) (total $(length(state.exhausted))) " *
+              "exhausted this round $(length(state.exhausted) - n_exhausted0) (total $(length(state.exhausted))), parked $(length(state.parked)) " *
               "(this round: $(n_status(:outside_hull)) outside the parents' cost hull, $(n_status(:no_blend)) without a valid blend, $(n_status(:aim_missed)) missed).")
         try
             checkpoint(rows_cap, rows_syscost, rows_emissions, labels)
@@ -236,6 +246,13 @@ function run_gridfill_sampling!(bank::AbstractVector, cut_pool, MP, SPs, inputs:
     end
     final_counts = cell_counts(cost_coords(solved(), anchors, α), g)
     per_target = [get(final_counts, c, 0) for c in targets]
+    final_hull = convex_hull_2d(cost_coords(solved(), anchors, α))
+    labels_unreached = label_unreached_cells(state, final_counts, final_hull, g, frontier_depth)
+    n_reached = count(>(0), per_target)
+    n_reachable = length(targets) - length(out_of_hull) - length(labels_unreached.frontier) - length(labels_unreached.out_of_reach)
+    @info("GridFill: coverage $n_reached/$(length(targets)) target cells raw, $n_reached/$n_reachable excluding $(length(out_of_hull)) outside the hull, " *
+          "$(length(labels_unreached.frontier)) on the lower frontier (depth < $frontier_depth cells): $(fmt_cells(labels_unreached.frontier)), " *
+          "and $(length(labels_unreached.out_of_reach)) out of reach near the upper edge: $(fmt_cells(labels_unreached.out_of_reach)).")
     @info("GridFill: final samples per target cell (samples: cells): " * join(["$k: $(count(==(k), per_target))" for k in sort(unique(per_target))], ", ") * ".")
     @info("GridFill: $(length(labels)) samples evaluated in $rnd rounds; cut bank holds $(n_cuts(cuts)) cuts.")
     return rows_cap, rows_syscost, rows_emissions, labels
