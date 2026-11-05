@@ -575,8 +575,8 @@ function compute_cvar(SP_obj, P, P_f, P_k, VaR_Percent)
     # Normalize probabilities to avoid floating-point drift from 1.0.
     prob_flat = prob_flat ./ total_prob
 
-    # The tail rule itself lives in _cvar_tail_weights_sorted so the boundary sampler
-    # (src/model/boundary_sampling) uses exactly the same tail set; the sum below is taken
+    # The tail rule itself lives in _cvar_tail_weights_sorted so GridFill
+    # (src/model/sampling) uses exactly the same tail set; the sum below is taken
     # in the same (descending) order as before, so results are bit-for-bit unchanged.
     sorted_indices, tail_weights = _cvar_tail_weights_sorted(sp_obj_flat, prob_flat, alpha)
     sp_obj_sorted = sp_obj_flat[sorted_indices]

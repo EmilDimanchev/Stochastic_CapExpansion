@@ -11,6 +11,9 @@ emissions) comes from the subproblem solves; the predictions are lineage columns
 
 ==========================================================================================#
 
+# Valid values of the "Method" key in Sampling settings
+const SAMPLING_METHODS = ("None", "GridFill")
+
 struct GridFillPick
     name::String
     batch::Int
@@ -61,7 +64,7 @@ function make_gridfill_picks(cands, sel, solves::AbstractVector, batch::Int, fir
 end
 
 # One batch through run_subproblems_batch (each worker loops over the batch for its own
-# scenarios). Rows are built exactly as evaluate_picks does, so Summary columns match.
+# scenarios). Rows go through make_results_mapping_dfs, so Summary columns match the MGA rows.
 function evaluate_gridfill_batch(picks::Vector{GridFillPick}, SPs, inputs::Dict, settings::Dict, g::Real)
     R = length(inputs["Resources"])
     p = scenario_probabilities(inputs)
@@ -72,7 +75,6 @@ function evaluate_gridfill_batch(picks::Vector{GridFillPick}, SPs, inputs::Dict,
     for (pk, sp) in zip(picks, sps)
         inv, inv_by_zone = investment_cost(pk.x, inputs)
         fs = final_solve_from_sp_outputs(pk.name, pk.x, sp, p, inv)
-        fs.region = "gridfill_sample"
         ev, cvar = solve_ev(fs), solve_cvar(fs, α)
         df_cap, df_syscost, df_emissions = make_results_mapping_dfs(pk.x[1:R], pk.x[R+1:end], sp, inv, inv_by_zone, cvar, ev, inputs, settings)
         add_gridfill_columns!(df_syscost, pk, g)

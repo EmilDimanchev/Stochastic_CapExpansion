@@ -3,7 +3,7 @@ using Distributed
 using LinearAlgebra, Random, Statistics, DataFrames, JuMP
 
 """
-Solver-free unit tests for the GridFill sampler (src/model/boundary_sampling/gridfill_*.jl).
+Solver-free unit tests for the GridFill sampler (src/model/sampling/gridfill_*.jl).
 
 Usage:
   julia --project=. tests/gridfill_tests.jl
@@ -21,7 +21,7 @@ include(joinpath(@__DIR__, "sampling_toy_helpers.jl"))   # ToyCost, toy_cost, to
 const GF_ALPHA = 0.1
 const GF_CINV = [0.9, 0.6, 1.1, 0.4]       # $/MW investment cost of the 4 toy capacities
 
-gf_solve(name, x, tc, p) = (tv = toy_eval(tc, x); FinalSolve(name, "", copy(x), tv[1], tv[2], p, dot(GF_CINV, x), true))
+gf_solve(name, x, tc, p) = (tv = toy_eval(tc, x); FinalSolve(name, copy(x), tv[1], tv[2], p, dot(GF_CINV, x), true))
 gf_C(fs) = fs.inv_cost + solve_ev(fs)
 gf_V(fs) = fs.inv_cost + solve_cvar(fs, GF_ALPHA)
 
@@ -41,7 +41,7 @@ end
 # Stand-in for evaluate_gridfill_batch: solves the toy model at each pick
 function gf_toy_evaluator(tc, p)
     return (picks, SPs, inputs, settings, g) -> begin
-        solved = [(fs = gf_solve(pk.name, pk.x, tc, p); fs.region = "gridfill_sample"; fs) for pk in picks]
+        solved = [gf_solve(pk.name, pk.x, tc, p) for pk in picks]
         rows = [DataFrame(Name = [pk.name]) for pk in picks]
         rows, copy(rows), copy(rows), solved
     end
@@ -251,7 +251,7 @@ end
         @test 0 < length(labels) <= 30 && length(bank1) == n0 + length(labels)
         @test labels == ["GridFill_$k" for k in eachindex(labels)]
         @test issorted(ckpts; lt = <=) && ckpts[end] == length(labels) && all(diff([0; ckpts]) .<= 8)   # one checkpoint per batch
-        @test all(fs.region == "gridfill_sample" for fs in bank1[n0+1:end])
+        @test all(startswith(fs.name, "GridFill_") for fs in bank1[n0+1:end])
         # Every new sample sits within the per-cell quota of the cells it was aimed at, and labels
         # come from solves (bracket holds for each sample against its own solve)
         gf = bank1[n0+1:end]
@@ -373,7 +373,7 @@ end
 
     # Rows carry the GF_* columns, solves optionally reported as failed (every pick then misses)
     gf_column_evaluator(tc, p; ok = true) = (picks, SPs, inputs, settings, g) -> begin
-        solved = [(fs = gf_solve(pk.name, pk.x, tc, p); fs.region = "gridfill_sample"; fs.ok = ok; fs) for pk in picks]
+        solved = [(fs = gf_solve(pk.name, pk.x, tc, p); fs.ok = ok; fs) for pk in picks]
         rows = [add_gridfill_columns!(DataFrame(Name = [pk.name]), pk, g) for pk in picks]
         rows, rows, rows, solved
     end

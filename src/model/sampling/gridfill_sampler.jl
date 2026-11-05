@@ -213,6 +213,12 @@ function blend_capacities(X::AbstractMatrix, tri::AbstractMatrix{Int}, W::Abstra
     return Y
 end
 
+# Euclidean distances between the rows of A (n × r) and the rows of B (m × r)
+function pairwise_distances(A::AbstractMatrix, B::AbstractMatrix)
+    D2 = sum(abs2, A; dims = 2) .+ sum(abs2, B; dims = 2)' .- 2 .* (A * B')
+    return sqrt.(max.(D2, 0.0))     # clip tiny negative round-off
+end
+
 # Distance from each row of Y (MW) to the nearest row of Ref (MW), range-scaled
 nearest_distance(Y::AbstractMatrix, Ref::AbstractMatrix, scale::AbstractVector) =
     size(Ref, 1) == 0 ? fill(Inf, size(Y, 1)) : vec(minimum(pairwise_distances(Y ./ scale', Ref ./ scale'); dims = 2))

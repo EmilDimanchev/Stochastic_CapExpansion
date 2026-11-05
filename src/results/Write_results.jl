@@ -471,8 +471,8 @@ function write_exploration_results!(results_cap::AbstractVector, results_syscost
     # df_cap/df_syscost/df_emissions share the same wide-format schema regardless of
     # whether they came from write_results_benders or make_results_mapping_dfs (mapping=true
     # or mapping=false), so a single vcat + join works for every caller.
-    # cols = :union so rows with extra columns (e.g. the boundary sampler's lineage/bound
-    # columns on Interior_k rows) can be stacked with MGA rows; absent entries are missing.
+    # cols = :union so rows with extra columns (e.g. the lineage/bound columns on
+    # GridFill_k rows) can be stacked with MGA rows; absent entries are missing.
     dfs_cap = vcat(results_cap...; cols = :union)
     dfs_syscost = vcat(results_syscost...; cols = :union)
     dfs_emissions = vcat(results_emissions...; cols = :union)

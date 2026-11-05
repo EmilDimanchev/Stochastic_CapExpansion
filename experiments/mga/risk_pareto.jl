@@ -6,8 +6,6 @@ Main MGA functions for running stochastic exploration with Benders and MGA, incl
 
 ==============================#
 
-const SAMPLING_METHODS = ("None", "Delaunay", "Boundary", "GridFill")
-
 # Each *_settings keyword overrides keys of the matching settings.yaml block (see run_settings.jl).
 function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_settings::AbstractDict = Dict(), cap_settings::AbstractDict = Dict(), mapping_settings::AbstractDict = Dict(), run_settings::AbstractDict = Dict(), sampling_settings::AbstractDict = Dict(), cut_settings::AbstractDict = Dict())
 
@@ -36,7 +34,6 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     end
     sampling_method = sampling_settings["Method"]
     sampling_method in SAMPLING_METHODS || error("Unknown sampling \"Method\" $(sampling_method); use one of $(SAMPLING_METHODS).")
-    n_samples = sampling_settings["Samples"]
 
     vector_set = run_settings["Vector set"]
     summary_name = run_settings["Summary name"]
@@ -70,7 +67,6 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     iterations = run_settings["MGA vectors"]
     risk_aversion_weights = [[i for i in 0.5:-0.1:0.1]; [i for i in 0.6:0.1:0.9]; 0.0; 1.0]
     risk_aversion_weight = settings["Risk aversion weight"] ### set as anchor point
-    VaR_percent = settings["Value-at-Risk percent"] ### Currently set consistently across runs and ahead of time
     settings["Risk aversion flag"] = true
     scaling = settings["Scaling factor cost"]
     # Create and set expected value model
@@ -80,23 +76,18 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     transform_sys = 0.0
     transform_cvar = 0.0
 
-    P_s = inputs["Demand scenario probabilities"]
-    P_f = inputs["Gas price scenario probabilities"]
-    P_k = inputs["Weather scenario probabilities"]
-    R = length(inputs["Resources"])
-
     MP = build_planning_model(inputs, settings; risk_aversion_weight = risk_aversion_weight)
 
     # Shared across every risk weight / MGA direction solved against this MP, so cuts built
     # for one problem can be brought back (seed!/separate!) when a later problem needs them.
     cut_pool = CutPool(settings)
 
-    # Gradient bank for the Boundary / GridFill samplers: one FinalSolve (capacity, per-scenario
+    # Gradient bank for the GridFill sampler: one FinalSolve (capacity, per-scenario
     # op cost and capacity gradients) per final solve. The converged subproblem outputs in
     # out["SPs"] already hold these duals, so this copies them before release_heavy_payload!
     # drops them.
     bank = FinalSolve[]
-    use_bank = sampling_method in ("Boundary", "GridFill")
+    use_bank = sampling_method == "GridFill"
     var_names = capacity_variable_names(inputs)
     bank_record!(label, out, folder) = use_bank && begin
         fs = record_final_solve!(bank, label, out, inputs)
@@ -150,10 +141,6 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
 
         if tighten_budget && budget_type != "Transformed"
             error("tighten_budget=true is only supported for budget_type == \"Transformed\" (got \"$budget_type\").")
-        end
-
-        if mapping && budget_type != "Transformed"
-            error("mapping=true is only supported for budget_type == \"Transformed\" (got \"$budget_type\") - sample_interior_delauney filters against the Transformed budget.")
         end
 
         if budget_type == "Transformed"
@@ -280,16 +267,8 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
 
-        # Map interior after exterior mapping
-        if sampling_method == "Boundary"
-            # Interior_k rows carry their own labels plus lineage/bound columns; their
-            # bracket check is written to Summary/Interior_brackets_<summary name>.csv
-            @time rows_cap, rows_syscost, rows_emissions, interior_labels, _, _ = run_boundary_sampling!(bank, SPs, inputs, settings, sampling_settings, results_folder, summary_folder, summary_name)
-            append!(results_cap, rows_cap)
-            append!(results_syscost, rows_syscost)
-            append!(results_emissions, rows_emissions)
-            append!(run_labels, interior_labels)
-        elseif sampling_method == "GridFill"
+        # Sample the interior after exploration
+        if sampling_method == "GridFill"
             # GridFill_k rows carry lineage + prediction columns (GF_*). The Summary is rewritten
             # after every batch with the MGA rows plus the samples solved so far.
             n_mga = length(results_cap)
@@ -300,20 +279,6 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             append!(results_syscost, rows_syscost)
             append!(results_emissions, rows_emissions)
             append!(run_labels, gf_labels)
-        elseif sampling_method == "Delaunay"
-            all_caps = Matrix(vcat(results_cap...))
-            all_costs = vcat(results_syscost...)
-            @time samples = sample_interior_delauney(all_caps, all_costs, n_samples, settings, budget_val_transform, transform_sys, transform_cvar, scaling)
-            outputs_mp = run_distributed_sampling(samples)
-            @time for (i, sample) in enumerate(samples)
-                outputs_sp = run_all_subproblems(SPs, inputs, settings, sample[1:R], sample[R+1:end]; minimal_payload=false)
-                ev, cvar = evaluate_subproblems(outputs_sp, P_s, P_f, P_k, VaR_percent)
-                @info("Sample $i: Investment cost = $(outputs_mp[i]["Inv_cost"]), Expected value = $ev, CVaR = $(cvar)")
-                temp_df_cap, temp_df_syscost, temp_df_emissions = make_results_mapping_dfs(sample[1:R], sample[R+1:end], outputs_sp, outputs_mp[i]["Inv_cost"], outputs_mp[i]["Inv cost by zone"], cvar, ev, inputs, settings)
-                push!(results_cap, temp_df_cap)
-                push!(results_syscost, temp_df_syscost)
-                push!(results_emissions, temp_df_emissions)
-            end
         end
         t_final = @elapsed write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
         @info("Final summary write: $(round(t_final; digits=3)) s; total checkpoint time $(round(checkpoint_time; digits=3)) s")

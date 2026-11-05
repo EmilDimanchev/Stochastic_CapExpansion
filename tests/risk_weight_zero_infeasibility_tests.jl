@@ -1,6 +1,6 @@
 using Test
 using Distributed
-using Revise, JuMP, Gurobi, HiGHS, Ipopt, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions, Surrogates, Clarabel
+using Revise, JuMP, Gurobi, HiGHS, Ipopt, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions, Clarabel
 
 include("../src/Stochastic_CapExpansion.jl")
 using .Stochastic_CapExpansion
