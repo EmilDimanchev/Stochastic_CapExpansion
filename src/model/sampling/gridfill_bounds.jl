@@ -43,22 +43,22 @@ function add_final_solve!(cb::CutBank, fs)
     return cb
 end
 
-# Every optimality cut in the pool, live or archived. The master row is
+# Every optimality cut in the pool, live or archived, unscaled and in pool order. The master row is
 #     c·alpha[s,f,k] + Σ a_r x_r + Σ a_l x_line_l >= b      (scaled by "Scaling factor cost")
 # with c = 1 for an optimal subproblem (c = 0 rows carry no information and are skipped).
 # alpha is the scaled op cost of scenario (s,f,k), so θ_s(x) >= scale·(b − aᵀx)/c.
 # cvar_tail_cuts_* repeat the same tangent with −ζ and are skipped.
-function add_pool_cuts!(cb::CutBank, pool, MP::Model, settings::Dict)
+# Returns the cuts as (scenario, a, g, name) and the number of optimality rows skipped.
+function pool_optimality_cuts(pool, MP::Model, settings::Dict)
     scale = settings["Scaling factor cost"]
     alpha = MP[:alpha]
     xvars = vcat(vec(collect(MP[:x])), vec(collect(MP[:x_line])))
     scen_of = Dict(alpha[I] => li for (li, I) in enumerate(CartesianIndices(size(alpha))))   # (s,f,k) column-major, same as θ
     pos_of = Dict(v => i for (i, v) in enumerate(xvars))
     d = length(xvars)
-    a_new = [Float64[] for _ in eachindex(cb.a)]
-    g_new = [Vector{Float64}[] for _ in eachindex(cb.a)]
-    added = 0
-    function add_row!(terms, b)
+    cuts = NamedTuple{(:scenario, :a, :g, :name), Tuple{Int, Float64, Vector{Float64}, String}}[]
+    skipped = 0
+    function add_row!(terms, b, cut_name)
         s, c = 0, 0.0
         g = zeros(d)
         for (v, coef) in terms
@@ -68,27 +68,40 @@ function add_pool_cuts!(cb::CutBank, pool, MP::Model, settings::Dict)
                 g[pos_of[v]] = coef
             end
         end
-        (s == 0 || c <= 0) && return
-        push!(a_new[s], scale * b / c)
-        push!(g_new[s], -scale .* g ./ c)
-        added += 1
+        if s == 0 || c <= 0
+            skipped += 1
+            return
+        end
+        push!(cuts, (scenario = s, a = scale * b / c, g = -scale .* g ./ c, name = cut_name))
     end
     for (n, con) in pool.live
         startswith(n, "optimality_cut_") || continue
         obj = constraint_object(con)
-        add_row!(obj.func.terms, MOI.constant(obj.set) - obj.func.constant)
+        add_row!(obj.func.terms, MOI.constant(obj.set) - obj.func.constant, n)
     end
     for j in eachindex(pool.names)
         (pool.alive[j] && startswith(pool.names[j], "optimality_cut_")) || continue
         rng = pool.colptr[j]:(pool.colptr[j + 1] - 1)
-        add_row!(((pool.vars[pool.rowval[k]], pool.nzval[k]) for k in rng), pool.b[j])
+        add_row!(((pool.vars[pool.rowval[k]], pool.nzval[k]) for k in rng), pool.b[j], pool.names[j])
+    end
+    return cuts, skipped
+end
+
+# Adds every optimality cut in the pool to the bank (see pool_optimality_cuts).
+function add_pool_cuts!(cb::CutBank, pool, MP::Model, settings::Dict)
+    cuts, _ = pool_optimality_cuts(pool, MP, settings)
+    a_new = [Float64[] for _ in eachindex(cb.a)]
+    g_new = [Vector{Float64}[] for _ in eachindex(cb.a)]
+    for cut in cuts
+        push!(a_new[cut.scenario], cut.a)
+        push!(g_new[cut.scenario], cut.g)
     end
     for s in eachindex(cb.a)
         isempty(a_new[s]) && continue
         append!(cb.a[s], a_new[s])
         cb.G[s] = hcat(cb.G[s], reduce(hcat, g_new[s]))
     end
-    @info("GridFill cut bank: $added optimality cuts taken from the cut pool ($(length(pool.live)) live, $(n_archived(pool)) archived cuts in the pool)")
+    @info("GridFill cut bank: $(length(cuts)) optimality cuts taken from the cut pool ($(length(pool.live)) live, $(n_archived(pool)) archived cuts in the pool)")
     return cb
 end
 

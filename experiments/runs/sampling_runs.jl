@@ -6,10 +6,13 @@ GridFill sampler: entry points (src/model/sampling)
   gridfill_test_laptop("gf_1")          - end-to-end pareto run with Sampling "Method" => "GridFill"
   gridfill_test_della("gf_1")           - the same on the Della inputs
   weather_gridfill_test_della("gf_1")   - Della run with weather instead of gas price uncertainty
+  test_cut_export_units()               - solver-free unit tests of the cut export (tests/cut_export_tests.jl)
+  cut_export_test_laptop("cx_1")        - gridfill_test_laptop with the cut export on
 
 =======================#
 
 test_gridfill_units(test_index = "gridfill_units") = include(joinpath(@__DIR__, "..", "..", "tests", "gridfill_tests.jl"))
+test_cut_export_units(test_index = "cut_export_units") = include(joinpath(@__DIR__, "..", "..", "tests", "cut_export_tests.jl"))
 
 # Laptop inputs, workers and subproblems. `fast` uses one gas and one weather scenario, keeping
 # demand uncertainty on.
@@ -29,7 +32,7 @@ end
 # End-to-end: full risk-pareto + MGA + wing caps, then GridFill on the finals. Laptop defaults
 # are small (coarse 0.1 cells, batches of 8) so the whole loop, feedback included, runs in a
 # few minutes; `fast` uses one gas and one weather scenario (demand stays stochastic).
-function gridfill_test_laptop(test_index; n_samples::Int = 24, fast::Bool = true, sampling_overrides::AbstractDict = Dict())
+function gridfill_test_laptop(test_index; n_samples::Int = 24, fast::Bool = true, sampling_overrides::AbstractDict = Dict(), cut_export_overrides::AbstractDict = Dict())
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     mkpath(summary_folder)
@@ -40,10 +43,15 @@ function gridfill_test_laptop(test_index; n_samples::Int = 24, fast::Bool = true
         mapping_settings = Dict("Mapping" => false),
         run_settings = Dict("Summary name" => "pareto"),
         sampling_settings = merge(Dict{String,Any}("Method" => "GridFill", "Samples" => n_samples, "Batch size" => 8,
-                                                   "GridFill" => Dict("Cell size" => 0.1)), sampling_overrides))
+                                                   "GridFill" => Dict("Cell size" => 0.1)), sampling_overrides),
+        cut_export_settings = cut_export_overrides)
 end
 
-function gridfill_test_della(test_index; n_samples::Int = 2000, sampling_overrides::AbstractDict = Dict())
+# The same end-to-end run with the cut export on. Writes outputs/Test_<index>/Summary/cut_archive_pareto.h5.
+cut_export_test_laptop(test_index; cut_export_overrides::AbstractDict = Dict(), kwargs...) =
+    gridfill_test_laptop(test_index; cut_export_overrides = merge(Dict{String,Any}("Export cuts" => true), cut_export_overrides), kwargs...)
+
+function gridfill_test_della(test_index; n_samples::Int = 2000, sampling_overrides::AbstractDict = Dict(), cut_export_overrides::AbstractDict = Dict())
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
@@ -58,7 +66,8 @@ function gridfill_test_della(test_index; n_samples::Int = 2000, sampling_overrid
         cap_settings = Dict("Cap wings" => true, "Cap levels" => [1, 3]),
         mapping_settings = Dict("Mapping" => false),
         run_settings = Dict("Summary name" => "GridFill"),
-        sampling_settings = merge(Dict{String,Any}("Method" => "GridFill", "Samples" => n_samples, "Write gradients" => true), sampling_overrides))
+        sampling_settings = merge(Dict{String,Any}("Method" => "GridFill", "Samples" => n_samples, "Write gradients" => true), sampling_overrides),
+        cut_export_settings = cut_export_overrides)
 end
 
 # Scenario counts are read by load_input_data, so they must be set before it runs.

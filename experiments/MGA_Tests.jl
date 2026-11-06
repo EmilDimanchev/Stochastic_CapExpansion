@@ -28,7 +28,7 @@ include("mga/design_evaluation.jl")       # evaluate_subproblems, read_design_cs
 include("runs/mapping_runs.jl")           # mapping_test_*
 include("runs/risk_pareto_runs.jl")       # risk_pareto_*, wing_caps_test_*, warmstart_verification_laptop, simple_comp
 include("runs/design_evaluation_runs.jl") # run_design_csv_evaluation_*
-include("runs/sampling_runs.jl")          # test_gridfill_units, gridfill_test_*, weather_gridfill_test_della
+include("runs/sampling_runs.jl")          # test_gridfill_units, gridfill_test_*, weather_gridfill_test_della, test_cut_export_units, cut_export_test_laptop
 
 # Diagnostic checks
 include("checks/cut_checks.jl")           # test_cut_management, test_cut_trim_rules

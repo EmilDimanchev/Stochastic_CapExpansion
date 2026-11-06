@@ -4,7 +4,7 @@
 # Each group is a block in settings.yaml - the base values for that machine/input set, with the
 # meaning of every key documented next to it there:
 #   "Budget settings", "Cap settings", "Mapping settings", "Sampling settings",
-#   "Run settings", "Cut settings"
+#   "Run settings", "Cut settings", "Cut export settings"
 # A run overrides individual keys through the matching keyword argument of the driver
 # (budget_settings = Dict("Tighten budget" => true), cut_settings = Dict("Max rounds" => 10), ...).
 # Unknown keys error out, so a typo can't silently fall back to the base value. A nested
@@ -12,7 +12,7 @@
 # partially; the rest is kept.
 #-------------------------------------------------------------------------------------------
 
-const SETTINGS_GROUPS = ("Budget settings", "Cap settings", "Mapping settings", "Sampling settings", "Run settings", "Cut settings")
+const SETTINGS_GROUPS = ("Budget settings", "Cap settings", "Mapping settings", "Sampling settings", "Run settings", "Cut settings", "Cut export settings")
 
 # Base block settings[group] with `overrides` applied.
 function resolve_settings(settings::AbstractDict, group::String, overrides::AbstractDict = Dict())

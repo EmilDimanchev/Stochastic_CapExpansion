@@ -124,9 +124,11 @@ end
 #            "Write gradients", and the "GridFill" sub-block).
 # checkpoint(rows_cap, rows_syscost, rows_emissions, labels) is called after every batch with
 # all GridFill rows so far (the caller rewrites the Summary).
+# pick_log: optional Vector that collects every GridFillPick, in order (used by the cut export
+# to reproduce the logged bounds).
 # Returns rows_cap, rows_syscost, rows_emissions, labels.
 function run_gridfill_sampling!(bank::AbstractVector, cut_pool, MP, SPs, inputs::Dict, settings::Dict, sampling::AbstractDict;
-                                checkpoint = (c, s, e, l) -> nothing, results_folder = nothing,
+                                checkpoint = (c, s, e, l) -> nothing, results_folder = nothing, pick_log = nothing,
                                 tuning = GRIDFILL_TUNING, score = novelty_score,
                                 evaluate = evaluate_gridfill_batch, parallel::Bool = nworkers() > 0 && workers() != [myid()])
     gcfg = sampling["GridFill"]
@@ -202,6 +204,7 @@ function run_gridfill_sampling!(bank::AbstractVector, cut_pool, MP, SPs, inputs:
         foreach(((i, _),) -> push!(state.picked, cands.cell[i]), sel)
         picks_in_layer += length(sel)
         picks = make_gridfill_picks(cands, sel, solves, rnd, length(labels) + 1, layer, attempts)
+        pick_log === nothing || append!(pick_log, picks)
 
         t_eval = @elapsed c, s, e, new_solves = evaluate(picks, SPs, inputs, settings, g)
         append!(rows_cap, c); append!(rows_syscost, s); append!(rows_emissions, e)

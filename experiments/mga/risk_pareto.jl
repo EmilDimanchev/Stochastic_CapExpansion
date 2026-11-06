@@ -7,16 +7,18 @@ Main MGA functions for running stochastic exploration with Benders and MGA, incl
 ==============================#
 
 # Each *_settings keyword overrides keys of the matching settings.yaml block (see run_settings.jl).
-function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_settings::AbstractDict = Dict(), cap_settings::AbstractDict = Dict(), mapping_settings::AbstractDict = Dict(), run_settings::AbstractDict = Dict(), sampling_settings::AbstractDict = Dict(), cut_settings::AbstractDict = Dict())
+function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_settings::AbstractDict = Dict(), cap_settings::AbstractDict = Dict(), mapping_settings::AbstractDict = Dict(), run_settings::AbstractDict = Dict(), sampling_settings::AbstractDict = Dict(), cut_settings::AbstractDict = Dict(), cut_export_settings::AbstractDict = Dict())
 
     write_scenario_selection(inputs, summary_folder)
     settings = resolve_all_settings(settings, Dict("Budget settings" => budget_settings, "Cap settings" => cap_settings, "Mapping settings" => mapping_settings,
-                                                   "Run settings" => run_settings, "Sampling settings" => sampling_settings, "Cut settings" => cut_settings))
+                                                   "Run settings" => run_settings, "Sampling settings" => sampling_settings, "Cut settings" => cut_settings, "Cut export settings" => cut_export_settings))
     budget_settings = settings["Budget settings"]
     sampling_settings = settings["Sampling settings"]
     cap_settings = settings["Cap settings"]
     mapping_settings = settings["Mapping settings"]
     run_settings = settings["Run settings"]
+    cut_export_settings = settings["Cut export settings"]
+    export_cuts = cut_export_settings["Export cuts"]
 
     budget_type = budget_settings["Budget type"]
     budget_offset = budget_settings["Budget offset"]
@@ -88,11 +90,12 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
     # out["SPs"] already hold these duals, so this copies them before release_heavy_payload!
     # drops them.
     bank = FinalSolve[]
-    use_bank = sampling_method == "GridFill"
+    use_bank = sampling_method == "GridFill" || export_cuts # the cut export reads the bank too
+    gridfill_picks = GridFillPick[]
     var_names = capacity_variable_names(inputs)
     bank_record!(label, out, folder) = use_bank && begin
         fs = record_final_solve!(bank, label, out, inputs)
-        sampling_settings["Write gradients"] && write_gradient_file(folder, fs, var_names)
+        sampling_method == "GridFill" && sampling_settings["Write gradients"] && write_gradient_file(folder, fs, var_names)
     end
 
     for (i, risk) in enumerate(risk_aversion_weights)
@@ -132,6 +135,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         release_heavy_payload!(output)
     end
 
+    export_cuts && !run_settings["Capacity exploration"] && @warn("Export cuts is on but Capacity exploration is off, so no cut archive will be written.")
     if run_settings["Capacity exploration"]
         checkpoint_time = 0.0 # cumulative seconds spent on incremental summary writes
         budgets = Dict()
@@ -275,7 +279,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
             n_mga = length(results_cap)
             checkpoint(c, s, e, l) = write_exploration_results!(vcat(results_cap[1:n_mga], c), vcat(results_syscost[1:n_mga], s), vcat(results_emissions[1:n_mga], e),
                                                                 summary_folder, vcat(run_labels, l), summary_name; mapping = mapping)
-            @time rows_cap, rows_syscost, rows_emissions, gf_labels = run_gridfill_sampling!(bank, cut_pool, MP, SPs, inputs, settings, sampling_settings; checkpoint = checkpoint, results_folder = results_folder)
+            @time rows_cap, rows_syscost, rows_emissions, gf_labels = run_gridfill_sampling!(bank, cut_pool, MP, SPs, inputs, settings, sampling_settings; checkpoint = checkpoint, results_folder = results_folder, pick_log = gridfill_picks)
             append!(results_cap, rows_cap)
             append!(results_syscost, rows_syscost)
             append!(results_emissions, rows_emissions)
@@ -283,6 +287,15 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
         end
         t_final = @elapsed write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
         @info("Final summary write: $(round(t_final; digits=3)) s; total checkpoint time $(round(checkpoint_time; digits=3)) s")
+        # Last, and guarded, so a failed export can't affect anything the run has already written
+        if export_cuts
+            try
+                export_input = build_cut_export_input(cut_pool, MP, bank, gridfill_picks, inputs, settings; run_id = "$(summary_name) | $(results_folder)")
+                export_cut_archive(export_input, summary_folder, cut_export_settings; file_stem = "cut_archive_$(summary_name)")
+            catch e
+                @error("Cut export failed; the run's other results are unaffected", exception = (e, catch_backtrace()))
+            end
+        end
         return vectors
     end
 end
