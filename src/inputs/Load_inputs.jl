@@ -22,7 +22,10 @@ function load_weather_library(inputs_path, Z::Int)
 
     column(name) = reshape(Float64.(library[!, name]), T, K)
     zonal(prefix) = cat([reshape(column("$(prefix)_z$z"), T, 1, K) for z in 1:Z]...; dims = 2)
+    # Any <Name>_z<N> column other than demand is an availability profile a technology can name
+    profile_names = unique(m[1] for m in match.(r"^(.+)_z\d+$", names(library)) if m !== nothing && m[1] != "Demand")
     return (demand = zonal("Demand"), wind = zonal("Wind"), solar = zonal("Solar"),
+            profiles = Dict(name => zonal(name) for name in profile_names),
             weights = column("Weight") ./ period_length, period_length = period_length, n_periods = n_periods,
             source_files = [first(library.Source_file[library.Scenario .== k]) for k in 1:K])
 end
@@ -46,8 +49,8 @@ function generation_availability(technologies, resource_technology, resource_zon
     for (index, k) in enumerate(selected), g in 1:G
         row = technologies[resource_technology[g], :]
         if !ismissing(row.Profile)
-            profiles = row.Profile == "Wind" ? library.wind : row.Profile == "Solar" ? library.solar :
-                error("Unknown Profile \"$(row.Profile)\" for $(row.Technology). Valid options: Wind, Solar, or blank.")
+            haskey(library.profiles, row.Profile) || error("Unknown Profile \"$(row.Profile)\" for $(row.Technology). Valid options: $(join(sort!(collect(keys(library.profiles))), ", ")), or blank.")
+            profiles = library.profiles[row.Profile]
             availability[:, g, index] = profiles[:, resource_zone[g], k]
         else
             factors = planned_outage_factors(vec(sum(library.demand[:, :, k], dims = 2)), library.weights[:, k], library.period_length)
@@ -57,6 +60,16 @@ function generation_availability(technologies, resource_technology, resource_zon
         end
     end
     return availability
+end
+
+# Capacity bounds (MW) of technology row `t` in zone `z`. Capacity_UB_z<N> columns override the
+# technology-wide Capacity_UB, a blank meaning the technology isn't offered there, and
+# Capacity_LB_z<N> columns give capacity that must stay (0 if absent).
+function technology_capacity_bounds(technologies, t::Int, z::Int)
+    upper = "Capacity_UB_z$z" in names(technologies) ? coalesce(technologies[t, "Capacity_UB_z$z"], 0.0) : technologies.Capacity_UB[t]
+    lower = "Capacity_LB_z$z" in names(technologies) ? coalesce(technologies[t, "Capacity_LB_z$z"], 0.0) : 0.0
+    lower <= upper || error("$(technologies.Technology[t]) in zone $z: Capacity_LB ($lower) is above Capacity_UB ($upper).")
+    return Float64(lower), Float64(upper)
 end
 
 function load_input_data(inputs_path, settings)
@@ -83,8 +96,10 @@ function load_input_data(inputs_path, settings)
     storage_input = CSV.read(joinpath(inputs_path, "Resources_storage.csv"), DataFrame, header=true, stringtype=String)
     discount_rate = settings["Discount rate"]
 
-    resource_technology = [t for t in 1:nrow(technologies) for _ in 1:Z]
-    resource_zone = [z for _ in 1:nrow(technologies) for z in 1:Z]
+    # One resource per zone the technology is offered in
+    offered = [(t, z) for t in 1:nrow(technologies) for z in 1:Z if technology_capacity_bounds(technologies, t, z)[2] > 0]
+    resource_technology = first.(offered)
+    resource_zone = last.(offered)
     gen_resources = ["$(technologies.Technology[t])-z$z" for (t, z) in zip(resource_technology, resource_zone)]
     G = length(gen_resources)
     O = nrow(storage_input)
@@ -155,7 +170,9 @@ function load_input_data(inputs_path, settings)
         fuels[match_row, :]
     end
     fuel_price(row, gas_price) = ismissing(row.Fuel) ? 0.0 : row.Fuel == "Gas" ? gas_price : fuel_row(row.Fuel).Price_per_MMBtu
-    carbon(row) = ismissing(row.Fuel) ? 0.0 : fuel_row(row.Fuel).Carbon_t_per_MMBtu
+    # Capture_rate is optional: the share of a technology's fuel carbon that isn't emitted
+    captured(row) = "Capture_rate" in names(technologies) ? coalesce(row.Capture_rate, 0.0) : 0.0
+    carbon(row) = ismissing(row.Fuel) ? 0.0 : fuel_row(row.Fuel).Carbon_t_per_MMBtu * (1 - captured(row))
     heat_rate(row) = ismissing(row.Heat_rate_MMBtu_per_MWh) ? 0.0 : row.Heat_rate_MMBtu_per_MWh
 
     # $/MWh, G × F
@@ -184,16 +201,20 @@ function load_input_data(inputs_path, settings)
     # ~~~
     # Storage and capacity limits
     # ~~~
-    x_max = technologies.Capacity_UB[resource_technology]
+    gen_bounds = [technology_capacity_bounds(technologies, t, z) for (t, z) in offered]
+    x_min, x_max = first.(gen_bounds), last.(gen_bounds)
     if storage_flag
-        inputs["Storage power to energy ratio"] = storage_input[1:end,"Power_to_energy_ratio"][1]
-        inputs["Storage discharge loss"] = storage_input[1:end,"Loss_discharge"][1]
-        inputs["Storage charge loss"] = storage_input[1:end,"Loss_charge"][1]
+        inputs["Storage power to energy ratio"] = Float64.(storage_input[!,"Power_to_energy_ratio"])
+        inputs["Storage discharge loss"] = Float64.(storage_input[!,"Loss_discharge"])
+        inputs["Storage charge loss"] = Float64.(storage_input[!,"Loss_charge"])
         inputs["Resources"] = vcat(gen_resources, storage_input[1:end,1])
         inputs["Capacity upper bounds"] = vcat(x_max, storage_input[1:end,"Capacity_UB"])
+        storage_min = "Capacity_LB" in names(storage_input) ? Float64.(coalesce.(storage_input[!,"Capacity_LB"], 0.0)) : zeros(O)
+        inputs["Capacity lower bounds"] = vcat(x_min, storage_min)
     else
         inputs["Resources"] = gen_resources
         inputs["Capacity upper bounds"] = x_max
+        inputs["Capacity lower bounds"] = x_min
     end
     inputs["Storage flag"] = storage_flag
     inputs["Storage"] = storage_input

@@ -66,7 +66,7 @@ function gridfill_test_della(test_index; n_samples::Int = 2000, sampling_overrid
         cap_settings = Dict("Cap wings" => true, "Cap levels" => [1, 3]),
         mapping_settings = Dict("Mapping" => false),
         run_settings = merge(Dict{String,Any}("Summary name" => "GridFill"), run_overrides),
-        sampling_settings = merge(Dict{String,Any}("Method" => "GridFill", "Samples" => n_samples, "Write gradients" => true), sampling_overrides),
+        sampling_settings = merge(Dict{String,Any}("Method" => "GridFill", "Samples" => n_samples), sampling_overrides),
         cut_export_settings = cut_export_overrides)
 end
 

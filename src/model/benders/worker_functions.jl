@@ -184,6 +184,7 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     t_weights = period_weights_scenario
     zone_map = inputs["Zone map"]
     res_zone_map = inputs["Resource zone map"]
+    line_capacity_existing = inputs["Line capacities"] # MW, in place before any expansion
 
     # ~~~
     # Build model
@@ -197,6 +198,11 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     R = G + O
     L = inputs["Number of lines"]
     Z = inputs["Number of zones"]
+    # Only each zone's own resources and lines. Summing over all of them with the maps as
+    # coefficients stores a zero term per pair, which gets expensive with many zones.
+    zone_generators = [findall(>(0), res_zone_map[1:G, z]) for z in 1:Z]
+    zone_storage = [findall(>(0), res_zone_map[G+1:R, z]) for z in 1:Z]
+    zone_lines = [findall(!=(0), zone_map[:, z]) for z in 1:Z]
 
     # ~~~
     # Parameters
@@ -226,34 +232,30 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     @expression(ED, cost_nse[t in 1:T, z in 1:Z], sum(price_nse[seg]*y[seg,t,z] for seg in 1:nse_segs))
 
     if storage_flag
-        @variable(ED, z_dch[t in 1:T] >= 0)
-        @variable(ED, z_ch[t in 1:T] >= 0)
+        # One set per storage resource (rows of Resources_storage.csv)
+        @variable(ED, z_dch[o in 1:O, t in 1:T] >= 0)
+        @variable(ED, z_ch[o in 1:O, t in 1:T] >= 0)
         # State of charge
-        @variable(ED, e[t in 1:T] >= 0) 
+        @variable(ED, e[o in 1:O, t in 1:T] >= 0)
         # Primal feasibility
-        
-        for i in 1:n_periods
+
+        for o in 1:O, i in 1:n_periods
+            first_t, last_t = first_periods[i], last_periods[i]
             # Wrap first and last periods - start
-            @constraints(ED, 
-            begin 
-                e[first_periods[i]] == e[last_periods[i]] - (1/F_dch)*z_dch[first_periods[i]] + F_ch*z_ch[first_periods[i]]
-            end)
-            @constraints(ED, 
-            begin z_dch[first_periods[i]] <= e[last_periods[i]]
-            end)
+            @constraint(ED, e[o, first_t] == e[o, last_t] - (1/F_dch[o])*z_dch[o, first_t] + F_ch[o]*z_ch[o, first_t])
+            @constraint(ED, z_dch[o, first_t] <= e[o, last_t])
             # Wrap first and last periods - end
-            @constraints(ED, 
-            begin [t in first_periods[i]+1:last_periods[i]], e[t] == e[t-1] - (1/F_dch)*z_dch[t] + F_ch*z_ch[t] end)
-            @constraints(ED, begin [t in first_periods[i]+1:last_periods[i]], z_dch[t] <= e[t-1] end)
+            @constraint(ED, [t in first_t+1:last_t], e[o, t] == e[o, t-1] - (1/F_dch[o])*z_dch[o, t] + F_ch[o]*z_ch[o, t])
+            @constraint(ED, [t in first_t+1:last_t], z_dch[o, t] <= e[o, t-1])
         end
 
-        
+
         # Energy balance for the remaining periods
-        @constraint(ED, energy_limit[t in 1:T], e[t] <= (1/N)*x[G+1])
-        @constraint(ED, charge_limit_rate[t in 1:T], z_ch[t] <= x[G+1])
-        
-        @constraint(ED, discharge_limit_rate[t in 1:T], z_dch[t] <= x[G+1])
-        @constraint(ED, charge_discharge_balance[t in 1:T], z_dch[t] + z_ch[t] <= x[G+1])
+        @constraint(ED, energy_limit[o in 1:O, t in 1:T], e[o, t] <= (1/N[o])*x[G+o])
+        @constraint(ED, charge_limit_rate[o in 1:O, t in 1:T], z_ch[o, t] <= x[G+o])
+
+        @constraint(ED, discharge_limit_rate[o in 1:O, t in 1:T], z_dch[o, t] <= x[G+o])
+        @constraint(ED, charge_discharge_balance[o in 1:O, t in 1:T], z_dch[o, t] + z_ch[o, t] <= x[G+o])
     end
 
     # Load shedding
@@ -268,20 +270,26 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     @constraint(ED, capacity_limit[r in 1:G, t in 1:T], g[r,t] <= x[r]*availability[t,r])
     if Z > 1
         @variable(ED, flow[t in 1:T, l in 1:L])
-        @constraint(ED, transmission_limit[t in 1:T, l in 1:L], flow[t,l] <= x_line[l]/scaling_factor_demand)
-        @constraint(ED, transmission_limit_negative[t in 1:T, l in 1:L], flow[t,l] >= -x_line[l]/scaling_factor_demand)
+        @constraint(ED, transmission_limit[t in 1:T, l in 1:L], flow[t,l] <= (line_capacity_existing[l] + x_line[l])/scaling_factor_demand)
+        @constraint(ED, transmission_limit_negative[t in 1:T, l in 1:L], flow[t,l] >= -(line_capacity_existing[l] + x_line[l])/scaling_factor_demand)
     end
 
     # Power balance constraint
-    @expression(ED, supply[t in 1:T, z in 1:Z], sum(g[r,t]*res_zone_map[r,z] for r in 1:G))
-    if storage_flag
-        for t in 1:T, z in 1:Z
-            add_to_expression!(supply[t,z], res_zone_map[G+1,z]*(z_dch[t] - z_ch[t]))
+    @expression(ED, supply[t in 1:T, z in 1:Z], AffExpr(0.0))
+    for t in 1:T, z in 1:Z
+        for r in zone_generators[z]
+            add_to_expression!(supply[t,z], res_zone_map[r,z], g[r,t])
         end
-    end
-    if Z > 1
-        for t in 1:T, z in 1:Z
-            add_to_expression!(supply[t,z], sum(flow[t,l]*zone_map[l,z] for l in 1:L))
+        if storage_flag
+            for o in zone_storage[z]
+                add_to_expression!(supply[t,z], res_zone_map[G+o,z], z_dch[o,t])
+                add_to_expression!(supply[t,z], -res_zone_map[G+o,z], z_ch[o,t])
+            end
+        end
+        if Z > 1
+            for l in zone_lines[z]
+                add_to_expression!(supply[t,z], zone_map[l,z], flow[t,l])
+            end
         end
     end
     @constraint(ED, power_balance[t in 1:T, z in 1:Z], supply[t,z] + total_nse[t,z] - demand[t,z] == 0)
@@ -297,16 +305,19 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
         # Eligible capacity: derated generation availability, derated storage net discharge,
         # derated import/export flows, and voluntary curtailment (segments 2+, excludes emergency shedding)
         @expression(ED, eCapResMargin[t in 1:T, z in 1:Z],
-            sum(derate_gen[r]*x[r]*availability[t,r]*res_zone_map[r,z] for r in 1:G)
+            sum(derate_gen[r]*x[r]*availability[t,r]*res_zone_map[r,z] for r in zone_generators[z]; init = AffExpr(0.0))
             + sum(y[seg,t,z] for seg in 2:nse_segs))
-        if storage_flag
-            for t in 1:T, z in 1:Z
-                add_to_expression!(eCapResMargin[t,z], res_zone_map[G+1,z]*(z_dch[t] - z_ch[t]))
+        for t in 1:T, z in 1:Z
+            if storage_flag
+                for o in zone_storage[z]
+                    add_to_expression!(eCapResMargin[t,z], res_zone_map[G+o,z], z_dch[o,t])
+                    add_to_expression!(eCapResMargin[t,z], -res_zone_map[G+o,z], z_ch[o,t])
+                end
             end
-        end
-        if Z > 1
-            for t in 1:T, z in 1:Z
-                add_to_expression!(eCapResMargin[t,z], sum(flow[t,l]*zone_map[l,z] for l in 1:L))
+            if Z > 1
+                for l in zone_lines[z]
+                    add_to_expression!(eCapResMargin[t,z], zone_map[l,z], flow[t,l])
+                end
             end
         end
 
@@ -321,8 +332,8 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
 
 
     # Weighted the same way as the objective, so the zones sum to the SP objective
-    @expression(ED, cost_by_zone[z in 1:Z], sum(t_weights[t]*g[r,t]*res_zone_map[r,z]*cost_var[r] for r in 1:G, t in 1:T) + sum(t_weights[t]*cost_nse[t,z] for t in 1:T) + crm_slack_cost_by_zone[z])
-    @expression(ED, emissions_by_zone[z in 1:Z], sum(t_weights[t]*sum(g[r,t]*res_zone_map[r,z]*co2_factors[r] for r in 1:G) for t in 1:T))
+    @expression(ED, cost_by_zone[z in 1:Z], sum(t_weights[t]*g[r,t]*res_zone_map[r,z]*cost_var[r] for r in zone_generators[z], t in 1:T; init = AffExpr(0.0)) + sum(t_weights[t]*cost_nse[t,z] for t in 1:T) + crm_slack_cost_by_zone[z])
+    @expression(ED, emissions_by_zone[z in 1:Z], sum(t_weights[t]*g[r,t]*res_zone_map[r,z]*co2_factors[r] for r in zone_generators[z], t in 1:T; init = AffExpr(0.0)))
     # ~~~
     # Objective function
     # ~~~
