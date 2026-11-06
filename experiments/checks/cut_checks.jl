@@ -18,7 +18,7 @@ full Benders loop:
 # Laptop MP with risk terms plus `n_iterations` rounds of random (but realistic-signed) cuts,
 # registered in a fresh pool. Shared by the cut tests below.
 function _cut_test_setup(n_iterations::Int; case = "cuttest", seed = 1)
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     settings = load_settings(inputs_folder)
     settings["Risk aversion flag"] = true # so cvar_tail_cuts_* (and u, ζ) are exercised too
     inputs = load_input_data(inputs_folder, settings)
@@ -223,7 +223,7 @@ meaningful at laptop scale (see CLAUDE.md traps), so don't read a performance wi
 ==========#
 
 function test_cut_trim_rules(test_index = "cut_trim"; cuts_retained_small::Int = 20000, n_vectors::Int = 3)
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     base_settings = load_settings(inputs_folder)
     inputs = load_input_data(inputs_folder, base_settings)
     configure_parallel_workers!(base_settings)
@@ -282,7 +282,7 @@ cut counts, not seconds. Writes outputs/Test_<test_index>/comparison.csv.
 ==========#
 
 function run_cut_pool_ab_case(folder::String; n_vectors::Int = 3, cut_settings::AbstractDict = Dict())
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     settings = load_settings(inputs_folder)
     inputs = load_input_data(inputs_folder, settings)
     configure_parallel_workers!(settings)

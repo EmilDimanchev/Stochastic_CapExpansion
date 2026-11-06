@@ -5,10 +5,10 @@ Evaluate planner design CSVs (see read_design_csv), e.g.
 
 ==========#
 
-function run_design_csv_evaluation(inputs_folder, test_index, design_file; batch_size = 25, rows = nothing)
+function run_design_csv_evaluation(inputs_folder, test_index, design_file; batch_size = 25, rows = nothing, profile = nothing)
     summary_folder = joinpath("outputs", "Test_"*string(test_index), "Design_Evaluation", "Summary")
     mkpath(summary_folder)
-    settings = load_settings(inputs_folder)
+    settings = load_settings(inputs_folder; profile = profile)
     inputs = load_input_data(inputs_folder, settings)
 
     configure_parallel_workers!(settings)
@@ -18,7 +18,7 @@ function run_design_csv_evaluation(inputs_folder, test_index, design_file; batch
 end
 
 run_design_csv_evaluation_laptop(test_index, design_file; kwargs...) =
-    run_design_csv_evaluation(joinpath("inputs", "Inputs_30d_1000scen_7tech_2z"), test_index, design_file; kwargs...)
+    run_design_csv_evaluation(joinpath("inputs", "Inputs_2z_7tech"), test_index, design_file; kwargs...)
 
 run_design_csv_evaluation_della(test_index, design_file; kwargs...) =
-    run_design_csv_evaluation(joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della"), test_index, design_file; kwargs...)
+    run_design_csv_evaluation(joinpath("inputs", "Inputs_2z_7tech"), test_index, design_file; profile = "della", kwargs...)

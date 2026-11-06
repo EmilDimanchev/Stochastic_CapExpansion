@@ -1,4 +1,4 @@
-export run_economic_dispatch, build_subproblems, set_capacity_parameters!, run_subproblem
+export build_subproblems, set_capacity_parameters!, run_subproblem
 using Distributed, DistributedArrays, JuMP, Gurobi
 
 const WORKER_SP_CACHE = Dict{Tuple{Int, Int, Int}, Model}()
@@ -68,170 +68,6 @@ function _run_cached_batch!(scenario_keys::Vector{Tuple{Int, Int, Int}}, capacit
     return [[_run_cached_subproblem!(key, cap, line, minimal_payload) for key in scenario_keys] for (cap, line) in zip(capacities, capacity_lines)]
 end
 
-function run_economic_dispatch(inputs, settings, capacity, demand_shift_weather_scenario, variable_costs_scenario, availability_scenario, period_weights_scenario, demand_adder_scenario)
-
-    # Check for negative capacity and set to 0
-    for r in 1:length(capacity)
-        if capacity[r] < 0
-            capacity[r] = 0.0
-        end
-    end
-
-    # Numerical settings
-    scaling_factor_demand = settings["Scaling factor demand"]
-    scaling_factor_cost = settings["Scaling factor cost"] 
-
-    # Model
-    ED = Model(Gurobi.Optimizer)
-    set_optimizer_attribute(ED, "OutputFlag", 0)
-    set_optimizer_attribute(ED, "Crossover", 1)
-    set_optimizer_attribute(ED, "Method", 2)
-    set_optimizer_attribute(ED, "BarConvTol", 1e-5)
-    set_optimizer_attribute(ED, "OptimalityTol", 1e-5)
-    set_optimizer_attribute(ED, "FeasibilityTol", 1e-5)
-    set_silent(ED)
-
-    # ~~~~
-    # Load inputs
-    # ~~~
-
-    # Settings
-    storage_flag = inputs["Storage flag"]
-
-    # Parameters
-    availability = availability_scenario
-    co2_factors = inputs["CO2 emission intensities"]
-    
-    # Storage specific
-    if storage_flag
-        N = inputs["Storage power to energy ratio"]
-        # Efficiency
-        F_dch = inputs["Storage discharge loss"]
-        F_ch = inputs["Storage charge loss"]
-
-        first_periods = inputs["Set of first periods"]
-        last_periods = inputs["Set of last periods"]
-    end
-
-    # Representative periods
-    n_periods = inputs["Number of representative periods"]
-    t_weights = period_weights_scenario
-
-    # ~~~
-    # Build model
-    # ~~~
-
-    # Sets
-    T = inputs["Number of periods"]
-    G = inputs["Number of generation resources"]
-    O =  inputs["Number of storage resources"]
-    storage_flag = O > 0
-    R = G + O
-
-    # ~~~
-    # Parameters
-    # ~~~
-    
-    # Scale parameters
-    
-    demand_base = inputs["Demand"]./scaling_factor_demand
-    demand_add = demand_adder_scenario./scaling_factor_demand
-    demand_shift_weather = demand_shift_weather_scenario./scaling_factor_demand
-    cost_var = variable_costs_scenario./scaling_factor_cost
-    
-    # Demand
-    @expression(ED, demand[t in 1:T], demand_base[t] + demand_shift_weather[t] + demand_add)
-    max_nse = settings["Max nse"] # percentage of demand that can be curtailed in each segments
-    nse_segs = length(max_nse)
-    price_nse = settings["Cost of nonserved energy"]./scaling_factor_cost
-    
-    # ~~~
-    # Model formulation
-    # ~~~
-
-    # Generation
-    @variable(ED, g[r in 1:G, t in 1:T] >= 0) # MWh
-    @variable(ED, x[r in 1:R] >= 0)
-    # Non-servED energy
-    @variable(ED, y[seg in 1:nse_segs, t in 1:T] >= 0) # $/MWh
-    @expression(ED, cost_nse[t in 1:T], sum(price_nse[seg]*y[seg,t] for seg in 1:nse_segs))
-
-    if storage_flag
-        @variable(ED, z_dch[t in 1:T] >= 0)
-        @variable(ED, z_ch[t in 1:T] >= 0)
-        # State of charge
-        @variable(ED, e[t in 1:T] >= 0) 
-        # Primal feasibility
-        
-        for i in 1:n_periods
-            # Wrap first and last periods - start
-            @constraints(ED, 
-            begin 
-                e[first_periods[i]] == e[last_periods[i]] - (1/F_dch)*z_dch[first_periods[i]] + F_ch*z_ch[first_periods[i]]
-            end)
-            @constraints(ED, 
-            begin z_dch[first_periods[i]] <= e[last_periods[i]]
-            end)
-            # Wrap first and last periods - end
-            @constraints(ED, 
-            begin [t in first_periods[i]+1:last_periods[i]], e[t] == e[t-1] - (1/F_dch)*z_dch[t] + F_ch*z_ch[t] end)
-            @constraints(ED, begin [t in first_periods[i]+1:last_periods[i]], z_dch[t] <= e[t-1] end)
-        end
-
-        
-        # Energy balance for the remaining periods
-        @constraint(ED, energy_limit[t in 1:T], e[t] <= (1/N)*x[G+1])
-        @constraint(ED, charge_limit_rate[t in 1:T], z_ch[t] <= x[G+1])
-        
-        @constraint(ED, discharge_limit_rate[t in 1:T], z_dch[t] <= x[G+1])
-        @constraint(ED, charge_discharge_balance[t in 1:T], z_dch[t] + z_ch[t] <= x[G+1])
-    end
-
-    # Load shedding
-    # Maximum non served energy (primal feasibility)
-    @constraint(ED, max_load_shedding[seg in 1:nse_segs,t in 1:T], max_nse[seg]*demand[t] - y[seg,t] >= 0)
-    @expression(ED, total_nse[t in 1:T], sum(y[seg,t] for seg in 1:nse_segs))
-    # Consumer surplus including demand shock for reporting purposes
-    @expression(ED, served_demand[seg in 1:nse_segs, t in 1:T], max_nse[seg]*demand[t] - y[seg,t])
-    @expression(ED, total_benefit[t in 1:T], price_nse[1]*demand_base[t] + sum(price_nse[seg]*served_demand[seg,t] for seg in 2:nse_segs))
-
-    # Capacity limit on generation
-    @constraint(ED, capacity_limit[r in 1:G, t in 1:T], g[r,t] <= x[r]*availability[t,r])
-
-    # Power balance constraint
-    if storage_flag
-        @constraint(ED, power_balance[t in 1:T], sum(g[r,t] for r in 1:G) + total_nse[t] + z_dch[t] - z_ch[t] - demand[t] == 0)
-    else
-        @constraint(ED, power_balance[t in 1:T], sum(g[r,t] for r in 1:G) + total_nse[t] - demand[t] == 0)
-    end
-
-    @constraint(ED, planning_problem_capacity[r in 1:R], x[r] == capacity[r])
-
-    # ~~~
-    # Objective function
-    # ~~~ 
-
-    @objective(ED, Min, sum(t_weights[t]*g[r,t]*cost_var[r] for r in 1:G, t in 1:T) + sum(t_weights[t]*cost_nse[t] for t in 1:T))
-
-    optimize!(ED)
-
-    # Write outputs
-    output = Dict{String, Any}()
-    output["SP dual"] = dual.(planning_problem_capacity).*scaling_factor_cost
-    output["SP objective"] = objective_value(ED).*(scaling_factor_cost*scaling_factor_demand)
-    output["Power price"] = dual.(power_balance).*scaling_factor_cost./t_weights
-    nse_dual = dual.(max_load_shedding).*scaling_factor_cost
-    output["Max NSE dual"] = sum(max_nse[seg]*demand[t]*nse_dual[seg,t] for seg in 1:nse_segs, t in 1:T)
-    generation = value.(g)
-    output["Emissions"] = sum(t_weights[t]*generation[r,t]*co2_factors[r] for r in 1:G, t in 1:T)
-    output["Load shedding"] = value.(total_nse)
-    sd = value.(served_demand).*scaling_factor_demand
-    tb = value.(total_benefit).*(scaling_factor_cost*scaling_factor_demand)
-    output["Consumer surplus"] = sum(t_weights[t]*(tb[t] - output["Power price"][t]*sum(sd[seg,t] for seg in 1:nse_segs)) for t in 1:T)
-
-    return output
-end
-
 function build_all_subproblems(inputs, settings)
     S = inputs["Number of demand scenarios"]
     F = inputs["Number of gas price scenarios"]
@@ -279,11 +115,11 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     f = scenario_index[2]
     k = scenario_index[3]
 
-    demand_shift_weather_scenario = inputs["Demand shift weather"][:,:,k]
+    demand_scenario = inputs["Demand"][:,:,k]
     variable_costs_scenario = inputs["Variable costs"][:,f]
     availability_scenario = inputs["Generation availability"][:,:,k]
     period_weights_scenario = inputs["Period weights"][:,k]
-    demand_adder_scenario = inputs["Demand adders"][s]
+    demand_adder_scenario = inputs["Demand adders"][s,:]
 
      # Numerical settings
     scaling_factor_demand = settings["Scaling factor demand"]
@@ -291,7 +127,6 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
 
     # Model
     ED = Model()
-    ED.ext[:Demand_shift_weather_scenario] = demand_shift_weather_scenario
     ED.ext[:Variable_costs_scenario] = variable_costs_scenario
     ED.ext[:Availability_scenario] = availability_scenario
     ED.ext[:Period_weights_scenario] = period_weights_scenario
@@ -369,12 +204,11 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     
     # Scale parameters
     
-    demand_base = inputs["Demand"]./scaling_factor_demand
+    demand_base = demand_scenario./scaling_factor_demand
     demand_add = demand_adder_scenario./scaling_factor_demand
-    demand_shift_weather = demand_shift_weather_scenario./scaling_factor_demand
     cost_var = variable_costs_scenario./scaling_factor_cost
     # Demand
-    @expression(ED, demand[t in 1:T, z in 1:Z], demand_base[t, z] + demand_shift_weather[t, z] + demand_add)
+    @expression(ED, demand[t in 1:T, z in 1:Z], demand_base[t, z] + demand_add[z])
     max_nse = settings["Max nse"] # percentage of demand that can be curtailed in each segments
     nse_segs = length(max_nse)
     price_nse = settings["Cost of nonserved energy"]./scaling_factor_cost
@@ -479,13 +313,15 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
         @variable(ED, vCRMSlack[t in 1:T, z in 1:Z] >= 0)
         @constraint(ED, cCapacityResMargin[t in 1:T, z in 1:Z],
             eCapResMargin[t,z] + vCRMSlack[t,z] >= (1 + crm_margin[z])*demand[t,z])
-        @expression(ED, crm_slack_cost, sum(t_weights[t]*crm_price_cap[z]*vCRMSlack[t,z] for t in 1:T, z in 1:Z))
+        @expression(ED, crm_slack_cost_by_zone[z in 1:Z], sum(t_weights[t]*crm_price_cap[z]*vCRMSlack[t,z] for t in 1:T))
     else
-        @expression(ED, crm_slack_cost, AffExpr(0.0))
+        @expression(ED, crm_slack_cost_by_zone[z in 1:Z], AffExpr(0.0))
     end
+    @expression(ED, crm_slack_cost, sum(crm_slack_cost_by_zone[z] for z in 1:Z))
 
 
-    @expression(ED, cost_by_zone[z in 1:Z], sum(g[r,t]*res_zone_map[r,z]*cost_var[r] for r in 1:G, t in 1:T) + sum(cost_nse[t,z] for t in 1:T))
+    # Weighted the same way as the objective, so the zones sum to the SP objective
+    @expression(ED, cost_by_zone[z in 1:Z], sum(t_weights[t]*g[r,t]*res_zone_map[r,z]*cost_var[r] for r in 1:G, t in 1:T) + sum(t_weights[t]*cost_nse[t,z] for t in 1:T) + crm_slack_cost_by_zone[z])
     @expression(ED, emissions_by_zone[z in 1:Z], sum(t_weights[t]*sum(g[r,t]*res_zone_map[r,z]*co2_factors[r] for r in 1:G) for t in 1:T))
     # ~~~
     # Objective function

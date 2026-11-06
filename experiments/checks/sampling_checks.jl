@@ -5,14 +5,15 @@ GridFill on the real model (src/model/sampling/gridfill_*.jl), without a Benders
     writes them) into exactly the cuts add_final_solve! builds from the same subproblem solves;
   - evaluate_gridfill_batch gives Summary rows with the per-scenario columns and the GF_ lineage
     columns, solved labels inside the bracket, and write_exploration_results! writes them.
-Gas price uncertainty off (10 scenarios).
+One gas and one weather scenario (5 demand scenarios).
 
 ==========#
 
 function test_gridfill_real_model(test_index = "gridfill_real")
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     settings = load_settings(inputs_folder)
-    settings["Gas price uncertainty"] = false
+    settings["Scenarios"]["Gas"]["Count"] = 1
+    settings["Scenarios"]["Weather"]["Count"] = 1
     settings["Risk aversion flag"] = true          # also writes cvar_tail_cuts_*, which must be skipped
     inputs = load_input_data(inputs_folder, settings)
     configure_parallel_workers!(settings)

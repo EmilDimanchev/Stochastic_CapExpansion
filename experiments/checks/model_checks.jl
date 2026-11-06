@@ -25,7 +25,7 @@ failure modes since it never touches a matrix coefficient, only a box bound.
 ==========#
 
 function test_capacity_bound_tightening(test_index = "cap_bound")
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     settings = load_settings(inputs_folder)
     inputs = load_input_data(inputs_folder, settings)
 
@@ -99,20 +99,20 @@ end
 
 #=========
 
-Settings groups test (experiments/mga/run_settings.jl): every group block is present in both
-input sets' settings.yaml, overrides replace only the keys they name (a nested block such as
+Settings groups test (experiments/mga/run_settings.jl): every group block is present in the
+base settings and the Della profile, overrides replace only the keys they name (a nested block such as
 Cut settings' "Prune window" merges), unknown keys and groups error out, and resolving never
 touches the caller's settings.
 
 ==========#
 
 function test_settings_groups(test_index = "settings_groups")
-    for folder in ("Inputs_30d_1000scen_7tech_2z", "Inputs_30d_1000scen_7tech_2z_Della")
-        settings = load_settings(joinpath("inputs", folder))
-        @assert all(g -> haskey(settings, g), SETTINGS_GROUPS) "$folder is missing a settings group"
+    for profile in (nothing, "della")
+        settings = load_settings(joinpath("inputs", "Inputs_2z_7tech"); profile = profile)
+        @assert all(g -> haskey(settings, g), SETTINGS_GROUPS) "profile $profile is missing a settings group"
         CutPool(resolve_all_settings(settings)) # every Cut settings key is present
     end
-    settings = load_settings(joinpath("inputs", "Inputs_30d_1000scen_7tech_2z"))
+    settings = load_settings(joinpath("inputs", "Inputs_2z_7tech"))
     before = deepcopy(settings)
 
     resolved = resolve_all_settings(settings, Dict("Budget settings" => Dict("Tighten budget" => true),
@@ -149,14 +149,15 @@ end
 
 Batched subproblem test (src/model/benders/worker_functions.jl): run_subproblems_batch solves
 several capacity points with one call per worker over its own scenarios. Its objectives and
-duals must match run_all_subproblems point by point (gas price uncertainty off: 10 scenarios).
+duals must match run_all_subproblems point by point (one gas and weather scenario: 5 scenarios).
 
 ==========#
 
 function test_subproblems_batch(test_index = "sp_batch")
-    settings = load_settings(joinpath("inputs", "Inputs_30d_1000scen_7tech_2z"))
-    settings["Gas price uncertainty"] = false
-    inputs = load_input_data(joinpath("inputs", "Inputs_30d_1000scen_7tech_2z"), settings)
+    settings = load_settings(joinpath("inputs", "Inputs_2z_7tech"))
+    settings["Scenarios"]["Gas"]["Count"] = 1
+    settings["Scenarios"]["Weather"]["Count"] = 1
+    inputs = load_input_data(joinpath("inputs", "Inputs_2z_7tech"), settings)
     configure_parallel_workers!(settings)
     SPs = build_all_subproblems(inputs, settings)
     R, L = length(inputs["Resources"]), inputs["Number of lines"]
@@ -182,18 +183,20 @@ end
 
 Design CSV evaluation test:
   - read_design_csv maps the planner CSVs' <Tech>_Z<z>/Transmission columns (GW) onto
-    capacity_variable_names (MW), reproducing Investment_B, and rejects a CSV with a missing or
+    capacity_variable_names (MW) and rejects a CSV with a missing or
     unknown capacity column.
   - evaluate_design_csv (batched, with a partial last batch) writes one Summary row per design
     with the Design_ metadata, and its EV/CVaR match a direct run_all_subproblems solve.
-Gas price uncertainty off (10 scenarios).
+One gas and one weather scenario (5 demand scenarios). Investment_B in these CSVs reflects the
+costs they were designed under, so it is not compared with current costs.
 
 ==========#
 
 function test_design_csv_evaluation(test_index = "design_csv")
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     settings = load_settings(inputs_folder)
-    settings["Gas price uncertainty"] = false
+    settings["Scenarios"]["Gas"]["Count"] = 1
+    settings["Scenarios"]["Weather"]["Count"] = 1
     inputs = load_input_data(inputs_folder, settings)
     R = length(inputs["Resources"])
     planner_file = joinpath("experiments", "designs", "run13_planner_designs.csv")
@@ -206,9 +209,6 @@ function test_design_csv_evaluation(test_index = "design_csv")
         @assert length(X) == n && all(length(x) == R + inputs["Number of lines"] for x in X) "$file: $(length(X)) designs"
         @assert labels == string.(df.point_id)
         @assert all("Design_" * c in names(meta) for c in ("Investment_B", "EV_Op_ceil_B", "CVaR_Op_ceil_B"))
-        for i in 1:n
-            @assert isapprox(investment_cost(X[i], inputs)[1], df[i, "Investment_B"] * 1e9; rtol = 1e-3) "$file row $i: investment mismatch"
-        end
     end
     labels, X, _ = read_design_csv(planner_file, inputs)
     names_x = capacity_variable_names(inputs)
@@ -236,8 +236,37 @@ function test_design_csv_evaluation(test_index = "design_csv")
                                         inputs["Weather scenario probabilities"], settings["Value-at-Risk percent"])
         @assert isapprox(summary[i, "EV_OpCost"], ev; rtol = 1e-6) "$(done[i]): EV $(summary[i, "EV_OpCost"]) vs direct $ev"
         @assert isapprox(summary[i, "CVaR_OpCost"], cvar; rtol = 1e-6) "$(done[i]): CVaR $(summary[i, "CVaR_OpCost"]) vs direct $cvar"
-        @assert isapprox(summary[i, "Investment_Cost"], summary[i, "Design_Investment_B"] * 1e9; rtol = 1e-3)
     end
     @info("[$(test_index)] PASSED: design CSVs parse (600 designs) and 3 batched evaluations match direct solves.")
+    return true
+end
+
+#=========
+
+Zonal cost test (src/model/benders/worker_functions.jl): "Cost by zone" must be weighted like the
+objective, so the zones sum to "SP objective". Capacity is set low enough that generation,
+non-served energy and CRM slack costs are all non-zero, and repeated with the CRM off.
+
+==========#
+
+function test_cost_by_zone(test_index = "cost_by_zone")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
+    for crm_flag in (true, false)
+        settings = load_settings(inputs_folder)
+        settings["CRM flag"] = crm_flag
+        inputs = load_input_data(inputs_folder, settings)
+        SP = build_subproblem(inputs, settings, [5, 1, 1])
+        set_parameter_value.(SP[:x], fill(1500.0, length(inputs["Resources"])))
+        set_parameter_value.(SP[:x_line], fill(500.0, inputs["Number of lines"]))
+        output = run_subproblem(SP, inputs, settings; minimal_payload = false)
+
+        @assert output["coeff"] == 1 "subproblem did not solve to optimality"
+        @assert sum(output["Load shedding"]) > 0 "test point should shed load"
+        @assert sum(value.(SP[:g])) > 0 "test point should generate"
+        crm_flag && @assert sum(output["CRM slack"]) > 0 "test point should use CRM slack"
+        total = sum(output["Cost by zone"])
+        @assert isapprox(total, output["SP objective"]; rtol = 1e-6) "CRM $crm_flag: zones sum to $total, objective is $(output["SP objective"])"
+    end
+    @info("[$(test_index)] PASSED: Cost by zone sums to the SP objective with the CRM on and off.")
     return true
 end

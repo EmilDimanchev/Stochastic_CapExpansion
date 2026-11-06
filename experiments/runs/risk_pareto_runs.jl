@@ -6,7 +6,7 @@ Risk-pareto, wing-cap and warm-start runs - laptop and Della entry points for ru
 
 function risk_pareto_test_della(test_index, budget_type; budget_multiplier = 1.0)
 
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -15,7 +15,7 @@ function risk_pareto_test_della(test_index, budget_type; budget_multiplier = 1.0
     if !isdir(summary_folder)
         mkpath(summary_folder)
     end
-    settings = load_settings(inputs_folder)
+    settings = load_settings(inputs_folder; profile = "della")
     inputs = load_input_data(inputs_folder, settings)
 
     configure_parallel_workers!(settings)
@@ -38,7 +38,7 @@ end
 
 function risk_pareto_test_della_deterministic(test_index, budget_type; budget_multiplier=1.0)
 
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -47,7 +47,7 @@ function risk_pareto_test_della_deterministic(test_index, budget_type; budget_mu
     if !isdir(summary_folder)
         mkpath(summary_folder)
     end
-    settings = load_settings(inputs_folder)
+    settings = load_settings(inputs_folder; profile = "della")
     inputs = load_input_data(inputs_folder, settings)
 
     configure_parallel_workers!(settings)
@@ -70,7 +70,7 @@ end
 
 function risk_pareto_test_laptop_5(test_index)
 
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -102,7 +102,7 @@ end
 
 function risk_pareto_tighten_test_laptop(test_index)
 
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -128,7 +128,7 @@ end
 
 function risk_pareto_tighten_test_della(test_index)
 
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -137,7 +137,7 @@ function risk_pareto_tighten_test_della(test_index)
     if !isdir(summary_folder)
         mkpath(summary_folder)
     end
-    settings = load_settings(inputs_folder)
+    settings = load_settings(inputs_folder; profile = "della")
     inputs = load_input_data(inputs_folder, settings)
 
     configure_parallel_workers!(settings)
@@ -154,7 +154,7 @@ end
 
 function risk_pareto_test_no_tighten_della(test_index)
 
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -163,7 +163,7 @@ function risk_pareto_test_no_tighten_della(test_index)
     if !isdir(summary_folder)
         mkpath(summary_folder)
     end
-    settings = load_settings(inputs_folder)
+    settings = load_settings(inputs_folder; profile = "della")
     inputs = load_input_data(inputs_folder, settings)
 
     configure_parallel_workers!(settings)
@@ -180,7 +180,7 @@ end
 
 function wing_caps_test_della(test_index)
 
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -189,7 +189,7 @@ function wing_caps_test_della(test_index)
     if !isdir(summary_folder)
         mkpath(summary_folder)
     end
-    settings = load_settings(inputs_folder)
+    settings = load_settings(inputs_folder; profile = "della")
     inputs = load_input_data(inputs_folder, settings)
 
     configure_parallel_workers!(settings)
@@ -210,7 +210,7 @@ end
 
 function wing_caps_test_laptop(test_index)
 
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -245,7 +245,7 @@ end
 # iteration count via _log_solver_work! (algorithm.jl) - a more direct signal that warm
 # starting is reducing solver work than wall-clock time alone, which is noisy on a laptop.
 function warmstart_verification_laptop(test_index)
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     if !isdir(results_folder)
         mkpath(results_folder)
@@ -274,7 +274,7 @@ end
 
 
 function simple_comp(test_index)
-    inputs_folder = joinpath("inputs","Inputs_30d_1000scen_7tech_2z")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -303,9 +303,9 @@ function simple_comp(test_index)
     
     # set all uncertainties to false and risk aversion to false for this test, since we are just running with one scenario selected
     settings["Risk aversion flag"] = false
-    settings["Demand uncertainty"] = false
-    settings["Gas price uncertainty"] = false
-    settings["Weather uncertainty"] = false
+    settings["Scenarios"]["Demand"]["Count"] = 1
+    settings["Scenarios"]["Gas"]["Count"] = 1
+    settings["Scenarios"]["Weather"]["Count"] = 1
     new_inputs = load_input_data(inputs_folder, settings)
     new_inputs["Full Demand scenario probabilities"] = inputs["Demand scenario probabilities"]
     new_inputs["Full Gas price scenario probabilities"] = inputs["Gas price scenario probabilities"]

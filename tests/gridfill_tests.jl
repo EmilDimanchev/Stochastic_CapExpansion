@@ -128,7 +128,7 @@ end
     end
 
     @testset "Pool cuts match the same cuts built from (θ, β, x)" begin
-        settings = load_settings(joinpath(@__DIR__, "..", "inputs", "Inputs_30d_1000scen_7tech_2z"))
+        settings = load_settings(joinpath(@__DIR__, "..", "inputs", "Inputs_2z_7tech"))
         scale = settings["Scaling factor cost"]
         S, F = 5, 4                                 # 20 scenarios, flattened (s,f) column-major
         MP = Model()

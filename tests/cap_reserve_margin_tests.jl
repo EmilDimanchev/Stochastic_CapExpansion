@@ -14,11 +14,11 @@ Usage:
   julia --project=. tests/cap_reserve_margin_tests.jl
 
 Environment variables:
-  SCE_INPUTS_FOLDER   Input folder path (default: inputs/Inputs_30d_1000scen_7tech_2z)
+  SCE_INPUTS_FOLDER   Input folder path (default: inputs/Inputs_2z_7tech)
   SCE_SOLVER          Optional solver override, e.g. HiGHS or Gurobi
 """
 
-const DEFAULT_INPUTS = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+const DEFAULT_INPUTS = joinpath("inputs", "Inputs_2z_7tech")
 
 function build_crm_settings(inputs_folder::String)
     settings = load_settings(inputs_folder)
@@ -54,8 +54,8 @@ function main()
     gen_names = inputs["Generation resources"]
     derate = inputs["CRM Derating Factors"]
 
-    peak_z1 = maximum(inputs["Demand"][:, 1])
-    peak_z2 = maximum(inputs["Demand"][:, 2])
+    peak_z1 = maximum(inputs["Demand"][:, 1, 1])
+    peak_z2 = maximum(inputs["Demand"][:, 2, 1])
     gas_z1_idx = findfirst(==("Gas-z1"), gen_names)
     gas_z2_idx = findfirst(==("Gas-z2"), gen_names)
 
@@ -63,7 +63,7 @@ function main()
 
         @testset "Derating factors load correctly (elementwise, not vector-keyed)" begin
             @test derate isa Dict
-            @test derate["Gas-z1"] == 0.93
+            @test derate["Gas-z1"] == 1.0 # outages are already in availability
             @test derate["Wind-z1"] == 0.8
             @test length(derate) == length(gen_names)
         end

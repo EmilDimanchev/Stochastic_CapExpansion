@@ -1,0 +1,2 @@
+Resources,Zone,Existing capacity,Storage,Power_to_energy_ratio,Loss_discharge,Loss_charge,Capacity_UB,Capex_per_kW,Fixed_OM_per_kW_yr,Life_years
+Battery-z1,1,0,0,0.25,0.92,0.92,100000,904.5,22.04,20

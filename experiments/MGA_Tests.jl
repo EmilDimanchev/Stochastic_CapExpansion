@@ -32,5 +32,6 @@ include("runs/sampling_runs.jl")          # test_gridfill_units, gridfill_test_*
 
 # Diagnostic checks
 include("checks/cut_checks.jl")           # test_cut_management, test_cut_trim_rules
-include("checks/model_checks.jl")         # test_capacity_bound_tightening, test_wing_caps, test_settings_groups, test_subproblems_batch, test_design_csv_evaluation
+include("checks/model_checks.jl")         # test_capacity_bound_tightening, test_wing_caps, test_settings_groups, test_subproblems_batch, test_design_csv_evaluation, test_cost_by_zone
+include("checks/input_checks.jl")         # test_scenario_selection, test_cost_construction, test_thermal_availability, test_weather_library, test_input_conversion, test_scenario_counts_end_to_end
 include("checks/sampling_checks.jl")      # test_gridfill_real_model

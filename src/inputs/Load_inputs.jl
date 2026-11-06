@@ -1,241 +1,202 @@
+#==========
+
+Builds the `inputs` dictionary from one input folder (see Convert_inputs.jl for the file layout):
+costs come from Technologies.csv and Fuels.csv, gas and demand scenarios from the distributions in
+settings.yaml, and weather scenarios from Weather_library.csv.
+
+==========#
+
+# Reads Weather_library.csv into arrays over the whole library: demand, wind and solar are
+# T × Z × K, and weights are T × K in hours per model hour.
+function load_weather_library(inputs_path, Z::Int)
+    library = CSV.read(joinpath(inputs_path, "Weather_library.csv"), DataFrame)
+    sort!(library, [:Scenario, :Period, :Hour])
+    scenarios = sort(unique(library.Scenario))
+    K = length(scenarios)
+    K > 0 || error("Weather_library.csv in $inputs_path has no scenarios.")
+    scenarios == collect(1:K) || error("Weather_library.csv scenarios must be numbered 1 to $K.")
+    period_length = maximum(library.Hour)
+    n_periods = maximum(library.Period)
+    T = period_length * n_periods
+    nrow(library) == T * K || error("Weather_library.csv should have $(T * K) rows ($K scenarios × $T hours), found $(nrow(library)).")
+
+    column(name) = reshape(Float64.(library[!, name]), T, K)
+    zonal(prefix) = cat([reshape(column("$(prefix)_z$z"), T, 1, K) for z in 1:Z]...; dims = 2)
+    return (demand = zonal("Demand"), wind = zonal("Wind"), solar = zonal("Solar"),
+            weights = column("Weight") ./ period_length, period_length = period_length, n_periods = n_periods,
+            source_files = [first(library.Source_file[library.Scenario .== k]) for k in 1:K])
+end
+
+# Planned outages go in low-demand periods: each period's factor is proportional to its gap below the
+# year's peak and averages 1 across the year's weighted hours, so a technology's annual rate is kept.
+function planned_outage_factors(system_demand::AbstractVector, weights::AbstractVector, period_length::Int)
+    period_peak = vec(maximum(reshape(system_demand, period_length, :), dims = 1))
+    period_weight = vec(sum(reshape(weights, period_length, :), dims = 1))
+    gap = maximum(period_peak) .- period_peak
+    weighted_gap = sum(gap .* period_weight) / sum(period_weight)
+    weighted_gap > 0 || error("Every period has the same peak, so planned outages can't be placed.")
+    return gap ./ weighted_gap
+end
+
+# Hourly availability (T × G × K) of each generator: wind and solar from the library, and thermal
+# technologies from their forced and planned outage rates.
+function generation_availability(technologies, resource_technology, resource_zone, library, selected)
+    T, G, K = size(library.demand, 1), length(resource_technology), length(selected)
+    availability = ones(T, G, K)
+    for (index, k) in enumerate(selected), g in 1:G
+        row = technologies[resource_technology[g], :]
+        if !ismissing(row.Profile)
+            profiles = row.Profile == "Wind" ? library.wind : row.Profile == "Solar" ? library.solar :
+                error("Unknown Profile \"$(row.Profile)\" for $(row.Technology). Valid options: Wind, Solar, or blank.")
+            availability[:, g, index] = profiles[:, resource_zone[g], k]
+        else
+            factors = planned_outage_factors(vec(sum(library.demand[:, :, k], dims = 2)), library.weights[:, k], library.period_length)
+            planned = row.Planned_outage_rate .* factors
+            maximum(planned) <= 1 || error("$(row.Technology): planned outages exceed 100% in a period; lower Planned_outage_rate.")
+            availability[:, g, index] = (1 - row.Forced_outage_rate) .* (1 .- repeat(planned, inner = library.period_length))
+        end
+    end
+    return availability
+end
+
 function load_input_data(inputs_path, settings)
 
     # Collect data here
     inputs = Dict{String, Any}()
 
-    lines_input = CSV.read(string(inputs_path,"/","Network.csv"), DataFrame, header=true)
+    lines_input = CSV.read(joinpath(inputs_path, "Network.csv"), DataFrame, header=true)
     inputs["Number of lines"] = size(lines_input)[1]
     # Collect a list of column names matching z1 z2 etc
     zone_columns = filter(x -> occursin(r"^z\d+$", x), names(lines_input))
-    inputs["Number of zones"] = length(zone_columns)
+    Z = length(zone_columns)
+    inputs["Number of zones"] = Z
     inputs["Line capacities"] = Array(lines_input[:, "Existing_capacity"])
     inputs["Max expansion"] = Array(lines_input[:, "Max_expansion"])
     inputs["CAPEX per MW"] = Array(lines_input[:, "CAPEX_per_MW"])
     inputs["Zone map"] = Array(lines_input[:, zone_columns])
 
-    fuel_response_input = CSV.read(string(inputs_path,"/","Fuel_response.csv"), DataFrame, header=true)
-    inputs["Fuel response"] = Array(fuel_response_input[1, 2:end])
+    # ~~~
+    # Technologies: one row per technology, expanded here to one resource per zone
+    # ~~~
+    technologies = CSV.read(joinpath(inputs_path, "Technologies.csv"), DataFrame, header=true, stringtype=String)
+    fuels = CSV.read(joinpath(inputs_path, "Fuels.csv"), DataFrame, header=true, stringtype=String)
+    storage_input = CSV.read(joinpath(inputs_path, "Resources_storage.csv"), DataFrame, header=true, stringtype=String)
+    discount_rate = settings["Discount rate"]
 
-    # Technologies
-    resources_input = CSV.read(string(inputs_path,"/","Resources.csv"), DataFrame, header=true)
+    resource_technology = [t for t in 1:nrow(technologies) for _ in 1:Z]
+    resource_zone = [z for _ in 1:nrow(technologies) for z in 1:Z]
+    gen_resources = ["$(technologies.Technology[t])-z$z" for (t, z) in zip(resource_technology, resource_zone)]
+    G = length(gen_resources)
+    O = nrow(storage_input)
+    storage_flag = O > 0
 
-    gen_resources = resources_input[1:end,1]
     inputs["Generation resources"] = gen_resources
-    x_max = resources_input[1:end,"Capacity_UB"]
-    resource_names = copy(gen_resources)
+    inputs["Number of generation resources"] = G
+    inputs["Number of storage resources"] = O
+    inputs["Number of resources"] = G + O
 
-    # Generation zone map: G × Z binary matrix, entry [g,z] = 1 if resource g is in zone z.
-    # Uses the "Zone" column in Resources.csv when present; falls back to all resources in zone 1.
-    G = size(resources_input)[1]
-    Z = inputs["Number of zones"]
-    if "Zone" in names(resources_input)
-        gen_zone_map = zeros(Int, G, Z)
-        for g in 1:G
-            z = resources_input[g, "Zone"]
-            gen_zone_map[g, z] = 1
-        end
-    else
-        # Single-zone: all resources belong to zone 1
-        gen_zone_map = zeros(Int, G, Z)
-        gen_zone_map[:, 1] .= 1
+    gen_zone_map = zeros(Int, G, Z)
+    for g in 1:G
+        gen_zone_map[g, resource_zone[g]] = 1
     end
-
-    storage_input = CSV.read(string(inputs_path,"/","Resources_storage.csv"), DataFrame, header=true)
-    storage_flag = size(storage_input)[1] > 0
-
-    # Storage zone map: O × Z, then combined with gen into full R × Z resource zone map
-    O = size(storage_input)[1]
-    if O > 0 && "Zone" in names(storage_input)
-        stor_zone_map = zeros(Int, O, Z)
-        for o in 1:O
-            z = storage_input[o, "Zone"]
-            stor_zone_map[o, z] = 1
-        end
-    else
-        # No storage, or single-zone storage: assign all to zone 1
-        stor_zone_map = zeros(Int, O, Z)
-        if O > 0
-            stor_zone_map[:, 1] .= 1
-        end
+    stor_zone_map = zeros(Int, O, Z)
+    for o in 1:O
+        stor_zone_map[o, storage_input[o, "Zone"]] = 1
     end
     # Full resource zone map: R × Z  (generation rows first, then storage rows)
     inputs["Resource zone map"] = vcat(gen_zone_map, stor_zone_map)
 
-    var_cost_input = CSV.read(string(inputs_path,"/","Variable_cost.csv"), DataFrame, header=true)
-    
-    inputs["Number of generation resources"] = size(resources_input)[1]
-    inputs["Number of storage resources"] = size(storage_input)[1]
-    inputs["Number of resources"] = inputs["Number of generation resources"] + inputs["Number of storage resources"]
+    # ~~~
+    # Scenarios
+    # ~~~
+    scenario_settings = settings["Scenarios"]
+    library = load_weather_library(inputs_path, Z)
 
+    demand_fractions, demand_probabilities = select_distribution_scenarios(scenario_settings["Demand"])
+    gas_prices, gas_probabilities = select_distribution_scenarios(scenario_settings["Gas"])
+    features = weather_features(library.demand, library.wind, library.solar, library.weights; period_length = library.period_length)
+    selected, weather_probabilities = select_weather_scenarios(features, scenario_settings["Weather"]["Count"])
 
-    # Stochasticities
-    probabilities_input_demand = CSV.read(string(inputs_path,"/","Scenario_probabilities_demand.csv"), DataFrame, header=true)
-    probabilities_input_fuel = CSV.read(string(inputs_path,"/","Scenario_probabilities_fuel.csv"), DataFrame, header=true)
-    probabilities_input_weather = CSV.read(string(inputs_path,"/","Scenario_probabilities_weather.csv"), DataFrame, header=true)
+    inputs["Scenario selection"] = Dict(
+        "Demand" => Dict("Values" => demand_fractions, "Probabilities" => demand_probabilities),
+        "Gas" => Dict("Values" => gas_prices, "Probabilities" => gas_probabilities),
+        "Weather" => Dict("Values" => float.(selected), "Probabilities" => weather_probabilities,
+                          "Source files" => library.source_files[selected]))
+    inputs["Demand scenario probabilities"] = demand_probabilities
+    inputs["Gas price scenario probabilities"] = gas_probabilities
+    inputs["Weather scenario probabilities"] = weather_probabilities
+    inputs["Number of demand scenarios"] = length(demand_probabilities)
+    inputs["Number of gas price scenarios"] = length(gas_probabilities)
+    inputs["Number of weather scenarios"] = length(weather_probabilities)
 
-    # Demand
-    demand_scen_files = sort(
-        filter(f -> occursin(r"^Demand_\d+\.csv$", basename(f)),
-               readdir(inputs_path, join=true)),
-        by = f -> parse(Int, match(r"Demand_(\d+)\.csv", basename(f))[1])
-    )
-    if isempty(demand_scen_files)
-        error("No Demand_N.csv files found in $inputs_path")
+    # Demand: T × Z × K from the library, plus a flat MW adder sized to each zone. A zone's reference
+    # peak is its lowest annual peak across the whole library, so it doesn't change with the selection.
+    T = size(library.demand, 1)
+    inputs["Time index"] = collect(1:T)
+    inputs["Number of periods"] = T
+    inputs["Demand"] = library.demand[:, :, selected]
+    reference_peak = [minimum(maximum(library.demand[:, z, k]) for k in axes(library.demand, 3)) for z in 1:Z]
+    inputs["Demand reference peak"] = reference_peak
+    inputs["Demand adders"] = demand_fractions * reference_peak' # S × Z
+
+    # Representative periods
+    inputs["Number of representative periods"] = library.n_periods
+    inputs["Set of first periods"] = collect(1:library.period_length:T)
+    inputs["Set of last periods"] = collect(library.period_length:library.period_length:T)
+    inputs["Period weights"] = library.weights[:, selected]
+    inputs["Generation availability"] = generation_availability(technologies, resource_technology, resource_zone, library, selected)
+
+    # ~~~
+    # Costs
+    # ~~~
+    fuel_row(name) = begin
+        match_row = findfirst(==(name), fuels.Fuel)
+        match_row === nothing && error("Fuel \"$name\" is not in Fuels.csv.")
+        fuels[match_row, :]
     end
-    demand_scen_data = map(demand_scen_files) do f
-        df = CSV.read(f, DataFrame, header=true)
+    fuel_price(row, gas_price) = ismissing(row.Fuel) ? 0.0 : row.Fuel == "Gas" ? gas_price : fuel_row(row.Fuel).Price_per_MMBtu
+    carbon(row) = ismissing(row.Fuel) ? 0.0 : fuel_row(row.Fuel).Carbon_t_per_MMBtu
+    heat_rate(row) = ismissing(row.Heat_rate_MMBtu_per_MWh) ? 0.0 : row.Heat_rate_MMBtu_per_MWh
 
-        zone_cols = filter(c -> occursin(r"^Demand(-z\d+)?$", c), names(df))
-        Matrix{Float64}(df[:, zone_cols])   # T × Z matrix for this scenario
-    end
-    
-    
-    time_index = Array(CSV.read(demand_scen_files[1], DataFrame, header=true)[:, 1])
-    
-    inputs["Time index"] = time_index
-    inputs["Number of periods"] = size(time_index)[1]
+    # $/MWh, G × F
+    inputs["Variable costs"] = [variable_cost(heat_rate(technologies[resource_technology[g], :]),
+                                              fuel_price(technologies[resource_technology[g], :], price),
+                                              technologies.Variable_OM_per_MWh[resource_technology[g]])
+                                for g in 1:G, price in gas_prices]
+    inputs["CO2 emission intensities"] = [emission_intensity(heat_rate(technologies[t, :]), carbon(technologies[t, :])) for t in resource_technology]
 
-    demand_add_input = CSV.read(string(inputs_path,"/","Demand_adders.csv"), DataFrame, header=true)
+    # $/MW-yr, generation rows first
+    gen_investment = [annual_investment_cost(technologies.Capex_per_kW[t], technologies.Fixed_OM_per_kW_yr[t], technologies.Life_years[t], discount_rate;
+                                             multiplier = technologies[t, "Cost_multiplier_z$z"])
+                      for (t, z) in zip(resource_technology, resource_zone)]
+    stor_investment = [annual_investment_cost(storage_input.Capex_per_kW[o], storage_input.Fixed_OM_per_kW_yr[o], storage_input.Life_years[o], discount_rate) for o in 1:O]
+    inputs["Investment costs"] = vcat(gen_investment, stor_investment)
 
-    inputs["Demand"] = round.(sum(demand_scen_data) ./ length(demand_scen_data), digits=1) #### Why is this the average demand profile?
-
-    
-
-    # Demand shift uncertainty
-    if settings["Demand uncertainty"]
-        inputs["Demand scenario probabilities"] = Array(probabilities_input_demand[probabilities_input_demand[!,:Uncertainty] .== "Demand",2:end][1,:])
-        demand_add = Array(demand_add_input[1,2:end])
-    else
-        inputs["Demand scenario probabilities"] = [1]
-        demand_add = [0]
-    end
-    inputs["Demand adders"] = demand_add
-    
-    # Weather uncertainty
-    inputs["Demand shift weather"] = zeros(inputs["Number of periods"], Z, 1)
-    if settings["Weather uncertainty"]
-        # demand_scen_data[k] is T × Z; shift = per-zone deviation from central (average) demand
-        # Store as T × Z × K so downstream can index [t, z, k] or [t, k] for single-zone
-        K_weather = length(demand_scen_data)
-        demand_shift_matrix = zeros(inputs["Number of periods"], Z, K_weather)
-        for k in 1:K_weather
-            demand_shift_matrix[:, :, k] = round.(demand_scen_data[k] .- inputs["Demand"], digits=1)
-        end
-        inputs["Demand shift weather"] = demand_shift_matrix
-
-        inputs["Weather scenario probabilities"] = Array(probabilities_input_weather[probabilities_input_weather[!,:Uncertainty] .== "Weather",2:end][1,:])
-        
-        availability = zeros(length(inputs["Time index"]), inputs["Number of generation resources"], length(inputs["Weather scenario probabilities"]))
-        
-        for scen in 1:length(inputs["Weather scenario probabilities"])
-            resource_avail_input = CSV.read(string(inputs_path,"/","Resources_availability_",string(scen),".csv"), DataFrame, header=true)
-            availability[:,:,scen] = Array(resource_avail_input[:, 2:end])
-        end
-    else
-
-        inputs["Weather scenario probabilities"] = [1]
-        # Availability
-        resource_avail_input = CSV.read(string(inputs_path,"/","Resources_availability_1.csv"), DataFrame, header=true)
-        availability = round.(Matrix(resource_avail_input[:, 2:end]),digits=2)
-
-        inputs["Demand shift weather"] = zeros(inputs["Number of periods"], Z, 1)
-        inputs["Weather scenario probabilities"] = [1]
-    end
-    
-    inputs["Generation availability"] = availability
-
-    # Fuel price
-    # Load all scenario
-     # $/MWh
-    
-    if settings["Gas price uncertainty"]
-        inputs["Variable costs"] = Array(var_cost_input[1:end, 4:end])
-        inputs["Gas price scenario probabilities"] = Array(probabilities_input_fuel[probabilities_input_fuel[!,:Uncertainty] .== "Fuel",2:end][1,:])
-    else
-        inputs["Variable costs"] = Array(var_cost_input[1:end, 2])
-        # Deterministic case uses expected fuel price
-        inputs["Gas price scenario probabilities"] = [1]
-    end
-
+    # ~~~
+    # CRM: outages are already in availability, so thermal derates are 1.0
+    # ~~~
     if settings["CRM flag"]
-        crm_system = CSV.read(string(inputs_path,"/","CRM_System.csv"), DataFrame, header=true)
-        crm_resources = CSV.read(string(inputs_path,"/","CRM_Resources.csv"), DataFrame, header=true)
-
-        inputs["CRM Margin"] = Array(crm_system[:, "Margin"])
-        inputs["CRM Price Cap"] = Array(crm_system[:, "PriceCap"])
-        inputs["CRM Derating Factors"] = Dict(crm_resources[:, "Resource"] .=> crm_resources[:, "Derating_Factor"])
-        inputs["Availability CRM"] = mean(inputs["Generation availability"], dims=3)  # Average availability across weather scenarios for CRM derating
-        inputs["Demand CRM"] = inputs["Demand"]  # Average demand across scenarios for CRM requirements
+        inputs["CRM Margin"] = Float64.(settings["CRM zones"]["Margin"])
+        inputs["CRM Price Cap"] = Float64.(settings["CRM zones"]["Penalty"])
+        inputs["CRM Derating Factors"] = Dict(gen_resources[g] => technologies.CRM_derate[resource_technology[g]] for g in 1:G)
     end
-    
-    # Keep track of number of scenarios
-    inputs["Number of demand scenarios"] = length(inputs["Demand scenario probabilities"])
-    inputs["Number of gas price scenarios"] = length(inputs["Gas price scenario probabilities"])
-    inputs["Number of weather scenarios"] = length(inputs["Weather scenario probabilities"])
-    
-    # Storage
+
+    # ~~~
+    # Storage and capacity limits
+    # ~~~
+    x_max = technologies.Capacity_UB[resource_technology]
     if storage_flag
         inputs["Storage power to energy ratio"] = storage_input[1:end,"Power_to_energy_ratio"][1]
         inputs["Storage discharge loss"] = storage_input[1:end,"Loss_discharge"][1]
         inputs["Storage charge loss"] = storage_input[1:end,"Loss_charge"][1]
-        stor_resources = storage_input[1:end,1]
-        max_stor = storage_input[1:end,"Capacity_UB"]
-        x_max_all = vcat(x_max, max_stor)
-        resources_all = vcat(resource_names, stor_resources)
-        inputs["Resources"] = resources_all
+        inputs["Resources"] = vcat(gen_resources, storage_input[1:end,1])
+        inputs["Capacity upper bounds"] = vcat(x_max, storage_input[1:end,"Capacity_UB"])
     else
-        inputs["Resources"] = resource_names
-        x_max_all = x_max
-    end   
-
-
-    inputs["Capacity upper bounds"] = x_max_all
-
-    # Investment cost
-    cost_inv = round.(resources_input[1:end,"Investment cost"],digits=2) # $/MW-year
-    # Add storage cost
-    if storage_flag
-        cost_inv = vcat(cost_inv, round.(storage_input[1:end,"Investment cost"],digits=2)) 
+        inputs["Resources"] = gen_resources
+        inputs["Capacity upper bounds"] = x_max
     end
-    co2_factors = round.(resources_input[:,"Emissions_ton_per_MWh"],digits=2) # ton per MWh
-
-    # Temporal domain
-    period_weights_input = CSV.read(string(inputs_path,"/","Representative_period_weights.csv"), DataFrame, header=true)
-
-    n_periods = size(period_weights_input)[1]
-    inputs["Number of representative periods"] = n_periods
-    
-    
-
-    # Representative period weights
-    t_weights = zeros(inputs["Number of periods"], inputs["Number of weather scenarios"])
-    if n_periods != inputs["Number of periods"]
-        # Representative periods
-        period_length = Integer(inputs["Number of periods"]/n_periods)
-        first_periods = collect(1:period_length:inputs["Number of periods"]) 
-        last_periods = collect(period_length:period_length:inputs["Number of periods"])
-        inputs["Set of first periods"] = first_periods
-        inputs["Set of last periods"] = last_periods
-
-        for scen in 1:inputs["Number of weather scenarios"], i in 1:n_periods
-            col = string("Weight-",scen)
-            t_weights[first_periods[i]:last_periods[i],scen] .= period_weights_input[!,col][i]/period_length
-        end
-    else
-        # One-to-one mapping
-        for scen in 1:inputs["Number of weather scenarios"]
-            # col = string("Weight-",scen)
-            t_weights[:,scen] = period_weights_input[:,scen+2]
-        end
-        
-    end
-    
-    inputs["Period weights"] = t_weights
-    inputs["Investment costs"] = cost_inv
-    inputs["CO2 emission intensities"] = co2_factors
     inputs["Storage flag"] = storage_flag
     inputs["Storage"] = storage_input
 
     return inputs
 end
-

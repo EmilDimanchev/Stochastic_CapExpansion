@@ -10,17 +10,17 @@ Probe-level test harness for the risk_aversion_weight = 0.0 base Benders run.
 
 Usage examples:
   julia --project=. experiments/risk_weight_zero_infeasibility_tests.jl
-  SCE_INPUTS_FOLDER=inputs/Inputs_30days_5techs julia --project=. experiments/risk_weight_zero_infeasibility_tests.jl
+  SCE_INPUTS_FOLDER=inputs/Inputs_2z_7tech julia --project=. experiments/risk_weight_zero_infeasibility_tests.jl
   SCE_EXPECT_INFEASIBLE=true julia --project=. experiments/risk_weight_zero_infeasibility_tests.jl
 
 Environment variables:
-  SCE_INPUTS_FOLDER       Input folder path (default: inputs/Inputs_30d_1000scen_7tech_2z)
+  SCE_INPUTS_FOLDER       Input folder path (default: inputs/Inputs_2z_7tech)
   SCE_EXPECT_INFEASIBLE   If true, test expects at least one infeasible regularized run
   SCE_REPETITIONS         Number of regularized probes to run (default: 1)
   SCE_SOLVER              Optional solver override, e.g. HiGHS or Gurobi
 """
 
-const DEFAULT_INPUTS = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+const DEFAULT_INPUTS = joinpath("inputs", "Inputs_2z_7tech")
 
 function _env_bool(name::String, default::Bool)
     v = get(ENV, name, default ? "true" : "false")

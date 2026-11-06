@@ -11,12 +11,15 @@ GridFill sampler: entry points (src/model/sampling)
 
 test_gridfill_units(test_index = "gridfill_units") = include(joinpath(@__DIR__, "..", "..", "tests", "gridfill_tests.jl"))
 
-# Laptop inputs, workers and subproblems. `fast` turns off the gas price uncertainty set
-# (10 instead of 100 scenarios), keeping demand uncertainty on.
+# Laptop inputs, workers and subproblems. `fast` uses one gas and one weather scenario, keeping
+# demand uncertainty on.
 function _sampling_laptop_setup(; fast::Bool = false)
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     settings = load_settings(inputs_folder)
-    fast && (settings["Gas price uncertainty"] = false)
+    if fast
+        settings["Scenarios"]["Gas"]["Count"] = 1
+        settings["Scenarios"]["Weather"]["Count"] = 1
+    end
     inputs = load_input_data(inputs_folder, settings)
     configure_parallel_workers!(settings)
     SPs = build_all_subproblems(inputs, settings)
@@ -25,7 +28,7 @@ end
 
 # End-to-end: full risk-pareto + MGA + wing caps, then GridFill on the finals. Laptop defaults
 # are small (coarse 0.1 cells, batches of 8) so the whole loop, feedback included, runs in a
-# few minutes; `fast` turns off the gas price uncertainty set (demand stays stochastic).
+# few minutes; `fast` uses one gas and one weather scenario (demand stays stochastic).
 function gridfill_test_laptop(test_index; n_samples::Int = 24, fast::Bool = true, sampling_overrides::AbstractDict = Dict())
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
@@ -43,9 +46,9 @@ end
 function gridfill_test_della(test_index; n_samples::Int = 2000, sampling_overrides::AbstractDict = Dict())
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     mkpath(summary_folder)
-    settings = load_settings(inputs_folder)
+    settings = load_settings(inputs_folder; profile = "della")
     inputs = load_input_data(inputs_folder, settings)
     configure_parallel_workers!(settings)
     SPs = build_all_subproblems(inputs, settings)
@@ -58,15 +61,15 @@ function gridfill_test_della(test_index; n_samples::Int = 2000, sampling_overrid
         sampling_settings = merge(Dict{String,Any}("Method" => "GridFill", "Samples" => n_samples, "Write gradients" => true), sampling_overrides))
 end
 
-# The uncertainty flags are read by load_input_data, so they must be set before it runs.
+# Scenario counts are read by load_input_data, so they must be set before it runs.
 function weather_gridfill_test_della(test_index; n_samples::Int = 2000, sampling_overrides::AbstractDict = Dict())
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     mkpath(summary_folder)
-    settings = load_settings(inputs_folder)
-    settings["Gas price uncertainty"] = false
-    settings["Weather uncertainty"] = true
+    settings = load_settings(inputs_folder; profile = "della")
+    settings["Scenarios"]["Gas"]["Count"] = 1
+    settings["Scenarios"]["Weather"]["Count"] = 10
     inputs = load_input_data(inputs_folder, settings)
     configure_parallel_workers!(settings)
     SPs = build_all_subproblems(inputs, settings)

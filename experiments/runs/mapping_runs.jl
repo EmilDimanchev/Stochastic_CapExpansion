@@ -10,7 +10,7 @@ Mapping test functions - run with mapping flag on and evaluation SPs to see how 
 
 function mapping_test_laptop(test_index)
 
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     results_folder = joinpath("outputs", "Test_"*string(test_index), "Mapping_Test")
     summary_folder = joinpath(results_folder, "Summary")
 
@@ -46,7 +46,7 @@ end
 
 function mapping_test_della(test_index)
 
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -55,7 +55,7 @@ function mapping_test_della(test_index)
     if !isdir(summary_folder)
         mkpath(summary_folder)
     end
-    settings = load_settings(inputs_folder)
+    settings = load_settings(inputs_folder; profile = "della")
     inputs = load_input_data(inputs_folder, settings)
 
     configure_parallel_workers!(settings)
@@ -71,7 +71,7 @@ end
 
 function mapping_test_della_001(test_index)
 
-    inputs_folder = joinpath("inputs", "Inputs_30d_1000scen_7tech_2z_Della")#joinpath("inputs", "Inputs_30repdays_ext_1000scen_7techs")
+    inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     if !isdir(results_folder)
@@ -80,7 +80,7 @@ function mapping_test_della_001(test_index)
     if !isdir(summary_folder)
         mkpath(summary_folder)
     end
-    settings = load_settings(inputs_folder)
+    settings = load_settings(inputs_folder; profile = "della")
     inputs = load_input_data(inputs_folder, settings)
 
     configure_parallel_workers!(settings)

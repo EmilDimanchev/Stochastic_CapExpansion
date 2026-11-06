@@ -9,6 +9,7 @@ Main MGA functions for running stochastic exploration with Benders and MGA, incl
 # Each *_settings keyword overrides keys of the matching settings.yaml block (see run_settings.jl).
 function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Dict, settings::Dict, results_folder::String, summary_folder::String; budget_settings::AbstractDict = Dict(), cap_settings::AbstractDict = Dict(), mapping_settings::AbstractDict = Dict(), run_settings::AbstractDict = Dict(), sampling_settings::AbstractDict = Dict(), cut_settings::AbstractDict = Dict())
 
+    write_scenario_selection(inputs, summary_folder)
     settings = resolve_all_settings(settings, Dict("Budget settings" => budget_settings, "Cap settings" => cap_settings, "Mapping settings" => mapping_settings,
                                                    "Run settings" => run_settings, "Sampling settings" => sampling_settings, "Cut settings" => cut_settings))
     budget_settings = settings["Budget settings"]
@@ -287,6 +288,7 @@ function run_stochastic_exploration_risk_pareto(SPs::Array{Model, 3}, inputs::Di
 end
 
 function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::String, summary_folder::String; budget_multiplier::Float64 = 1.1, vector_set::Union{AbstractVector, Nothing} = nothing, scenario::Int = -1)
+    write_scenario_selection(new_inputs, summary_folder)
     configure_parallel_workers!(settings)
 
     # Result containers
