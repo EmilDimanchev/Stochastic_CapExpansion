@@ -147,6 +147,51 @@ end
 
 #=========
 
+"Write case files" (Run settings): off skips each case's own folder, and leaves what feeds the
+Summary unchanged. Solver-free: the solve results are a small synthetic dict, with eval SPs so
+the *_eval files are covered too.
+
+==========#
+
+function test_case_file_flag(test_index = "case_file_flag")
+    probs = [0.5, 0.5]
+    sp(x) = Dict{String,Any}("Power price" => fill(x, 2, 1), "Cost by zone" => [x], "Emissions by zone" => [x], "Emissions" => x,
+                             "SP objective" => x, "Generation" => fill(x, 1, 2), "Load shedding" => fill(0.0, 2, 1))
+    SPs = reshape([sp(1.0), sp(2.0)], 2, 1, 1)
+    inputs = Dict{String,Any}("Demand scenario probabilities" => probs, "Gas price scenario probabilities" => [1.0], "Weather scenario probabilities" => [1.0],
+                              "Full Demand scenario probabilities" => probs, "Full Gas price scenario probabilities" => [1.0], "Full Weather scenario probabilities" => [1.0],
+                              "Number of periods" => 2, "Number of lines" => 1, "Number of zones" => 1, "Resources" => ["Gas"], "Generation resources" => ["Gas"], "Time index" => 1:2)
+    results = Dict{String,Any}("MP" => Dict{String,Any}("Capacity" => [10.0], "Line expansion" => [1.0], "Inv_cost" => 5.0, "Inv cost by zone" => [5.0]),
+                               "SPs" => SPs, "CVaR" => 2.0, "Expected Value" => 1.5, "SPs_eval" => SPs, "CVaR_Eval" => 2.0, "Expected Value Eval" => 1.5,
+                               "Gaps" => [0.1, 0.01], "Capacity per iteration" => [[9.0], [10.0]], "Time MP hist" => [0.1, 0.1], "Time SP hist" => [0.2, 0.2])
+    settings(on) = Dict{String,Any}("Risk aversion weight" => 0.5, "Write all scenarios flag" => true, "Run settings" => Dict{String,Any}("Write case files" => on))
+
+    root = mktempdir()
+    folder_on, folder_off = joinpath(root, "on", "Case"), joinpath(root, "off", "Case")
+    dfs_on = write_results_benders(results, inputs, settings(true), folder_on)
+    dfs_off = write_results_benders(results, inputs, settings(false), folder_off)
+
+    expected = ["Convergence.csv", "generation.csv", "generation_eval.csv", "nse.csv", "nse_eval.csv", "price.csv", "price_eval.csv"]
+    @assert sort(readdir(folder_on)) == expected "on should write every case file, got $(readdir(folder_on))"
+    @assert !isdir(folder_off) "off should not create the case folder"
+    @assert all(a == b for (a, b) in zip(dfs_on, dfs_off)) "the flag should not change what feeds the Summary"
+    @assert count(startswith("OperatingCost_D_"), names(dfs_off[2])) == 2 "per-scenario Summary columns follow \"Write all scenarios flag\", not this flag"
+
+    # Gradients.csv lives in the case folders, so the flag also turns it off, without touching the caller's settings
+    base = load_settings(joinpath("inputs", "Inputs_2z_7tech"))
+    @assert base["Cut export settings"]["Export cuts"] == resolve_all_settings(base, Dict("Run settings" => Dict("Write case files" => false)))["Cut export settings"]["Export cuts"] "the flag should not change the cut export"
+    gradients_on = Dict("Sampling settings" => Dict("Write gradients" => true))
+    @assert resolve_all_settings(base, merge(gradients_on, Dict("Run settings" => Dict("Write case files" => true))))["Sampling settings"]["Write gradients"] "gradients stay on while case files are on"
+    resolved = resolve_all_settings(base, merge(gradients_on, Dict("Run settings" => Dict("Write case files" => false))))
+    @assert !resolved["Sampling settings"]["Write gradients"] "gradients should follow the case-file switch"
+    @assert base["Sampling settings"]["Write gradients"] == false "resolving modified the caller's settings"
+
+    @info("[$(test_index)] PASSED: case files follow the flag; Summary data and the cut export setting don't.")
+    return true
+end
+
+#=========
+
 Batched subproblem test (src/model/benders/worker_functions.jl): run_subproblems_batch solves
 several capacity points with one call per worker over its own scenarios. Its objectives and
 duals must match run_all_subproblems point by point (one gas and weather scenario: 5 scenarios).

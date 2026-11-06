@@ -329,19 +329,32 @@ end
 
 function write_results_benders(results::Dict, inputs::Dict, settings::Dict, results_folder::String; budgets = nothing)
 
-    if !isdir(results_folder)
-        mkpath(results_folder)
-    end
-
-    MP_output = results["MP"]
-    SPs_output = results["SPs"]
     eval_SPs = haskey(results, "SPs_eval") ? results["SPs_eval"] : []
     cvar_eval = haskey(results, "CVaR_Eval") ? results["CVaR_Eval"] : nothing
     ev_eval = haskey(results, "Expected Value Eval") ? results["Expected Value Eval"] : nothing
 
     # Standard summary dataframes, identical in structure to the mapping=true pipeline
-    df_cap, df_syscost, df_emissions = make_results_mapping_dfs(MP_output, SPs_output, results["CVaR"], results["Expected Value"], inputs, settings;
+    df_cap, df_syscost, df_emissions = make_results_mapping_dfs(results["MP"], results["SPs"], results["CVaR"], results["Expected Value"], inputs, settings;
                                                                   eval_SPs = eval_SPs, cvar_eval = cvar_eval, ev_eval = ev_eval)
+
+    if settings["Run settings"]["Write case files"]
+        write_case_files(results, inputs, settings, results_folder, eval_SPs; budgets = budgets)
+    end
+
+    return df_cap, df_syscost, df_emissions
+
+end
+
+# The files for one case, in its own folder: Convergence.csv and, under "Write all scenarios
+# flag", the raw time series. Everything the Summary needs comes back from write_results_benders
+# instead, so this can be skipped without changing the Summary.
+function write_case_files(results::Dict, inputs::Dict, settings::Dict, results_folder::String, eval_SPs; budgets = nothing)
+
+    if !isdir(results_folder)
+        mkpath(results_folder)
+    end
+
+    SPs_output = results["SPs"]
 
     # Parameters needed for the raw scenario time-series output below
     P_s = inputs["Demand scenario probabilities"]
@@ -386,8 +399,6 @@ function write_results_benders(results::Dict, inputs::Dict, settings::Dict, resu
             write_raw_scenario_results(results_folder, sep, "_eval", eval_SPs, S_eval, F_eval, K_eval, Z, time_index, resources)
         end
     end
-
-    return df_cap, df_syscost, df_emissions
 
 end
 

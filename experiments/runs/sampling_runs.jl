@@ -32,7 +32,7 @@ end
 # End-to-end: full risk-pareto + MGA + wing caps, then GridFill on the finals. Laptop defaults
 # are small (coarse 0.1 cells, batches of 8) so the whole loop, feedback included, runs in a
 # few minutes; `fast` uses one gas and one weather scenario (demand stays stochastic).
-function gridfill_test_laptop(test_index; n_samples::Int = 24, fast::Bool = true, sampling_overrides::AbstractDict = Dict(), cut_export_overrides::AbstractDict = Dict())
+function gridfill_test_laptop(test_index; n_samples::Int = 24, fast::Bool = true, sampling_overrides::AbstractDict = Dict(), cut_export_overrides::AbstractDict = Dict(), run_overrides::AbstractDict = Dict())
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     mkpath(summary_folder)
@@ -41,7 +41,7 @@ function gridfill_test_laptop(test_index; n_samples::Int = 24, fast::Bool = true
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
         cap_settings = Dict("Cap wings" => true),
         mapping_settings = Dict("Mapping" => false),
-        run_settings = Dict("Summary name" => "pareto"),
+        run_settings = merge(Dict{String,Any}("Summary name" => "pareto"), run_overrides),
         sampling_settings = merge(Dict{String,Any}("Method" => "GridFill", "Samples" => n_samples, "Batch size" => 8,
                                                    "GridFill" => Dict("Cell size" => 0.1)), sampling_overrides),
         cut_export_settings = cut_export_overrides)
@@ -51,7 +51,7 @@ end
 cut_export_test_laptop(test_index; cut_export_overrides::AbstractDict = Dict(), kwargs...) =
     gridfill_test_laptop(test_index; cut_export_overrides = merge(Dict{String,Any}("Export cuts" => true), cut_export_overrides), kwargs...)
 
-function gridfill_test_della(test_index; n_samples::Int = 2000, sampling_overrides::AbstractDict = Dict(), cut_export_overrides::AbstractDict = Dict())
+function gridfill_test_della(test_index; n_samples::Int = 2000, sampling_overrides::AbstractDict = Dict(), cut_export_overrides::AbstractDict = Dict(), run_overrides::AbstractDict = Dict())
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
@@ -65,7 +65,7 @@ function gridfill_test_della(test_index; n_samples::Int = 2000, sampling_overrid
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
         cap_settings = Dict("Cap wings" => true, "Cap levels" => [1, 3]),
         mapping_settings = Dict("Mapping" => false),
-        run_settings = Dict("Summary name" => "GridFill"),
+        run_settings = merge(Dict{String,Any}("Summary name" => "GridFill"), run_overrides),
         sampling_settings = merge(Dict{String,Any}("Method" => "GridFill", "Samples" => n_samples, "Write gradients" => true), sampling_overrides),
         cut_export_settings = cut_export_overrides)
 end

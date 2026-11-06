@@ -42,5 +42,10 @@ function resolve_all_settings(settings::AbstractDict, overrides::AbstractDict = 
     for group in SETTINGS_GROUPS
         resolved[group] = resolve_settings(settings, group, get(overrides, group, Dict()))
     end
+    # Gradients.csv is written into the case folders, so it follows the case-file switch.
+    if !resolved["Run settings"]["Write case files"] && resolved["Sampling settings"]["Write gradients"]
+        @warn("\"Write gradients\" is on but \"Write case files\" is off, so no Gradients.csv files will be written.")
+        resolved["Sampling settings"]["Write gradients"] = false
+    end
     return resolved
 end

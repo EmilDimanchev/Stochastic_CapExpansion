@@ -1,7 +1,7 @@
 Results folder path: <results_path>
 Solver: HiGHS
 
-Write all scenarios flag: true # If true, writes results for all scenarios. If false, only writes results for the expected value scenario (if demand uncertainty is true) or the base scenario (if demand uncertainty is false)
+Write all scenarios flag: true # If true, adds per-scenario columns to the Summary and, when "Write case files" is on, writes the per-scenario time series (generation/price/nse.csv). If false, neither is written
 # Risk
 Risk aversion flag: false
 Risk aversion weight: 0.5
@@ -61,6 +61,7 @@ Run settings: # MGA vectors, output naming, evaluation SPs and diagnostics
   Vector type: "random" # how directions are drawn: "random" or "min/max"
   Capacity exploration: true # false: anchors only, no MGA vectors
   Summary name: "new_setup" # Summary_<name>.csv
+  Write case files: false # false: skip the per-case folders (Convergence.csv, time series, Gradients.csv). Summary files and the cut export ("Export cuts") are unaffected
   Vector set: null # runtime only: explicit list of directions (null -> generate from Vector type)
   Eval SPs: null # runtime only: evaluation subproblems to score each final solve on
   Run log: null # runtime only: Vector to collect per-run diagnostics (see log_run!)
