@@ -207,10 +207,10 @@ function build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
     # A resource whose lower bound meets its upper bound (a fleet that can't retire) is fixed rather
     # than boxed: a box with no interior is a problem for the barrier regularization solves.
     x_lb = inputs["Capacity lower bounds"]
-    is_fixed = x_lb .>= x_ub
+    fixed_resources = x_lb .>= x_ub
     @variable(MP, x[r in 1:R] >= max(1e-5, x_lb[r])) # Capacity, MW
-    fix.(x[is_fixed], x_ub[is_fixed]; force = true)
-    @constraint(MP, max_capacity[r in findall(.!is_fixed)], x[r] <= x_ub[r])
+    fix.(x[fixed_resources], x_ub[fixed_resources]; force = true)
+    @constraint(MP, max_capacity[r in findall(.!fixed_resources)], x[r] <= x_ub[r])
 
     @variable(MP, x_line[l in 1:L] >= 0) # Transmission line expansion, MW
     @constraint(MP, max_line_expansion[l in 1:L], x_line[l] <= inputs["Max expansion"][l])

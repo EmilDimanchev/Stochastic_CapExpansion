@@ -180,6 +180,11 @@ function load_input_data(inputs_path, settings)
                                               fuel_price(technologies[resource_technology[g], :], price),
                                               technologies.Variable_OM_per_MWh[resource_technology[g]])
                                 for g in 1:G, price in gas_prices]
+    # Energy_limit_CF is optional: the share of full-capacity energy a technology can produce in each
+    # representative period (see generation_energy_limit in the subproblem). Blank or 1 means no limit.
+    inputs["Energy limit fractions"] = "Energy_limit_CF" in names(technologies) ?
+        Float64.(coalesce.(technologies.Energy_limit_CF[resource_technology], 1.0)) : ones(G)
+    all(0 .< inputs["Energy limit fractions"] .<= 1) || error("Energy_limit_CF must be above 0 and at most 1.")
     inputs["CO2 emission intensities"] = [emission_intensity(heat_rate(technologies[t, :]), carbon(technologies[t, :])) for t in resource_technology]
 
     # $/MW-yr, generation rows first

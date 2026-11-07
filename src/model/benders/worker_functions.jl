@@ -268,6 +268,12 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
 
     # Capacity limit on generation
     @constraint(ED, capacity_limit[r in 1:G, t in 1:T], g[r,t] <= x[r]*availability[t,r])
+    # Energy-limited generators (e.g. hydro): output over each representative period can't exceed
+    # the fraction of what full capacity would produce, however it's shaped within the period
+    energy_fractions = inputs["Energy limit fractions"]
+    period_hours = [inputs["Set of first periods"][i]:inputs["Set of last periods"][i] for i in 1:n_periods]
+    @constraint(ED, generation_energy_limit[r in findall(<(1.0), energy_fractions), i in 1:n_periods],
+        sum(g[r,t] for t in period_hours[i]) <= energy_fractions[r]*length(period_hours[i])*x[r])
     if Z > 1
         @variable(ED, flow[t in 1:T, l in 1:L])
         @constraint(ED, transmission_limit[t in 1:T, l in 1:L], flow[t,l] <= (line_capacity_existing[l] + x_line[l])/scaling_factor_demand)

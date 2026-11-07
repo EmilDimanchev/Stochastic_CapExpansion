@@ -1,0 +1,9 @@
+Workers: 64
+"Convergence tolerance": 0.001
+"Run settings":
+  "MGA vectors": 50
+"Sampling settings":
+  Samples: 3000
+"Cut settings":
+  "Cuts retained": 500000
+Solver: "Gurobi"

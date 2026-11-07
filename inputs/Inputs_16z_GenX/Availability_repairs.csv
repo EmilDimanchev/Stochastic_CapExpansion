@@ -1,0 +1,109 @@
+Resource,Group,Zone,Donor_group,Donor_zone,Mean_availability
+CA_onshore_wind_turbine_1,Wind existing,1,Wind,1,0.2891650572732634
+CA_solar_photovoltaic_1,Solar existing,1,Solar,1,0.2934651302776995
+ISNE_offshore_wind_turbine_1,Offshore existing,2,Offshore floating,2,0.4365834287233973
+ISNE_onshore_wind_turbine_1,Wind existing,2,Wind,2,0.4206242143144686
+ISNE_solar_photovoltaic_1,Solar existing,2,Solar,2,0.24284944110141105
+MISC_onshore_wind_turbine_1,Wind existing,3,Wind,3,0.41398729748426094
+MISC_solar_photovoltaic_1,Solar existing,3,Solar,3,0.25584071260043756
+MISS_solar_photovoltaic_1,Solar existing,4,Solar,4,0.2451105031853231
+MISW_onshore_wind_turbine_1,Wind existing,5,Wind,5,0.45786531581769485
+MISW_solar_photovoltaic_1,Solar existing,5,Solar,5,0.25427004187809077
+NWPP_onshore_wind_turbine_1,Wind existing,6,Wind,6,0.3445984717854259
+NWPP_solar_photovoltaic_1,Solar existing,6,Solar,6,0.2526494983357921
+NYCW_solar_photovoltaic_1,Solar existing,7,Solar,7,0.2518697176530337
+NYUP_onshore_wind_turbine_1,Wind existing,8,Wind,8,0.41306450357671787
+NYUP_solar_photovoltaic_1,Solar existing,8,Solar,8,0.24149253378962338
+PJM_onshore_wind_turbine_1,Wind existing,9,Wind,9,0.40046264647983243
+PJM_solar_photovoltaic_1,Solar existing,9,Solar,9,0.2495852708954892
+SOU_solar_photovoltaic_1,Solar existing,10,Solar,10,0.24602258217479167
+SPP_onshore_wind_turbine_1,Wind existing,11,Wind,11,0.4577870605758123
+SPP_solar_photovoltaic_1,Solar existing,11,Solar,11,0.2751887788217102
+SRCA_solar_photovoltaic_1,Solar existing,12,Solar,12,0.2450007275274429
+SRCE_onshore_wind_turbine_1,Wind existing,13,Wind,13,0.3558200496720939
+SRCE_solar_photovoltaic_1,Solar existing,13,Solar,13,0.2518162394640762
+SRSG_onshore_wind_turbine_1,Wind existing,14,Wind,14,0.27882081109037193
+SRSG_solar_photovoltaic_1,Solar existing,14,Solar,14,0.2983067834847738
+TRE_onshore_wind_turbine_1,Wind existing,15,Wind,15,0.42047846161583313
+TRE_solar_photovoltaic_1,Solar existing,15,Solar,15,0.26705736138280584
+WECCC_onshore_wind_turbine_1,Wind existing,16,Wind,16,0.3669453334434328
+WECCC_solar_photovoltaic_1,Solar existing,16,Solar,16,0.2781392150888272
+CA_distributed_generation_1,Distributed,1,Solar,1,0.2934651302776995
+ISNE_distributed_generation_1,Distributed,2,Solar,2,0.24284944110141105
+MISC_distributed_generation_1,Distributed,3,Solar,3,0.25584071260043756
+MISS_distributed_generation_1,Distributed,4,Solar,4,0.2451105031853231
+MISW_distributed_generation_1,Distributed,5,Solar,5,0.25427004187809077
+NWPP_distributed_generation_1,Distributed,6,Solar,6,0.2526494983357921
+NYCW_distributed_generation_1,Distributed,7,Solar,7,0.2518697176530337
+NYUP_distributed_generation_1,Distributed,8,Solar,8,0.24149253378962338
+PJM_distributed_generation_1,Distributed,9,Solar,9,0.2495852708954892
+SOU_distributed_generation_1,Distributed,10,Solar,10,0.24602258217479167
+SPP_distributed_generation_1,Distributed,11,Solar,11,0.2751887788217102
+SRCA_distributed_generation_1,Distributed,12,Solar,12,0.2450007275274429
+SRCE_distributed_generation_1,Distributed,13,Solar,13,0.2518162394640762
+SRSG_distributed_generation_1,Distributed,14,Solar,14,0.2983067834847738
+TRE_distributed_generation_1,Distributed,15,Solar,15,0.26705736138280584
+WECCC_distributed_generation_1,Distributed,16,Solar,16,0.2781392150888272
+CA_offshorewind_class3_moderate_fixed_1_1,Offshore fixed,1,Offshore floating,1,0.518264799932376
+CA_offshorewind_class3_moderate_fixed_1_2,Offshore fixed,1,Offshore floating,1,0.518264799932376
+CA_offshorewind_class3_moderate_fixed_1_3,Offshore fixed,1,Offshore floating,1,0.518264799932376
+CA_offshorewind_class3_moderate_fixed_1_4,Offshore fixed,1,Offshore floating,1,0.518264799932376
+CA_offshorewind_class3_moderate_fixed_1_5,Offshore fixed,1,Offshore floating,1,0.518264799932376
+CA_offshorewind_class3_moderate_fixed_1_6,Offshore fixed,1,Offshore floating,1,0.518264799932376
+ISNE_offshorewind_class3_moderate_fixed_1_1,Offshore fixed,2,Offshore floating,2,0.4365834287233973
+ISNE_offshorewind_class3_moderate_fixed_1_2,Offshore fixed,2,Offshore floating,2,0.4365834287233973
+ISNE_offshorewind_class3_moderate_fixed_1_3,Offshore fixed,2,Offshore floating,2,0.4365834287233973
+ISNE_offshorewind_class3_moderate_fixed_1_4,Offshore fixed,2,Offshore floating,2,0.4365834287233973
+ISNE_offshorewind_class3_moderate_fixed_1_5,Offshore fixed,2,Offshore floating,2,0.4365834287233973
+ISNE_offshorewind_class3_moderate_fixed_1_6,Offshore fixed,2,Offshore floating,2,0.4365834287233973
+MISS_offshorewind_class3_moderate_fixed_1_1,Offshore fixed,4,Offshore fixed,all,0.4651688912245021
+MISS_offshorewind_class3_moderate_fixed_1_2,Offshore fixed,4,Offshore fixed,all,0.4651688912245021
+MISS_offshorewind_class3_moderate_fixed_1_3,Offshore fixed,4,Offshore fixed,all,0.4651688912245021
+MISS_offshorewind_class3_moderate_fixed_1_4,Offshore fixed,4,Offshore fixed,all,0.4651688912245021
+MISS_offshorewind_class3_moderate_fixed_1_5,Offshore fixed,4,Offshore fixed,all,0.4651688912245021
+MISS_offshorewind_class3_moderate_fixed_1_6,Offshore fixed,4,Offshore fixed,all,0.4651688912245021
+MISS_offshorewind_class12_moderate_floating_1_1,Offshore floating,4,Offshore floating,all,0.46770288722155295
+MISS_offshorewind_class12_moderate_floating_1_2,Offshore floating,4,Offshore floating,all,0.46770288722155295
+MISS_offshorewind_class12_moderate_floating_1_3,Offshore floating,4,Offshore floating,all,0.46770288722155295
+MISS_offshorewind_class12_moderate_floating_1_4,Offshore floating,4,Offshore floating,all,0.46770288722155295
+MISS_offshorewind_class12_moderate_floating_1_5,Offshore floating,4,Offshore floating,all,0.46770288722155295
+MISS_offshorewind_class12_moderate_floating_1_6,Offshore floating,4,Offshore floating,all,0.46770288722155295
+NYCW_utilitypv_class1_moderate_12,Solar,7,Solar,7,0.2518697176530337
+NYCW_utilitypv_class1_moderate_13,Solar,7,Solar,7,0.2518697176530337
+NYCW_utilitypv_class1_moderate_14,Solar,7,Solar,7,0.2518697176530337
+NYCW_offshorewind_class3_moderate_fixed_1_1,Offshore fixed,7,Offshore floating,7,0.444862113832351
+NYCW_offshorewind_class3_moderate_fixed_1_2,Offshore fixed,7,Offshore floating,7,0.444862113832351
+NYCW_offshorewind_class3_moderate_fixed_1_3,Offshore fixed,7,Offshore floating,7,0.444862113832351
+NYCW_offshorewind_class3_moderate_fixed_1_4,Offshore fixed,7,Offshore floating,7,0.444862113832351
+NYCW_offshorewind_class3_moderate_fixed_1_5,Offshore fixed,7,Offshore floating,7,0.444862113832351
+NYCW_offshorewind_class3_moderate_fixed_1_6,Offshore fixed,7,Offshore floating,7,0.444862113832351
+PJM_offshorewind_class3_moderate_fixed_1_1,Offshore fixed,9,Offshore floating,9,0.43558511743331585
+PJM_offshorewind_class3_moderate_fixed_1_2,Offshore fixed,9,Offshore floating,9,0.43558511743331585
+PJM_offshorewind_class3_moderate_fixed_1_3,Offshore fixed,9,Offshore floating,9,0.43558511743331585
+PJM_offshorewind_class3_moderate_fixed_1_4,Offshore fixed,9,Offshore floating,9,0.43558511743331585
+PJM_offshorewind_class3_moderate_fixed_1_5,Offshore fixed,9,Offshore floating,9,0.43558511743331585
+PJM_offshorewind_class3_moderate_fixed_1_6,Offshore fixed,9,Offshore floating,9,0.43558511743331585
+SOU_offshorewind_class3_moderate_fixed_1_1,Offshore fixed,10,Offshore floating,10,0.4409595349063156
+SOU_offshorewind_class3_moderate_fixed_1_2,Offshore fixed,10,Offshore floating,10,0.4409595349063156
+SOU_offshorewind_class3_moderate_fixed_1_3,Offshore fixed,10,Offshore floating,10,0.4409595349063156
+SOU_offshorewind_class3_moderate_fixed_1_4,Offshore fixed,10,Offshore floating,10,0.4409595349063156
+SOU_offshorewind_class3_moderate_fixed_1_5,Offshore fixed,10,Offshore floating,10,0.4409595349063156
+SOU_offshorewind_class3_moderate_fixed_1_6,Offshore fixed,10,Offshore floating,10,0.4409595349063156
+SRCA_offshorewind_class3_moderate_fixed_1_1,Offshore fixed,12,Offshore fixed,all,0.4651688912245021
+SRCA_offshorewind_class3_moderate_fixed_1_2,Offshore fixed,12,Offshore fixed,all,0.4651688912245021
+SRCA_offshorewind_class3_moderate_fixed_1_3,Offshore fixed,12,Offshore fixed,all,0.4651688912245021
+SRCA_offshorewind_class3_moderate_fixed_1_4,Offshore fixed,12,Offshore fixed,all,0.4651688912245021
+SRCA_offshorewind_class3_moderate_fixed_1_5,Offshore fixed,12,Offshore fixed,all,0.4651688912245021
+SRCA_offshorewind_class3_moderate_fixed_1_6,Offshore fixed,12,Offshore fixed,all,0.4651688912245021
+SRCA_offshorewind_class12_moderate_floating_1_1,Offshore floating,12,Offshore floating,all,0.46770288722155295
+SRCA_offshorewind_class12_moderate_floating_1_2,Offshore floating,12,Offshore floating,all,0.46770288722155295
+SRCA_offshorewind_class12_moderate_floating_1_3,Offshore floating,12,Offshore floating,all,0.46770288722155295
+SRCA_offshorewind_class12_moderate_floating_1_4,Offshore floating,12,Offshore floating,all,0.46770288722155295
+SRCA_offshorewind_class12_moderate_floating_1_5,Offshore floating,12,Offshore floating,all,0.46770288722155295
+SRCA_offshorewind_class12_moderate_floating_1_6,Offshore floating,12,Offshore floating,all,0.46770288722155295
+TRE_offshorewind_class3_moderate_fixed_1_1,Offshore fixed,15,Offshore floating,15,0.484382182243353
+TRE_offshorewind_class3_moderate_fixed_1_2,Offshore fixed,15,Offshore floating,15,0.484382182243353
+TRE_offshorewind_class3_moderate_fixed_1_3,Offshore fixed,15,Offshore floating,15,0.484382182243353
+TRE_offshorewind_class3_moderate_fixed_1_4,Offshore fixed,15,Offshore floating,15,0.484382182243353
+TRE_offshorewind_class3_moderate_fixed_1_5,Offshore fixed,15,Offshore floating,15,0.484382182243353
+TRE_offshorewind_class3_moderate_fixed_1_6,Offshore fixed,15,Offshore floating,15,0.484382182243353

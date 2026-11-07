@@ -288,3 +288,180 @@ function test_scenario_counts_end_to_end(test_index = "scenario_counts")
     @info("[$(test_index)] PASSED: scenario counts build, solve and are written out.")
     return true
 end
+
+
+# A small GenX case: 3 zones, 8 weeks. Zone 1 is short of generation and has a cheap fixed plant in zone 2
+# behind an existing line; each of zones 1 and 2 can build its own battery.
+function _write_toy_genx_case(folder)
+    hours = 168 * 8
+    columns = ["region", "Resource", "technology", "Zone", "New_Build", "VRE", "Existing_Cap_MW", "Existing_Cap_MWh", "Max_Cap_MW", "Inv_Cost_per_MWyr", "Inv_Cost_per_MWhyr",
+               "Fixed_OM_Cost_per_MWyr", "Fixed_OM_Cost_per_MWhyr", "Var_OM_Cost_per_MWh", "Heat_Rate_MMBTU_per_MWh", "Fuel", "Eff_Up", "Eff_Down", "CapRes_1",
+               "CO2_Capture_Rate", "CO2_Capture_Cost_per_Metric_Ton", "cap_recovery_years"]
+    rows = [("A", "hydro_2", "Conventional Hydroelectric", 2, -1, 0, 500.0, 0.0, 0.0, 0.0, 0.0, 40000.0, 0.0, 0.0, 0.0, "None", 0.0, 0.0, 0.8, 0.0, 0.0, 0.0),
+            ("A", "ccgt_1", "Natural Gas Fired Combined Cycle", 1, 0, 0, 200.0, 0.0, 0.0, 0.0, 0.0, 15000.0, 0.0, 4.0, 8.0, "pacific_naturalgas", 0.0, 0.0, 0.93, 0.0, 0.0, 0.0),
+            ("A", "new_cc_1", "NaturalGas_CCAvgCF_Moderate", 1, 1, 0, 0.0, 0.0, -1.0, 50000.0, 0.0, 28000.0, 0.0, 2.0, 6.4, "pacific_naturalgas", 0.0, 0.0, 0.93, 0.0, 0.0, 30.0),
+            ("A", "new_ccs_2", "NaturalGas_CCCCSAvgCF_Conservative", 2, 1, 0, 0.0, 0.0, -1.0, 90000.0, 0.0, 60000.0, 0.0, 6.0, 7.0, "pacific_naturalgas", 0.0, 0.0, 0.93, 0.9, 27.0, 30.0),
+            ("A", "wind_1a", "LandbasedWind_Class3_Moderate_", 1, 1, 1, 0.0, 0.0, 200.0, 40000.0, 0.0, 30000.0, 0.0, 0.0, 0.0, "None", 0.0, 0.0, 0.8, 0.0, 0.0, 30.0),
+            ("A", "wind_1b", "LandbasedWind_Class3_Moderate_", 1, 1, 1, 0.0, 0.0, 9000.0, 90000.0, 0.0, 30000.0, 0.0, 0.0, 0.0, "None", 0.0, 0.0, 0.8, 0.0, 0.0, 30.0),
+            ("A", "solar_3", "UtilityPV_Class1_Moderate_", 3, 1, 1, 0.0, 0.0, 700.0, 30000.0, 0.0, 15000.0, 0.0, 0.0, 0.0, "None", 0.0, 0.0, 0.8, 0.0, 0.0, 30.0),
+            ("A", "batt_new_1", "Battery_*_Moderate", 1, 1, 0, 0.0, 0.0, -1.0, 20000.0, 12000.0, 6000.0, 3500.0, 0.0, 0.0, "None", 0.92, 0.92, 0.95, 0.0, 0.0, 15.0),
+            ("A", "batt_new_2", "Battery_*_Moderate", 2, 1, 0, 0.0, 0.0, -1.0, 20000.0, 12000.0, 6000.0, 3500.0, 0.0, 0.0, "None", 0.92, 0.92, 0.95, 0.0, 0.0, 15.0),
+            ("A", "pump_2", "Hydroelectric Pumped Storage", 2, -1, 0, 100.0, 800.0, 0.0, 0.0, 0.0, 47000.0, 0.0, 0.0, 0.0, "None", 0.866, 0.866, 0.95, 0.0, 0.0, 0.0),
+            # VRE = 0 writes these with availability flat at 1, the source problem the converter repairs
+            ("A", "old_wind_1", "Onshore Wind Turbine", 1, 0, 0, 80.0, 0.0, 0.0, 0.0, 0.0, 43000.0, 0.0, 0.0, 0.0, "None", 0.0, 0.0, 0.8, 0.0, 0.0, 0.0),
+            ("A", "wind_flat_1", "LandbasedWind_Class3_Moderate_", 1, 1, 0, 0.0, 0.0, 100.0, 35000.0, 0.0, 30000.0, 0.0, 0.0, 0.0, "None", 0.0, 0.0, 0.8, 0.0, 0.0, 30.0),
+            ("A", "off_fixed_2", "OffShoreWind_Class3_Moderate_fixed_1", 2, 1, 0, 0.0, 0.0, 300.0, 100000.0, 0.0, 70000.0, 0.0, 0.0, 0.0, "None", 0.0, 0.0, 0.8, 0.0, 0.0, 30.0),
+            ("A", "off_float_2", "OffShoreWind_Class12_Moderate_floating_1", 2, 1, 1, 0.0, 0.0, 300.0, 150000.0, 0.0, 70000.0, 0.0, 0.0, 0.0, "None", 0.0, 0.0, 0.8, 0.0, 0.0, 30.0),
+            ("A", "off_float_3", "OffShoreWind_Class12_Moderate_floating_1", 3, 1, 0, 0.0, 0.0, 300.0, 150000.0, 0.0, 70000.0, 0.0, 0.0, 0.0, "None", 0.0, 0.0, 0.8, 0.0, 0.0, 30.0),
+            ("A", "dg_3", "distributed_generation", 3, -1, 0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "None", 0.0, 0.0, 0.8, 0.0, 0.0, 0.0),
+            ("A", "ev_1", "trans_light_duty", 1, -1, 0, 900.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "None", 0.0, 0.0, 0.95, 0.0, 0.0, 0.0)]
+    CSV.write(joinpath(folder, "Generators_data.csv"), DataFrame([c => [r[i] for r in rows] for (i, c) in enumerate(columns)]))
+    daily(t) = sin(2pi * (t % 24) / 24)
+    weekly(t) = sin(2pi * t / (168 * 8))
+    wind(t) = clamp(0.4 + 0.3 * weekly(t) + 0.1 * daily(t), 0.0, 1.0)
+    solar(t) = clamp(daily(t), 0.0, 1.0)
+    variability = DataFrame(Time_Index = 1:hours)
+    for r in rows
+        variability[!, r[2]] = r[6] == 0 ? ones(hours) : startswith(r[2], "wind") ? wind.(1:hours) : solar.(1:hours)
+    end
+    CSV.write(joinpath(folder, "Generators_variability.csv"), variability)
+    load = DataFrame(Demand_Segment = vcat(1:4, fill(missing, hours - 4)), Max_Demand_Curtailment = vcat([1.0, 0.04, 0.024, 0.003], fill(missing, hours - 4)), Time_Index = 1:hours)
+    load[!, "\$/MWh"] = vcat([2000, 1800, 1100, 400], fill(missing, hours - 4))
+    for (z, level) in enumerate((300.0, 100.0, 50.0))
+        load[!, "Load_MW_z$z"] = level .* (1 .+ 0.2 .* daily.(1:hours) .+ 0.2 .* weekly.(1:hours))
+    end
+    CSV.write(joinpath(folder, "Load_data.csv"), load)
+    CSV.write(joinpath(folder, "Network.csv"), DataFrame(Network_Lines = [1, 2], z1 = [1, 0], z2 = [-1, 1], z3 = [0, -1], Line_Max_Flow_MW = [400.0, 100.0],
+                                                         Line_Reinforcement_Cost_per_MWyr = [50000.0, 0.0], Line_Max_Reinforcement_MW = [400.0, 100.0]))
+    CSV.write(joinpath(folder, "Capacity_reserve_margin.csv"), DataFrame(Network_zones = ["z1", "z2", "z3"], CapRes_1 = [0.15, 0.1, 0.12]))
+end
+
+function test_genx_conversion(test_index = "genx_conversion")
+    root = mktempdir()
+    source, new = joinpath(root, "genx"), joinpath(root, "new")
+    mkpath(source)
+    _write_toy_genx_case(source)
+    report = convert_genx_case(source, new; rep_weeks = 3, weather_years = 2, counts = Dict("Demand" => 2, "Gas" => 2, "Weather" => 2))
+
+    # Flexible demand is dropped, wind splits into cost tiers (1x and 3x zone peak: 200 MW, then the rest)
+    @assert report.dropped == ["trans_light_duty"]
+    technologies = report.technologies
+    @assert issubset(["Wind T1", "Wind T3"], technologies.Technology) "tiers: $(technologies.Technology)"
+
+    # Flat wind and solar take real profiles: same zone, then the other offshore kind, then other zones.
+    # Hydro stays flat, having no donor, and a repaired cluster is ranked on its repaired capacity factor.
+    repairs = report.repairs
+    donor(resource) = begin
+        row = repairs[findfirst(==(resource), repairs.Resource), :]
+        (row.Donor_group, row.Donor_zone)
+    end
+    @assert sort(repairs.Resource) == ["dg_3", "off_fixed_2", "off_float_3", "old_wind_1", "wind_flat_1"] "repairs: $(repairs.Resource)"
+    @assert donor("dg_3") == ("Solar", "3")
+    @assert donor("old_wind_1") == ("Wind", "1") && donor("off_fixed_2") == ("Offshore floating", "2") && donor("off_float_3") == ("Offshore floating", "all")
+    @assert all(repairs.Mean_availability .< 1)
+    @assert isfile(joinpath(new, "Availability_repairs.csv"))
+    library = CSV.read(joinpath(new, "Weather_library.csv"), DataFrame)
+    @assert maximum(library.Wind_existing_z1) < 1 && minimum(library.Wind_existing_z1) < maximum(library.Wind_existing_z1)
+    @assert !("Hydro_z2" in names(library)) "hydro has no real profile to use"
+    @assert maximum(library.Distributed_z3) <= 1 && minimum(library.Distributed_z3) == 0 "distributed generation should follow solar"
+
+    settings = load_settings(new)
+    settings["Parallel flag"] = false
+    settings["Solver"] = "HiGHS"
+    settings["CRM flag"] = false
+    @assert settings["Max nse"] ≈ [0.933, 0.04, 0.024, 0.003] && settings["Cost of nonserved energy"] == [2000.0, 1800.0, 1100.0, 400.0]
+    inputs = load_input_data(new, settings)
+    resources = inputs["Resources"]
+    index(name) = findfirst(==(name), resources)
+
+    # Representative weeks stand for the whole year in every weather scenario
+    @assert all(vec(sum(inputs["Period weights"], dims = 1)) .≈ 168 * 8)
+    @assert size(inputs["Demand"]) == (168 * 3, 3, 2)
+    source_load = CSV.read(joinpath(source, "Load_data.csv"), DataFrame)
+    for k in 1:2, z in 1:3
+        @assert isapprox(sum(inputs["Demand"][:, z, k] .* inputs["Period weights"][:, k]), sum(source_load[!, "Load_MW_z$z"]); rtol = 1e-3) "zone $z, year $k energy"
+    end
+
+    # Resources exist only where the case has them, with the right bounds and exact annual costs
+    @assert index("Gas CC new-z2") === nothing && index("Hydro-z1") === nothing && index("Solar T1-z1") === nothing
+    lb, ub, cost = inputs["Capacity lower bounds"], inputs["Capacity upper bounds"], inputs["Investment costs"]
+    @assert lb[index("Hydro-z2")] == ub[index("Hydro-z2")] == 500.0 "a fixed fleet can't retire"
+    @assert lb[index("Gas CC existing-z1")] == 0.0 && ub[index("Gas CC existing-z1")] == 200.0 "a retirable fleet can only shrink"
+    @assert lb[index("Pumped hydro-z2")] == ub[index("Pumped hydro-z2")] == 100.0
+    @assert isapprox(cost[index("Gas CC new-z1")], 78000.0; rtol = 1e-9)
+    @assert isapprox(cost[index("Hydro-z2")], 40000.0; rtol = 1e-9) "fleets pay only fixed O&M"
+    @assert isapprox(cost[index("Battery-z2")], 20000 + 4 * 12000 + 6000 + 4 * 3500; rtol = 1e-9) "4-hour battery includes energy costs"
+    @assert inputs["Storage power to energy ratio"][findfirst(==("Pumped hydro-z2"), inputs["Storage"].Resources)] == 100 / 800
+    gas_ccs = findfirst(==("Gas CCS new-z2"), inputs["Generation resources"])
+    @assert isapprox(inputs["CO2 emission intensities"][gas_ccs], 7.0 * 0.053 * 0.1; rtol = 1e-9) "captured carbon isn't emitted"
+
+    # Hydro is capped hourly and over each representative week, and other technologies aren't limited
+    hydro = findfirst(==("Hydro-z2"), inputs["Generation resources"])
+    @assert inputs["Energy limit fractions"][hydro] == 0.38 && count(<(1.0), inputs["Energy limit fractions"]) == 1
+    @assert all(inputs["Generation availability"][:, hydro, :] .≈ 0.8)
+    limit_point = zeros(length(resources))
+    limit_point[index("Hydro-z2")] = 500.0
+    limit_SP = build_subproblem(inputs, settings, [1, 1, 1])
+    set_parameter_value.(limit_SP[:x], limit_point)
+    set_parameter_value.(limit_SP[:x_line], zeros(inputs["Number of lines"]))
+    limited = run_subproblem(limit_SP, inputs, settings; minimal_payload = true)
+    @assert limited["coeff"] == 1
+    hydro_output = value.(limit_SP[:g])[hydro, :]
+    @assert maximum(hydro_output) <= 400 + 1e-6 "hourly output stays within availability"
+    @assert maximum(hydro_output) > 190 * 1.2 "hydro should shape its energy above the average, unlike a flat cap at the capacity factor"
+    for week in 1:3
+        energy = sum(hydro_output[(week-1)*168+1:week*168])
+        @assert energy <= 0.38 * 168 * 500 * (1 + 1e-6) "week $week energy $energy"
+        @assert isapprox(energy, 0.38 * 168 * 500; rtol = 1e-4) "with load being shed, the limit should bind in week $week"
+    end
+
+    # The capacity dual, which forms the Benders cuts, has to price the energy limit
+    step = 1.0
+    limit_point[index("Hydro-z2")] += step
+    set_parameter_value.(limit_SP[:x], limit_point)
+    stepped = run_subproblem(limit_SP, inputs, settings; minimal_payload = true)
+    predicted = limited["SP objective"] + limited["capacity dual"][index("Hydro-z2")] * step
+    @assert isapprox(stepped["SP objective"], predicted; rtol = 1e-4) "cut predicts $predicted, solve gives $(stepped["SP objective"])"
+    @assert limited["capacity dual"][index("Hydro-z2")] < 0 "more hydro should lower operating cost"
+
+    # Existing lines carry power with no expansion: zone 1 is served by zone 2's hydro
+    SP = build_subproblem(inputs, settings, [1, 1, 1])
+    capacity = zeros(length(resources))
+    capacity[index("Hydro-z2")] = 500.0
+    set_parameter_value.(SP[:x], capacity)
+    set_parameter_value.(SP[:x_line], zeros(inputs["Number of lines"]))
+    output = run_subproblem(SP, inputs, settings; minimal_payload = false)
+    @assert output["coeff"] == 1
+    @assert maximum(abs.(output["Net Flow"][:, 1])) > 100 "the existing line should carry power"
+    @assert maximum(abs.(output["Net Flow"][:, 1])) <= 400 + 1e-6 "flow stays within existing capacity"
+
+    # Each storage row serves its own zone with its own capacity: only the battery given capacity cycles
+    # (periods wrap and lines share any surplus, so arbitrage needs system-wide surplus and shortage in the
+    # same week: this much wind crosses total load within one representative week)
+    capacity[index("Wind T1-z1")] = 1000.0
+    capacity[index("Hydro-z2")] = 100.0
+    capacity[index("Battery-z1")] = 50.0
+    set_parameter_value.(SP[:x], capacity)
+    output = run_subproblem(SP, inputs, settings; minimal_payload = false)
+    discharge = value.(SP[:z_dch])
+    storage_names = inputs["Storage"].Resources
+    @assert sum(discharge[findfirst(==("Battery-z1"), storage_names), :]) > 0 "the battery with capacity should cycle"
+    @assert sum(discharge[findfirst(==("Battery-z2"), storage_names), :]) <= 1e-6 "a battery with no capacity can't"
+    @assert output["capacity dual"][index("Battery-z1")] < 0 "a battery that relieves shortage should have value"
+
+    # The master fixes fleets that can't retire and bounds the rest
+    MP = build_planning_model(inputs, settings)
+    @assert is_fixed(MP[:x][index("Hydro-z2")]) && fix_value(MP[:x][index("Hydro-z2")]) == 500.0
+    @assert !is_fixed(MP[:x][index("Gas CC existing-z1")]) && normalized_rhs(MP[:max_capacity][index("Gas CC existing-z1")]) == 200.0
+
+    # Same seed rebuilds the same library; clustering keeps forced weeks
+    again = joinpath(root, "again")
+    convert_genx_case(source, again; rep_weeks = 3, weather_years = 2, counts = Dict("Demand" => 2, "Gas" => 2, "Weather" => 2))
+    @assert read(joinpath(new, "Weather_library.csv")) == read(joinpath(again, "Weather_library.csv")) "same seed should rebuild identical data"
+    features = reshape(Float64.([0, 1, 2, 50, 51, 52, 100, 101]), :, 1)
+    weeks, counts = select_representative_weeks(features, 3; forced = [8])
+    @assert 8 in weeks && sum(counts) == 8 && issorted(weeks)
+
+    @info("[$(test_index)] PASSED: GenX conversion, capacity bounds, existing lines and per-zone storage.")
+    return true
+end

@@ -1,0 +1,183 @@
+Results folder path: <results_path>
+Solver: HiGHS
+
+Write all scenarios flag: true # If true, adds per-scenario columns to the Summary and, when "Write case files" is on, writes the per-scenario time series (generation/price/nse.csv). If false, neither is written
+# Risk
+Risk aversion flag: false
+Risk aversion weight: 0.5
+Value-at-Risk percent: 0.05
+Risk sharing flag: false
+
+# Policy instruments
+Investment tax credits flag: false
+Production tax credits flag: false
+Standard flag: false
+Carbon cap flag: false
+Carbon tax flag: false
+# Policy parameters
+# Investment tax credits
+Endogenous tax credits flag: false
+Tax credits: [0, 0, 0, 0, 0]
+# Production tax credit
+Production credits: [0, 0, 0, 0]
+# CES
+Standard mandate: 0.80
+# Carbon tax 
+Carbon tax: 0
+# Cap and trade
+Carbon cap: 25000
+Contracts: false
+Search equilibria: false
+
+# CRM
+CRM flag: false # off in the GenX case; margins below are its values
+
+Scaling factor cost: 1e5
+Scaling factor demand: 1
+Convergence tolerance: 0.00001
+
+Cost of nonserved energy: [2000.0,1800.0,1100.0,400.0]
+Max nse: [0.933,0.04,0.024,0.003]
+
+Regularization flag: true
+Regularization strategy: "Level Set" # options are "QTR" and "Level Set"
+
+# Distributed Memory Parallelization
+Parallel flag: true
+Workers: 8
+Memory debug flag: false
+
+Seed: 1234
+Budget convergence tolerance: 0.001
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Settings groups for run_stochastic_exploration_risk_pareto (experiments/mga/run_settings.jl).
+# These are the base values; a run overrides individual keys with the driver's keyword of the
+# same name (budget_settings = Dict(...), cut_settings = Dict(...), ...). Unknown keys error.
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Run settings: # MGA vectors, output naming, evaluation SPs and diagnostics
+  MGA vectors: 2 # number of MGA directions explored after the risk-weight anchors
+  Vector type: "random" # how directions are drawn: "random" or "min/max"
+  Capacity exploration: true # false: anchors only, no MGA vectors
+  Summary name: "new_setup" # Summary_<name>.csv
+  Write case files: false # false: skip the per-case folders (Convergence.csv, time series, Gradients.csv). Summary files and the cut export ("Export cuts") are unaffected
+  Vector set: null # runtime only: explicit list of directions (null -> generate from Vector type)
+  Eval SPs: null # runtime only: evaluation subproblems to score each final solve on
+  Run log: null # runtime only: Vector to collect per-run diagnostics (see log_run!)
+
+Budget settings: # budget constraint used during capacity exploration, and its tightening schedule
+  Budget type: "Transformed" # "Transformed" or "Box"
+  Budget offset: 1.0 # Transformed: added to the loosest budget
+  Budget multiplier: 1.10 # Box: scales the EV-optimal System Expected cost
+  Tighten budget: false # Transformed only: step the budget down per MGA vector
+  Tighten step size: 0.1
+  Floor offset: 0.01 # tightest budget = min transformed anchor cost + this
+
+Cap settings: # extra caps on one metric (System Expected / CVaR) at selected tightening levels
+  Cap wings: true # only active when tightening a Transformed budget
+  Number of caps: 2 # max caps per wing per level
+  Cap levels: [1] # tightening levels at which caps are run
+
+Mapping settings: # records every Benders iterate within the gap threshold (Summary rows <label>_iter_<k>)
+  Mapping: false
+  Mapping gap threshold: 0.2 # iterates with gap at or below this are recorded
+
+Sampling settings: # portfolios evaluated after exploration, labelled by subproblem solves only. The RNG seed is Seed above.
+  Method: "None" # "None" or "GridFill" (cost-space gap filling)
+  Samples: 2 # portfolios to evaluate (GridFill: upper limit; it stops early once no empty cell is left)
+  Batch size: 64 # solves per select -> evaluate round; solved points feed the next round
+  Candidates: 30 # candidates kept per cell
+  Write gradients: false # also write per-solve Gradients.csv files to disk
+  GridFill: # src/model/sampling/gridfill_*.jl. Grid over (c_hat, v_hat) = anchor-normalised (Inv + EV, Inv + CVaR);
+    # each empty cell is targeted with barycentric blends of three solved points, aimed with the cut bracket (see Aim fraction).
+    Cell size: 0.025 # cell edge in (c_hat, v_hat)
+    Delta cap: 1.1 # only cells with c_hat + v_hat at or below this (the near-optimal region)
+    Per cell: "auto" # samples per cell: an integer cap, or "auto" to fill in layers (1 per reachable cell, then 2, ...) until Samples is spent
+    Max misses: 3 # misses (sample landed elsewhere or failed, or a round with no candidate while the cell is empty) before a target cell is exhausted; cumulative, not reset by a hit
+    Max dry rounds: 3 # rounds with no candidate before a cell already holding samples is parked until the next layer
+    Aim fraction: [0.10, 0.13] # aim with LB + f * (UB - LB) of the op-cost bracket: [EV, CVaR], or one number for both (0.5 = midpoint)
+    Aim margin: 0.2 # aims are drawn from 0.1 to (1 - this) of the cell's width on each axis, away from the top and right edges
+    Frontier depth: 1.0 # after the run, unreached cells less than this many cells from the hull's lower edge are labelled frontier and left out of adjusted coverage
+    Boundary margin: 0.0 # drop target cells less than this many cells from the hull's lower edge before sampling (0 = off)
+
+Cut settings: # cut pool, see src/model/benders/cut_pool.jl
+  Cuts retained: 200000 # memory cap on live + archived cuts, applied at each new risk weight / MGA vector
+  Trim rule: "recent_binding" # which cuts survive "Cuts retained": "recent_binding" or "earliest"
+  Prune window: {Anchor: 8, Budget: 2, EV cap: 2, CVaR cap: 3} # iterations without binding before a live cut is archived, per solve type
+  Binding tolerance: 1.0e-6 # a cut whose MP dual is at least this counts as binding
+  Separation tolerance: 1.0e-6 # relative violation (over max(1,|rhs|)) at which an archived cut is restored
+  Cuts per round: 500 # most-violated archived cuts restored per separation round
+  Max rounds: 5 # separation rounds per MP solve before the sub-problems run
+
+Cut export settings: # pruned cut archive for the Grid Options Explorer, see src/results/Export_cuts.jl
+  Export cuts: false # true: write Summary/cut_archive_<Summary name>.h5 at the end of the run
+  3-parent blends: 14000 # probe points: Dirichlet(1,1,1) blends of three solved plans, as GridFill builds
+  2-parent blends: 4000
+  Sparse blends: 2000 # probe points: blends of 2 to "Max sparse parents" plans
+  Max sparse parents: 10
+  Held-out blends: 20000 # fresh blends per coverage check, not used to choose cuts
+  Max repair rounds: 40
+  Clean rounds required: 5 # stop repairing after this many held-out sets in a row expose no gap
+  Gap tolerance: 1.0e-4 # stop repairing when (full max - pruned max) / |full max| is below this at every held-out blend
+  Near-active tolerance: 1.0e-5 # also keep cuts within this relative distance of the max at a probe. Larger keeps MORE cuts.
+  Duplicate tolerance: 1.0e-8 # cuts equal after normalization and rounding to this are duplicates
+  Float32 tolerance: 1.0e-5 # max relative LB change at any plan from storing beta and x as Float32, else Float64
+  Validity tolerance: 1.0e-6 # a cut may exceed a plan's solved op cost by this relative amount before it is reported
+  Sparse density threshold: 0.3 # store beta as CSR below this density
+  Target MB: 25 # above this, shrink: drop near-active cuts, then halve the probes, then loosen the gap tolerance
+  Hard cap MB: 50 # above this after every shrink step, no file is written (never truncated)
+
+# Scenarios: Count points evenly spaced from Low to High, weighted by the Distribution
+# (Uniform, Triangular, Normal or LogNormal). Demand values are fractions of each zone's reference peak; Gas values are $/MMBtu.
+"Discount rate": 0.0768
+Scenarios:
+  Gas:
+    Low: 2.0
+    Sigma: 0.4
+    Median: 3.45
+    High: 6.5
+    Count: 5
+    Distribution: "LogNormal"
+  Weather:
+    Count: 5
+  Demand:
+    Low: -0.15
+    High: 0.15
+    Count: 5
+    Distribution: "Uniform"
+"CRM zones":
+  Margin:
+    - 0.169
+    - 0.143
+    - 0.179
+    - 0.179
+    - 0.179
+    - 0.161
+    - 0.15
+    - 0.15
+    - 0.149
+    - 0.15
+    - 0.16
+    - 0.15
+    - 0.15
+    - 0.102
+    - 0.1375
+    - 0.161
+  Penalty:
+    - 5000.0
+    - 5000.0
+    - 5000.0
+    - 5000.0
+    - 5000.0
+    - 5000.0
+    - 5000.0
+    - 5000.0
+    - 5000.0
+    - 5000.0
+    - 5000.0
+    - 5000.0
+    - 5000.0
+    - 5000.0
+    - 5000.0
+    - 5000.0
