@@ -1,10 +1,24 @@
 export build_subproblems, set_capacity_parameters!, run_subproblem
 using Distributed, DistributedArrays, JuMP, Gurobi
 
-const WORKER_SP_CACHE = Dict{Tuple{Int, Int, Int}, Model}()
+#==========
+
+Subproblems are stored as an S × F × K × B array: one model per demand, gas and weather scenario
+and per time block b. "Subproblems per scenario" in settings sets B, and each block is an equal
+run of whole representative periods (B = 1 is one subproblem per scenario). No constraint links
+two periods (storage wraps and the energy limit apply within each period), so splitting a
+scenario into blocks is exact: its objective and duals are the sums over its blocks
+(merge_block_results). Everything downstream
+of run_all_subproblems sees one result per scenario, as before.
+
+==========#
+
+# (s, f, k, b): demand, gas and weather scenario, then time block
+const SubproblemKey = NTuple{4, Int}
+const WORKER_SP_CACHE = Dict{SubproblemKey, Model}()
 const WORKER_DATA_CACHE = Dict{Symbol, Any}()
-const MASTER_WORKER_SP_KEYS = Dict{Int, Set{Tuple{Int, Int, Int}}}()
-const MASTER_SCENARIO_TO_WORKER = Dict{Tuple{Int, Int, Int}, Int}()
+const MASTER_WORKER_SP_KEYS = Dict{Int, Set{SubproblemKey}}()
+const MASTER_SCENARIO_TO_WORKER = Dict{SubproblemKey, Int}()
 const WORKER_SOLVE_COUNTER = Ref(0)
 
 function _worker_memory_debug_enabled()
@@ -21,7 +35,7 @@ function _worker_memory_log_frequency()
     return max(1, Int(raw))
 end
 
-function _worker_log_memory!(label::String, scenario_key::Tuple{Int, Int, Int}; payload_size_mb::Union{Nothing, Float64}=nothing)
+function _worker_log_memory!(label::String, scenario_key::SubproblemKey; payload_size_mb::Union{Nothing, Float64}=nothing)
     if !_worker_memory_debug_enabled()
         return nothing
     end
@@ -47,13 +61,15 @@ function _clear_worker_subproblem_cache!()
     return nothing
 end
 
-function _build_and_cache_subproblem!(scenario_key::Tuple{Int, Int, Int})
-    SP = build_subproblem(WORKER_DATA_CACHE[:inputs], WORKER_DATA_CACHE[:settings], collect(scenario_key))
+function _build_and_cache_subproblem!(scenario_key::SubproblemKey)
+    inputs, settings = WORKER_DATA_CACHE[:inputs], WORKER_DATA_CACHE[:settings]
+    s, f, k, b = scenario_key
+    SP = build_subproblem(inputs, settings, [s, f, k]; hours = subproblem_blocks(inputs, settings)[b])
     WORKER_SP_CACHE[scenario_key] = SP
     return nothing
 end
 
-function _run_cached_subproblem!(scenario_key::Tuple{Int, Int, Int}, capacity::Vector{Float64}, capacity_line::Vector{Float64}, minimal_payload::Bool)
+function _run_cached_subproblem!(scenario_key::SubproblemKey, capacity::Vector{Float64}, capacity_line::Vector{Float64}, minimal_payload::Bool)
     SP = WORKER_SP_CACHE[scenario_key]
     set_parameter_value.(SP[:x], capacity)
     set_parameter_value.(SP[:x_line], capacity_line)
@@ -64,32 +80,55 @@ end
 # Several capacity points on this worker's own scenarios, one after the other. Each cached
 # model only ever sees one point at a time and warm-starts from the previous point's basis.
 # Returns results[point][key index].
-function _run_cached_batch!(scenario_keys::Vector{Tuple{Int, Int, Int}}, capacities::Vector{Vector{Float64}}, capacity_lines::Vector{Vector{Float64}}, minimal_payload::Bool)
+function _run_cached_batch!(scenario_keys::Vector{SubproblemKey}, capacities::Vector{Vector{Float64}}, capacity_lines::Vector{Vector{Float64}}, minimal_payload::Bool)
     return [[_run_cached_subproblem!(key, cap, line, minimal_payload) for key in scenario_keys] for (cap, line) in zip(capacities, capacity_lines)]
 end
+
+# Hour ranges of the time blocks each scenario is split into. "Subproblems per scenario" = N gives
+# N blocks of equal numbers of whole representative periods (missing = 1, one block of every period).
+# N must divide the period count, so a block never cuts through a period and blocks are equally sized.
+function subproblem_blocks(inputs, settings)
+    first_hours, last_hours = inputs["Set of first periods"], inputs["Set of last periods"]
+    n_periods = length(first_hours)
+    valid = filter(d -> n_periods % d == 0, 1:n_periods)
+    raw = get(settings, "Subproblems per scenario", 1)
+    (raw isa Integer && raw in valid) || error("Subproblems per scenario is $(repr(raw)), but each scenario has $(n_periods) representative periods, " *
+        "which must split evenly into whole periods per subproblem. Valid values: $(join(valid, ", ")).")
+    per_block = n_periods ÷ raw
+    return [first_hours[first(p)]:last_hours[last(p)] for p in Iterators.partition(1:n_periods, per_block)]
+end
+
+# Demand, gas and weather scenario counts (S, F, K) of a subproblem array, without its time blocks
+scenario_dims(SPs::Array{Model,4}) = size(SPs)[1:3]
 
 function build_all_subproblems(inputs, settings)
     S = inputs["Number of demand scenarios"]
     F = inputs["Number of gas price scenarios"]
     K = inputs["Number of weather scenarios"]
-    SPs = Array{Model,3}(undef, S, F, K)
+    blocks = subproblem_blocks(inputs, settings)
+    B = length(blocks)
+    SPs = Array{Model,4}(undef, S, F, K, B)
+    # A single scenario stays on the main process even when it has several blocks: a parallel build
+    # clears every worker's cache, which would drop a stochastic set already living there
+    # (run_base_mga builds its one-scenario set after the full one).
     if settings["Parallel flag"] && nworkers() > 0 && (S > 1 || F > 1 || K > 1)
-        @info "Building subproblems in parallel using $(nworkers()) distributed workers..."
+        @info "Building $(S*F*K) scenarios × $(B) time blocks in parallel using $(nworkers()) distributed workers..."
         pids = workers()
         empty!(MASTER_SCENARIO_TO_WORKER)
         @sync for pid in pids
             @async begin
                 remotecall_wait(_clear_worker_subproblem_cache!, pid)
                 remotecall_wait(_set_worker_problem_data!, pid, inputs, settings)
-                worker_set = get!(MASTER_WORKER_SP_KEYS, pid, Set{Tuple{Int, Int, Int}}())
+                worker_set = get!(MASTER_WORKER_SP_KEYS, pid, Set{SubproblemKey}())
                 empty!(worker_set)
             end
         end
-        scenario_keys = [(s, f, k) for s in 1:S, f in 1:F, k in 1:K]
+        # Round-robin over (scenario, block), so one scenario's blocks are spread across workers
+        scenario_keys = [(s, f, k, b) for s in 1:S, f in 1:F, k in 1:K, b in 1:B]
         @sync for (idx, scenario_key) in enumerate(scenario_keys)
             @async begin
-                s, f, k = scenario_key
-                SPs[s,f,k] = build_subproblem(inputs, settings, [s, f, k])
+                s, f, k, b = scenario_key
+                SPs[s,f,k,b] = build_subproblem(inputs, settings, [s, f, k]; hours = blocks[b])
                 pid = pids[mod1(idx, length(pids))]
                 remotecall_wait(_build_and_cache_subproblem!, pid, scenario_key)
                 push!(MASTER_WORKER_SP_KEYS[pid], scenario_key)
@@ -100,25 +139,34 @@ function build_all_subproblems(inputs, settings)
         if settings["Parallel flag"] && nworkers() == 0
             @warn("Parallel flag is true but no distributed workers are available. Falling back to serial subproblem build.")
         elseif (S == 1 && F == 1 && K == 1)
-            @info("One Scenario selected, building on main process")
+            @info("One Scenario selected, building its $(B) time block(s) on main process")
         end
-        for s in 1:S, f in 1:F, k in 1:K
-            SPs[s,f,k] = build_subproblem(inputs, settings, [s,f,k])
+        for s in 1:S, f in 1:F, k in 1:K, b in 1:B
+            SPs[s,f,k,b] = build_subproblem(inputs, settings, [s,f,k]; hours = blocks[b])
         end
     end
     return SPs
 end
 
-function build_subproblem(inputs, settings, scenario_index::AbstractVector)
+# The SP works on hours (a whole number of representative periods, see subproblem_blocks), indexed
+# locally as 1:length(hours). Each period keeps its own storage wrap and energy limit.
+function build_subproblem(inputs, settings, scenario_index::AbstractVector; hours::UnitRange{Int} = 1:inputs["Number of periods"])
     # Set Scenario index
     s = scenario_index[1]
     f = scenario_index[2]
     k = scenario_index[3]
 
-    demand_scenario = inputs["Demand"][:,:,k]
+    # Periods inside the block, as local hour indices. A block that cuts through a period would
+    # break that period's storage wrap and energy limit, and the split would no longer be exact.
+    all_first, all_last = inputs["Set of first periods"], inputs["Set of last periods"]
+    (first(hours) in all_first && last(hours) in all_last) || error("Subproblem hours $(hours) don't start and end on representative period boundaries.")
+    block_periods = findall(i -> all_first[i] >= first(hours) && all_last[i] <= last(hours), eachindex(all_first))
+    offset = first(hours) - 1
+
+    demand_scenario = inputs["Demand"][hours,:,k]
     variable_costs_scenario = inputs["Variable costs"][:,f]
-    availability_scenario = inputs["Generation availability"][:,:,k]
-    period_weights_scenario = inputs["Period weights"][:,k]
+    availability_scenario = inputs["Generation availability"][hours,:,k]
+    period_weights_scenario = inputs["Period weights"][hours,k]
     demand_adder_scenario = inputs["Demand adders"][s,:]
 
      # Numerical settings
@@ -175,12 +223,12 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
         F_dch = inputs["Storage discharge loss"]
         F_ch = inputs["Storage charge loss"]
 
-        first_periods = inputs["Set of first periods"]
-        last_periods = inputs["Set of last periods"]
+        first_periods = all_first[block_periods] .- offset
+        last_periods = all_last[block_periods] .- offset
     end
 
-    # Representative periods
-    n_periods = inputs["Number of representative periods"]
+    # Representative periods in this block
+    n_periods = length(block_periods)
     t_weights = period_weights_scenario
     zone_map = inputs["Zone map"]
     res_zone_map = inputs["Resource zone map"]
@@ -191,7 +239,7 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     # ~~~
 
     # Sets
-    T = inputs["Number of periods"]
+    T = length(hours)
     G = inputs["Number of generation resources"]
     O =  inputs["Number of storage resources"]
     storage_flag = O > 0
@@ -271,7 +319,7 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
     # Energy-limited generators (e.g. hydro): output over each representative period can't exceed
     # the fraction of what full capacity would produce, however it's shaped within the period
     energy_fractions = inputs["Energy limit fractions"]
-    period_hours = [inputs["Set of first periods"][i]:inputs["Set of last periods"][i] for i in 1:n_periods]
+    period_hours = [(all_first[i] - offset):(all_last[i] - offset) for i in block_periods]
     @constraint(ED, generation_energy_limit[r in findall(<(1.0), energy_fractions), i in 1:n_periods],
         sum(g[r,t] for t in period_hours[i]) <= energy_fractions[r]*length(period_hours[i])*x[r])
     if Z > 1
@@ -350,7 +398,7 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector)
 end
 
 
-function set_capacity_parameters!(SPs::Array{Model,3}, capacity::Vector{Float64}, capacity_line::Vector{Float64})
+function set_capacity_parameters!(SPs::Array{Model,4}, capacity::Vector{Float64}, capacity_line::Vector{Float64})
     for SP in SPs
         set_parameter_value.(SP[:x], capacity)
         set_parameter_value.(SP[:x_line], capacity_line)
@@ -375,14 +423,50 @@ function run_subproblem(ED::Model, inputs, settings; minimal_payload::Bool=false
     return output
 end
 
-function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Vector{Float64}, capacity_line::Vector{Float64}; minimal_payload::Bool=get(settings, "Minimal worker payload flag", true))
-    
-    sp_results = Array{Dict{String, Any},3}(undef, size(SPs)...)
-    if settings["Parallel flag"] && nworkers() > 0 && size(SPs) != (1, 1, 1)
-        pids = workers()
-        scenario_keys = [(s, f, k) for s in 1:size(SPs,1), f in 1:size(SPs,2), k in 1:size(SPs,3)]
+# How each write_subproblem_results key combines across a scenario's time blocks (in block order).
+# Totals add up, the solve status is the worst block's, and hourly series are stacked along time.
+const BLOCK_SUM_KEYS = ("SP objective", "capacity dual", "line dual", "Cost by zone", "Emissions by zone", "Emissions")
+const BLOCK_TIME_ROW_KEYS = ("Power price", "Load shedding", "Net Flow", "CRM dual", "CRM slack")        # T × ·
+const BLOCK_TIME_COLUMN_KEYS = ("Generation", "Storage charging", "Storage discharging")                # · × T
 
-        @sync for (idx, scenario_key) in enumerate(scenario_keys)
+# One scenario's result from the results of its blocks. Every key needs a rule above, so a new
+# subproblem output can't be silently dropped.
+function merge_block_results(outs::AbstractVector)
+    length(outs) == 1 && return outs[1]
+    merged = Dict{String, Any}()
+    for key in keys(outs[1])
+        parts = [o[key] for o in outs]
+        if key == "coeff"
+            merged[key] = minimum(parts)
+        elseif key in BLOCK_SUM_KEYS
+            merged[key] = sum(parts)
+        elseif key in BLOCK_TIME_ROW_KEYS
+            merged[key] = reduce(vcat, parts)
+        elseif key in BLOCK_TIME_COLUMN_KEYS
+            merged[key] = reduce(hcat, parts)
+        else
+            error("merge_block_results: no rule for subproblem output \"$(key)\". Add it to one of the BLOCK_*_KEYS lists.")
+        end
+    end
+    return merged
+end
+
+# Per-block results (S × F × K × B) to per-scenario results (S × F × K)
+function merge_block_results(block_results::Array{<:Any,4})
+    S, F, K, _ = size(block_results)
+    return [merge_block_results(view(block_results, s, f, k, :)) for s in 1:S, f in 1:F, k in 1:K]
+end
+
+_run_in_parallel(SPs::Array{Model,4}, settings) = settings["Parallel flag"] && nworkers() > 0 && scenario_dims(SPs) != (1, 1, 1)
+
+function run_all_subproblems(SPs::Array{Model,4}, inputs, settings, capacity::Vector{Float64}, capacity_line::Vector{Float64}; minimal_payload::Bool=get(settings, "Minimal worker payload flag", true))
+
+    block_results = Array{Dict{String, Any},4}(undef, size(SPs)...)
+    if _run_in_parallel(SPs, settings)
+        pids = workers()
+        scenario_keys = [Tuple(I) for I in CartesianIndices(SPs)]
+
+        @sync for scenario_key in scenario_keys
             @async begin
                 if !haskey(MASTER_SCENARIO_TO_WORKER, scenario_key)
                     error("Subproblem $(scenario_key) has no worker assignment. Call build_all_subproblems() before run_all_subproblems().")
@@ -391,40 +475,40 @@ function run_all_subproblems(SPs::Array{Model,3}, inputs, settings, capacity::Ve
                 if !(pid in pids)
                     error("Assigned worker $(pid) for subproblem $(scenario_key) is not active. Rebuild subproblems with build_all_subproblems().")
                 end
-                worker_keys = get(MASTER_WORKER_SP_KEYS, pid, Set{Tuple{Int, Int, Int}}())
+                worker_keys = get(MASTER_WORKER_SP_KEYS, pid, Set{SubproblemKey}())
                 if !(scenario_key in worker_keys)
                     error("Subproblem $(scenario_key) is not cached on worker $(pid). Call build_all_subproblems() before run_all_subproblems().")
                 end
-                sp_results[scenario_key...] = @fetchfrom pid _run_cached_subproblem!(scenario_key, capacity, capacity_line, minimal_payload)
-                
+                block_results[scenario_key...] = @fetchfrom pid _run_cached_subproblem!(scenario_key, capacity, capacity_line, minimal_payload)
+
             end
         end
         @everywhere GC.gc()
     else
         if settings["Parallel flag"] && nworkers() == 0
             @warn("Parallel flag is true but no distributed workers are available. Falling back to serial subproblem solves.")
-        elseif size(SPs) == (1, 1, 1)
+        elseif scenario_dims(SPs) == (1, 1, 1)
             @info("One scenario loaded, running on main process")
         end
         set_capacity_parameters!(SPs, capacity, capacity_line)
-        for s in 1:size(SPs,1), f in 1:size(SPs,2), k in 1:size(SPs,3)
-            sp_results[s,f,k] = run_subproblem(SPs[s,f,k], inputs, settings; minimal_payload=minimal_payload) 
+        for I in CartesianIndices(SPs)
+            block_results[I] = run_subproblem(SPs[I], inputs, settings; minimal_payload=minimal_payload)
         end
     end
-    return sp_results
+    return merge_block_results(block_results)
 end
 
-# run_all_subproblems for a batch of capacity points. Scenario models stay on the workers that
+# run_all_subproblems for a batch of capacity points. Subproblems stay on the workers that
 # own them (build_all_subproblems); each worker gets ONE call that loops over the batch for its
-# own scenarios, so no two in-flight calls share a cached model and no per-point GC/dispatch.
+# own subproblems, so no two in-flight calls share a cached model and no per-point GC/dispatch.
 # Returns one S × F × K results array per point, identical to run_all_subproblems' output.
-function run_subproblems_batch(SPs::Array{Model,3}, inputs, settings, capacities::Vector{Vector{Float64}}, capacity_lines::Vector{Vector{Float64}}; minimal_payload::Bool=get(settings, "Minimal worker payload flag", true))
+function run_subproblems_batch(SPs::Array{Model,4}, inputs, settings, capacities::Vector{Vector{Float64}}, capacity_lines::Vector{Vector{Float64}}; minimal_payload::Bool=get(settings, "Minimal worker payload flag", true))
     n = length(capacities)
     length(capacity_lines) == n || error("run_subproblems_batch: $(n) capacity vectors but $(length(capacity_lines)) line vectors.")
-    if !(settings["Parallel flag"] && nworkers() > 0 && size(SPs) != (1, 1, 1))
+    if !_run_in_parallel(SPs, settings)
         return [run_all_subproblems(SPs, inputs, settings, capacities[i], capacity_lines[i]; minimal_payload=minimal_payload) for i in 1:n]
     end
-    results = [Array{Dict{String, Any},3}(undef, size(SPs)...) for _ in 1:n]
+    block_results = [Array{Dict{String, Any},4}(undef, size(SPs)...) for _ in 1:n]
     owned = Dict(pid => sort!(collect(keys_set)) for (pid, keys_set) in MASTER_WORKER_SP_KEYS if pid in workers() && !isempty(keys_set))
     n_owned = sum(length, values(owned); init = 0)
     n_owned == length(SPs) || error("run_subproblems_batch: workers own $(n_owned) of $(length(SPs)) subproblems. Call build_all_subproblems() first.")
@@ -432,12 +516,12 @@ function run_subproblems_batch(SPs::Array{Model,3}, inputs, settings, capacities
         @async begin
             out = remotecall_fetch(_run_cached_batch!, pid, scenario_keys, capacities, capacity_lines, minimal_payload)
             for i in 1:n, (j, key) in enumerate(scenario_keys)
-                results[i][key...] = out[i][j]
+                block_results[i][key...] = out[i][j]
             end
         end
     end
     @everywhere GC.gc()
-    return results
+    return [merge_block_results(r) for r in block_results]
 end
 
 function write_subproblem_results(ED::Model, inputs, settings; minimal_payload::Bool=false)
@@ -458,8 +542,8 @@ function write_subproblem_results(ED::Model, inputs, settings; minimal_payload::
     t_weights = period_weights_scenario
 
 
-    # Sets
-    T = inputs["Number of periods"]
+    # Sets (T is this block's hours, see build_subproblem)
+    T = length(t_weights)
     G = inputs["Number of generation resources"]
     O =  inputs["Number of storage resources"]
     storage_flag = O > 0

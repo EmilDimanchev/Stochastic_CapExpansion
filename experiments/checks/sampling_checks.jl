@@ -19,7 +19,7 @@ function test_gridfill_real_model(test_index = "gridfill_real")
     configure_parallel_workers!(settings)
     SPs = build_all_subproblems(inputs, settings)
     R, L = length(inputs["Resources"]), inputs["Number of lines"]
-    S, F, K = size(SPs)
+    S, F, K = scenario_dims(SPs)
     p, α = scenario_probabilities(inputs), settings["Value-at-Risk percent"]
 
     MP = build_planning_model(inputs, settings; risk_aversion_weight = 0.5)

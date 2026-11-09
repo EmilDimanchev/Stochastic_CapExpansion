@@ -315,3 +315,123 @@ function test_cost_by_zone(test_index = "cost_by_zone")
     @info("[$(test_index)] PASSED: Cost by zone sums to the SP objective with the CRM on and off.")
     return true
 end
+
+#=========
+
+Temporal decomposition test (src/model/benders/worker_functions.jl): "Subproblems per scenario"
+splits each scenario evenly into blocks of whole representative periods. Periods don't interact, so
+the merged per-scenario results must match one subproblem per scenario:
+  - objectives match, cost by zone sums to the objective, and time series keep their full-T
+    shapes. The zonal split and emissions aren't unique (equally cheap flows), so their
+    differences are only reported
+    (30 subproblems of 1 day, and 5 of 6 days)
+  - the summed duals give valid cuts. The LP can be degenerate, so duals are checked as
+    subgradients (theta(x') >= theta(x) + beta'(x' - x)) rather than for equality
+  - a parallel build gives the same results as the serial one, through run_all_subproblems
+    and run_subproblems_batch
+  - a count that doesn't divide the periods, and a block that cuts through a period, are rejected
+
+==========#
+
+function test_temporal_blocks(test_index = "temporal_blocks")
+    folder = joinpath("inputs", "Inputs_2z_7tech")
+    settings = load_settings(folder)
+    settings["Scenarios"]["Gas"]["Count"] = 1
+    settings["Scenarios"]["Weather"]["Count"] = 2
+    settings["Scenarios"]["Demand"]["Count"] = 3
+    inputs = load_input_data(folder, settings)
+    R, L = length(inputs["Resources"]), inputs["Number of lines"]
+    ub = inputs["Capacity upper bounds"]
+    rng = Xoshiro(7)
+    caps = [0.2 .* ub .* rand(rng, R) for _ in 1:3]
+    lines = [100 .* rand(rng, L) for _ in 1:3]
+
+    with_blocks(n_blocks, parallel) = merge(settings, Dict("Subproblems per scenario" => n_blocks, "Parallel flag" => parallel))
+    solve_points(SPs, s) = [run_all_subproblems(SPs, inputs, s, caps[i], lines[i]; minimal_payload = false) for i in 1:3]
+    rel(a, b) = abs(a - b) / max(1.0, abs(b))
+
+    # Every cut from point i, evaluated at point j, must stay below the solved objective at j
+    function check_cuts(results, label)
+        worst = 0.0
+        for i in 1:3, j in 1:3, I in CartesianIndices(results[i])
+            i == j && continue
+            o = results[i][I]
+            predicted = o["SP objective"] + o["capacity dual"]' * (caps[j] - caps[i]) + o["line dual"]' * (lines[j] - lines[i])
+            worst = max(worst, (predicted - results[j][I]["SP objective"]) / max(1.0, abs(results[j][I]["SP objective"])))
+        end
+        @assert worst <= 1e-4 "$label: a cut overestimates the objective at another point by $(worst) (relative)"
+        return worst
+    end
+
+    serial = with_blocks(1, false)
+    reference = solve_points(build_all_subproblems(inputs, serial), serial)
+    n_periods = inputs["Number of representative periods"]
+
+    for n_blocks in (n_periods, 5)
+        s = with_blocks(n_blocks, false)
+        blocks = subproblem_blocks(inputs, s)
+        @assert length(blocks) == n_blocks "expected $(n_blocks) blocks, got $(length(blocks))"
+        @assert allequal(length.(blocks)) "blocks should all be the same length"
+        @assert reduce(vcat, collect.(blocks)) == collect(1:inputs["Number of periods"]) "blocks don't cover every hour once, in order"
+        SPs = build_all_subproblems(inputs, s)
+        @assert size(SPs, 4) == length(blocks)
+        results = solve_points(SPs, s)
+        max_dual_gap, max_split_gap, max_emissions_gap = 0.0, 0.0, 0.0
+        for i in 1:3, I in CartesianIndices(reference[i])
+            a, b = results[i][I], reference[i][I]
+            where_ = "$n_blocks subproblems per scenario, point $i, scenario $(Tuple(I))"
+            @assert a["coeff"] == 1 "$where_: a block did not solve to optimality"
+            @assert rel(a["SP objective"], b["SP objective"]) <= 1e-6 "$where_: objective $(a["SP objective"]) vs $(b["SP objective"])"
+            # Zonal splits and emissions aren't unique (e.g. equally cheap flows), so only the total is exact
+            @assert rel(sum(a["Cost by zone"]), a["SP objective"]) <= 1e-6 "$where_: cost by zone doesn't sum to the objective"
+            max_split_gap = max(max_split_gap, maximum(abs.(a["Cost by zone"] - b["Cost by zone"])) / max(1.0, b["SP objective"]))
+            max_emissions_gap = max(max_emissions_gap, rel(a["Emissions"], b["Emissions"]))
+            for key in ("Generation", "Power price", "Load shedding", "Net Flow", "CRM dual", "CRM slack", "Storage charging", "Storage discharging")
+                haskey(b, key) && @assert size(a[key]) == size(b[key]) "$where_: $key has shape $(size(a[key])), expected $(size(b[key]))"
+            end
+            max_dual_gap = max(max_dual_gap, maximum(abs.(a["capacity dual"] - b["capacity dual"])) / max(1.0, maximum(abs.(b["capacity dual"]))))
+        end
+        worst = check_cuts(results, "$n_blocks subproblems per scenario")
+        @info("[$(test_index)] $n_blocks subproblems per scenario ($(length(blocks[1])) hours each): objectives match; worst cut overestimate $(worst). Differences from one block per scenario, which degeneracy allows: capacity duals $(max_dual_gap), zonal cost split $(max_split_gap), emissions $(max_emissions_gap) (relative)")
+    end
+    check_cuts(reference, "one block per scenario")
+
+    # Parallel build: same blocks spread over the workers
+    parallel = with_blocks(5, true)
+    configure_parallel_workers!(parallel)
+    serial_5 = solve_points(build_all_subproblems(inputs, with_blocks(5, false)), with_blocks(5, false))
+    SPs_par = build_all_subproblems(inputs, parallel)
+    on_workers = solve_points(SPs_par, parallel)
+    batch = run_subproblems_batch(SPs_par, inputs, parallel, caps, lines; minimal_payload = false)
+    for i in 1:3, I in CartesianIndices(serial_5[i]), (label, res) in (("run_all_subproblems", on_workers), ("run_subproblems_batch", batch))
+        @assert rel(res[i][I]["SP objective"], serial_5[i][I]["SP objective"]) <= 1e-6 "parallel $label, point $i, scenario $(Tuple(I)): objective differs from serial"
+        @assert size(res[i][I]["Generation"]) == size(serial_5[i][I]["Generation"]) "parallel $label: Generation shape differs"
+    end
+    check_cuts(on_workers, "parallel run_all_subproblems")
+    check_cuts(batch, "parallel run_subproblems_batch")
+
+    # Counts that don't split the periods evenly, or aren't positive integers, are rejected with the valid values
+    for bad in (7, 0, n_periods + 1, 2.5, nothing, "12")
+        message = try
+            subproblem_blocks(inputs, with_blocks(bad, false))
+            ""
+        catch e
+            sprint(showerror, e)
+        end
+        @assert occursin("Valid values: 1, 2, 3, 5, 6, 10, 15, 30", message) "Subproblems per scenario = $(repr(bad)) should be rejected with the valid values, got: $(message)"
+    end
+    @assert length(subproblem_blocks(inputs, delete!(copy(settings), "Subproblems per scenario"))) == 1 "a missing setting should mean one subproblem per scenario"
+
+    # A block must start and end on period boundaries
+    period_length = inputs["Set of last periods"][1]
+    rejected = try
+        build_subproblem(inputs, serial, [1, 1, 1]; hours = 2:(period_length + 1))
+        false
+    catch e
+        occursin("period boundaries", sprint(showerror, e))
+    end
+    @assert rejected "a block cutting through a period should be rejected"
+
+    @info("[$(test_index)] PASSED: temporal blocks reproduce one subproblem per scenario (30 and 5 subproblems per scenario, serial and parallel).")
+    return true
+end

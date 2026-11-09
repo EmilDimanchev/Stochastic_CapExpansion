@@ -57,7 +57,7 @@ function _log_solver_work!(label::String, model::Model, settings::Dict)
     return nothing
 end
 
-function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3},case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_pool = CutPool(settings), solve_type::String = "Anchor", mga_vector::Int = 0)
+function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 4},case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_pool = CutPool(settings), solve_type::String = "Anchor", mga_vector::Int = 0)
     # Iterations
     J_max = 150
 
@@ -81,7 +81,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
 
     if Eval_SPs !== nothing
         @info("Evaluation SPs provided. Will use these to catalogue performance in addition to base SPs.")
-        (S_eval, F_eval, K_eval) = size(Eval_SPs)
+        (S_eval, F_eval, K_eval) = scenario_dims(Eval_SPs)
         P_eval = inputs["Full Demand scenario probabilities"]
         P_f_eval = inputs["Full Gas price scenario probabilities"]
         P_k_eval = inputs["Full Weather scenario probabilities"]
@@ -211,7 +211,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
         expected_value = sum(P[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"] 
         cvar_estimate = 0.0
     
-        if all(size(SPs) .>= (1,1,1))
+        if all(scenario_dims(SPs) .>= (1,1,1))
             cvar_estimate = compute_cvar(sp_obj_per_iter, P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
         end
         
@@ -490,7 +490,7 @@ function cvar_tail_weights(θ::AbstractVector, p::AbstractVector, alpha::Real)
 end
 
 # solve_type is "Budget", "EV cap" or "CVaR cap" (the keys of Cut settings' "Prune window").
-function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 3}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,3}, Nothing} = nothing, mapping = false, cut_pool = CutPool(settings), solve_type::String = "Budget", mga_vector::Int = 0)
+function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 4}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,4}, Nothing} = nothing, mapping = false, cut_pool = CutPool(settings), solve_type::String = "Budget", mga_vector::Int = 0)
     # Iterations 
     J_max = 150
 
@@ -507,7 +507,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
 
     if Eval_SPs !== nothing
         @info("Evaluation SPs provided. Will use these to catalogue performance in addition to base SPs.")
-        (S_eval, F_eval, K_eval) = size(Eval_SPs)
+        (S_eval, F_eval, K_eval) = scenario_dims(Eval_SPs)
         P_eval = inputs["Full Demand scenario probabilities"]
         P_f_eval = inputs["Full Gas price scenario probabilities"]
         P_k_eval = inputs["Full Weather scenario probabilities"]
@@ -638,7 +638,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 
         # Make UB cost estimates based on current SP solutions
         expected_value = sum(P[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"] 
         cvar_estimate = 0.0
-        if isnothing(Eval_SPs) || all(size(SPs) .>= (1,1,1))
+        if isnothing(Eval_SPs) || all(scenario_dims(SPs) .>= (1,1,1))
             cvar_estimate = compute_cvar(sp_obj_per_iter, P, P_f, P_k, VaR_Percent)/settings["Scaling factor cost"]
         end
 

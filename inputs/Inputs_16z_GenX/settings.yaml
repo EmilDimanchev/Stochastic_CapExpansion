@@ -46,6 +46,10 @@ Regularization strategy: "Level Set" # options are "QTR" and "Level Set"
 Parallel flag: true
 Workers: 8
 Memory debug flag: false
+# Temporal decomposition: split each scenario's representative periods evenly into this many
+# subproblems (1 = one per scenario; 12 = one per week on the 16z case). Must divide the number of
+# periods, or loading the subproblems errors with the valid values. Exact, since periods don't interact.
+Subproblems per scenario: 1
 
 Seed: 1234
 Budget convergence tolerance: 0.001
