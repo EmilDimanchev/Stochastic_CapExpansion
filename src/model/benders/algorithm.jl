@@ -57,7 +57,8 @@ function _log_solver_work!(label::String, model::Model, settings::Dict)
     return nothing
 end
 
-function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 4},case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_pool = CutPool(settings), solve_type::String = "Anchor", mga_vector::Int = 0)
+# SPs (and Eval_SPs) are SubproblemSets; not annotated because worker_functions.jl is included after this file
+function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_pool = CutPool(settings), solve_type::String = "Anchor", mga_vector::Int = 0)
     # Iterations
     J_max = 150
 
@@ -292,7 +293,6 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs::Array{M
             # Evaluate MP sol on Eval SPs if needed
             if Eval_SPs !== nothing
                 @info("Evaluating current MP solution on evaluation SPs to track performance on these scenarios.")
-                set_capacity_parameters!(Eval_SPs, output_mp["Capacity"], output_mp["Line expansion"])
                 outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings, output_mp["Capacity"], output_mp["Line expansion"]; minimal_payload=false)
                 results["SPs_eval"] = outputs_sp_eval
                 results["CVaR_Eval"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)
@@ -490,7 +490,8 @@ function cvar_tail_weights(θ::AbstractVector, p::AbstractVector, alpha::Real)
 end
 
 # solve_type is "Budget", "EV cap" or "CVaR cap" (the keys of Cut settings' "Prune window").
-function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs::Array{Model, 4}, budgets::Dict, case_name::String; Eval_SPs::Union{Array{Model,4}, Nothing} = nothing, mapping = false, cut_pool = CutPool(settings), solve_type::String = "Budget", mga_vector::Int = 0)
+# SPs (and Eval_SPs) are SubproblemSets; not annotated because worker_functions.jl is included after this file
+function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict, case_name::String; Eval_SPs = nothing, mapping = false, cut_pool = CutPool(settings), solve_type::String = "Budget", mga_vector::Int = 0)
     # Iterations 
     J_max = 150
 

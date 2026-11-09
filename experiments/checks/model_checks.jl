@@ -435,3 +435,63 @@ function test_temporal_blocks(test_index = "temporal_blocks")
     @info("[$(test_index)] PASSED: temporal blocks reproduce one subproblem per scenario (30 and 5 subproblems per scenario, serial and parallel).")
     return true
 end
+
+#=========
+
+Worker-only subproblem test (src/model/benders/worker_functions.jl): a parallel build keeps its
+models on the workers only, so the main process holds no copies. Checks that
+  - the parallel set has no main-process models, and a serial build of the same inputs does
+  - both give the same objectives and cuts (run_all_subproblems and run_subproblems_batch)
+  - a parallel set replaced by a later parallel build errors instead of solving the new models
+  - set_capacity_parameters! refuses a worker set (its capacities are set on the workers)
+
+==========#
+
+function test_worker_only_subproblems(test_index = "worker_only_sps")
+    folder = joinpath("inputs", "Inputs_2z_7tech")
+    settings = load_settings(folder)
+    settings["Scenarios"]["Gas"]["Count"] = 1
+    settings["Scenarios"]["Weather"]["Count"] = 2
+    settings["Subproblems per scenario"] = 5
+    inputs = load_input_data(folder, settings)
+    configure_parallel_workers!(settings)
+    R, L = length(inputs["Resources"]), inputs["Number of lines"]
+    rng = Xoshiro(11)
+    caps = [0.2 .* inputs["Capacity upper bounds"] .* rand(rng, R) for _ in 1:2]
+    lines = [100 .* rand(rng, L) for _ in 1:2]
+
+    serial_settings = merge(settings, Dict("Parallel flag" => false))
+    serial = build_all_subproblems(inputs, serial_settings)
+    parallel = build_all_subproblems(inputs, settings)
+    @assert !on_workers(serial) && serial.models isa Array "a serial build should keep its models on the main process"
+    @assert on_workers(parallel) && parallel.models === nothing "a parallel build should keep no models on the main process"
+    @assert size(parallel) == size(serial) "shapes differ: $(size(parallel)) vs $(size(serial))"
+
+    expected = [run_all_subproblems(serial, inputs, serial_settings, caps[i], lines[i]; minimal_payload = true) for i in 1:2]
+    batch = run_subproblems_batch(parallel, inputs, settings, caps, lines; minimal_payload = true)
+    for i in 1:2
+        single = run_all_subproblems(parallel, inputs, settings, caps[i], lines[i]; minimal_payload = true)
+        for I in CartesianIndices(expected[i]), (label, res) in (("run_all_subproblems", single), ("run_subproblems_batch", batch[i]))
+            a, b = res[I], expected[i][I]
+            @assert isapprox(a["SP objective"], b["SP objective"]; rtol = 1e-6) "$label, point $i, scenario $(Tuple(I)): objective $(a["SP objective"]) vs $(b["SP objective"])"
+            @assert isapprox(a["capacity dual"], b["capacity dual"]; rtol = 1e-5, atol = 1e-3) "$label, point $i, scenario $(Tuple(I)): capacity duals differ"
+        end
+    end
+
+    errors_with(f, text) = try
+        f()
+        false
+    catch e
+        occursin(text, sprint(showerror, e))
+    end
+    @assert errors_with(() -> set_capacity_parameters!(parallel, caps[1], lines[1]), "live on the workers") "set_capacity_parameters! should refuse a worker set"
+
+    # A later parallel build replaces the workers' models, so the first set must refuse to solve
+    replacement = build_all_subproblems(inputs, settings)
+    @assert errors_with(() -> run_all_subproblems(parallel, inputs, settings, caps[1], lines[1]), "has replaced them") "a replaced set should error in run_all_subproblems"
+    @assert errors_with(() -> run_subproblems_batch(parallel, inputs, settings, caps, lines), "has replaced them") "a replaced set should error in run_subproblems_batch"
+    run_all_subproblems(replacement, inputs, settings, caps[1], lines[1])
+
+    @info("[$(test_index)] PASSED: parallel subproblems live only on the workers, match a serial build, and a replaced set errors.")
+    return true
+end
