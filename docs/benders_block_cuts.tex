@@ -1,0 +1,263 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\theoremstyle{remark}
+\newtheorem*{remark}{Remark}
+
+\newcommand{\W}{\mathcal{W}}
+\newcommand{\J}{\mathcal{J}}
+\newcommand{\Lh}{\widehat{L}}
+\newcommand{\Lt}{\widetilde{L}}
+\newcommand{\CVaR}{\operatorname{CVaR}}
+
+\title{Per-subproblem Benders cuts and the CVaR link}
+\author{Stochastic\_CapExpansion}
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\noindent This note compares the master problem as it is built today, with one optimality cut per
+scenario, against the proposed version, with one cut per (scenario, time block) subproblem and the
+CVaR auxiliary variables tied to the block cost variables. It shows that the proposed master gives a
+valid lower bound, never a looser one, and that for one block per scenario it is the same problem as
+today's with fewer rows.
+
+\section{Setting and notation}
+
+\begin{itemize}[leftmargin=*]
+  \item $x \in X$: first-stage decisions (resource capacities and line expansions) with investment
+        cost $c^\top x$. $X$ is the box and fixed-capacity set the master already imposes.
+  \item $\omega \in \W$: operational scenarios $\omega = (s,f,k)$ (demand, gas, weather) with
+        probabilities $p_\omega > 0$, $\sum_{\omega} p_\omega = 1$.
+  \item $b = 1,\dots,B$: time blocks of a scenario (``Subproblems per scenario''). Each block is a run
+        of whole representative periods, and no constraint links two periods.
+  \item $\theta_{\omega,b}(x) \ge 0$: optimal operating cost of block $b$ of scenario $\omega$ at
+        capacity $x$. It is the value of an LP whose right-hand side is affine in $x$, so it is convex
+        and piecewise linear in $x$. Because blocks don't interact, the scenario cost is
+        \begin{equation}
+          \theta_\omega(x) = \sum_{b=1}^{B} \theta_{\omega,b}(x).
+        \end{equation}
+  \item $\Omega \in [0,1]$: risk weight (the code's \texttt{risk\_aversion\_weight}), and
+        $\Psi \in (0,1]$: tail fraction (\texttt{Value-at-Risk percent}).
+  \item $\J$: Benders iterates solved so far. Iterate $j$ solves every block at $x^j$ and returns
+        $\theta_{\omega,b}(x^j)$ and a subgradient $\beta^j_{\omega,b}$ (the capacity duals). The block
+        tangent is
+        \begin{equation}
+          \ell^j_{\omega,b}(x) = \theta_{\omega,b}(x^j) + \beta^{j\top}_{\omega,b}\,(x - x^j)
+          \;\le\; \theta_{\omega,b}(x) \qquad \forall x,
+        \end{equation}
+        by convexity. Rows from a subproblem that did not solve to optimality have a zero coefficient
+        on the cost variable and are ignored throughout.
+\end{itemize}
+
+\noindent The true risk-adjusted objective is
+\begin{equation}
+  F(x) = c^\top x + \Omega \sum_{\omega} p_\omega\, \theta_\omega(x)
+         + (1-\Omega)\, \CVaR_\Psi\!\big(\theta(x)\big),
+\end{equation}
+with the Rockafellar--Uryasev form
+\begin{equation}
+  \CVaR_\Psi(v) = \min_{\zeta \in \mathbb{R}} \Big\{ \zeta + \tfrac{1}{\Psi}\sum_\omega p_\omega
+  \max(0,\, v_\omega - \zeta) \Big\}.
+\end{equation}
+$\CVaR_\Psi$ is nondecreasing in each $v_\omega$. The risk-neutral case is $\Omega = 1$ with no
+$u$, $\zeta$ variables.
+
+\section{The master problem today}
+
+Today the block results are summed before the cut is built, so each iterate gives one cut per
+scenario, $\sum_b \ell^j_{\omega,b}$:
+\begin{align}
+  \text{(M\textsubscript{agg})}\quad
+  \min_{x\in X,\ \alpha,\ u,\ \zeta}\quad
+    & c^\top x + \Omega \sum_\omega p_\omega\, \alpha_\omega
+      + (1-\Omega)\Big[\zeta + \tfrac{1}{\Psi}\sum_\omega p_\omega u_\omega\Big] \notag\\
+  \text{s.t.}\quad
+    & \alpha_\omega \ge \textstyle\sum_b \ell^j_{\omega,b}(x)
+      && \forall \omega,\ j \in \J \label{eq:agg-opt}\\
+    & u_\omega \ge \textstyle\sum_b \ell^j_{\omega,b}(x) - \zeta
+      && \forall \omega,\ j \in \J \label{eq:agg-cvar}\\
+    & u_\omega \ge -\zeta && \forall \omega \label{eq:agg-tail}\\
+    & \alpha_\omega \ge 0,\ u_\omega \ge 0. \notag
+\end{align}
+In the code, \eqref{eq:agg-opt} are the \texttt{optimality\_cut\_*} rows, \eqref{eq:agg-cvar} the
+\texttt{cvar\_tail\_cuts\_*} rows (the same tangent again, minus $\zeta$), and \eqref{eq:agg-tail} the
+fixed \texttt{cvar\_tail} rows.
+Write the aggregated scenario estimate as
+\begin{equation}
+  \Lt_\omega(x) = \max\Big(0,\ \max_{j\in\J} \sum_{b} \ell^j_{\omega,b}(x)\Big).
+\end{equation}
+The row $u_\omega \ge -\zeta$ is the CVaR cut for the constant tangent $0$, which is valid because
+costs are nonnegative. So the three $u$ rows together say $u_\omega \ge \Lt_\omega(x) - \zeta$.
+
+\section{The proposed master problem}
+
+Each block gets its own cost variable and its own cuts, and the CVaR variables are tied to the sum of
+the block variables by one fixed row per scenario:
+\begin{align}
+  \text{(M\textsubscript{blk})}\quad
+  \min_{x\in X,\ \alpha,\ u,\ \zeta}\quad
+    & c^\top x + \Omega \sum_\omega p_\omega \sum_b \alpha_{\omega,b}
+      + (1-\Omega)\Big[\zeta + \tfrac{1}{\Psi}\sum_\omega p_\omega u_\omega\Big] \notag\\
+  \text{s.t.}\quad
+    & \alpha_{\omega,b} \ge \ell^j_{\omega,b}(x)
+      && \forall \omega,\ b,\ j \in \J \label{eq:blk-opt}\\
+    & u_\omega \ge \textstyle\sum_b \alpha_{\omega,b} - \zeta
+      && \forall \omega \label{eq:link}\\
+    & \alpha_{\omega,b} \ge 0,\ u_\omega \ge 0. \notag
+\end{align}
+Here \eqref{eq:blk-opt} are the \texttt{optimality\_cut\_*} rows, now one per block, and
+\eqref{eq:link} replaces the fixed \texttt{cvar\_tail} rows. It is built once, with the master, and
+no CVaR cut rows are added during the iterations.
+The block estimate is
+\begin{equation}
+  \Lh_\omega(x) = \sum_{b=1}^{B} \max\Big(0,\ \max_{j\in\J} \ell^j_{\omega,b}(x)\Big).
+\end{equation}
+In code, $\sum_b \alpha_{\omega,b}$ is the expression \texttt{scenario\_alpha}, and
+\texttt{expected\_alpha} and \texttt{cvar\_term} keep their current meaning.
+
+\section{Results}
+
+For a fixed $x$, let $V_{\text{agg}}(x)$ and $V_{\text{blk}}(x)$ be the optimal values of the two
+masters over the remaining variables $(\alpha, u, \zeta)$.
+
+\begin{proposition}[Reduced objectives]\label{prop:reduced}
+For every $x \in X$ (and $\Omega < 1$; for $\Omega = 1$ drop the CVaR term),
+\begin{align}
+  V_{\text{agg}}(x) &= c^\top x + \Omega \sum_\omega p_\omega \Lt_\omega(x)
+                       + (1-\Omega)\,\CVaR_\Psi\big(\Lt(x)\big),\\
+  V_{\text{blk}}(x) &= c^\top x + \Omega \sum_\omega p_\omega \Lh_\omega(x)
+                       + (1-\Omega)\,\CVaR_\Psi\big(\Lh(x)\big).
+\end{align}
+\end{proposition}
+
+\begin{proof}
+Take (M\textsubscript{blk}) with $x$ fixed. The rows involving $\alpha_{\omega,b}$ are its cuts,
+$\alpha_{\omega,b} \ge 0$ and the link \eqref{eq:link}. The objective coefficient of
+$\alpha_{\omega,b}$ is $\Omega p_\omega \ge 0$, and in \eqref{eq:link} a smaller $\alpha_{\omega,b}$
+only relaxes the bound on $u_\omega$. So, for any feasible point, replacing each $\alpha_{\omega,b}$
+by its smallest feasible value $a_{\omega,b} = \max(0, \max_j \ell^j_{\omega,b}(x))$ keeps it
+feasible and does not raise the objective. We may therefore set $\alpha_{\omega,b} = a_{\omega,b}$,
+so $\sum_b \alpha_{\omega,b} = \Lh_\omega(x)$.
+
+With that, the smallest feasible $u_\omega$ for a given $\zeta$ is
+$\max(0, \Lh_\omega(x) - \zeta)$, and $u_\omega$ has the nonnegative coefficient
+$(1-\Omega)p_\omega/\Psi$, so it takes that value. What remains is
+\[
+  c^\top x + \Omega\sum_\omega p_\omega \Lh_\omega(x)
+  + (1-\Omega)\min_\zeta\Big\{\zeta + \tfrac1\Psi \sum_\omega p_\omega \max\big(0, \Lh_\omega(x)-\zeta\big)\Big\},
+\]
+and the minimum over $\zeta$ is $\CVaR_\Psi(\Lh(x))$.
+
+(M\textsubscript{agg}) is the same argument with one block: the smallest feasible $\alpha_\omega$ is
+$\Lt_\omega(x)$, and the three families of $u$ rows give
+$u_\omega \ge \max\big(0, \max(0, \max_j \sum_b \ell^j_{\omega,b}(x)) - \zeta\big)
+= \max(0, \Lt_\omega(x) - \zeta)$.
+\end{proof}
+
+\begin{proposition}[Valid and never looser]\label{prop:tight}
+For every $x$ and every scenario $\omega$,
+\begin{equation}
+  \Lt_\omega(x) \;\le\; \Lh_\omega(x) \;\le\; \theta_\omega(x).
+\end{equation}
+Hence $V_{\text{agg}}(x) \le V_{\text{blk}}(x) \le F(x)$ for every $x$, and the optimal value of
+(M\textsubscript{blk}) is a lower bound on $\min_x F(x)$ that is at least as tight as today's.
+\end{proposition}
+
+\begin{proof}
+\emph{Upper inequality.} Each block term satisfies
+$\max(0, \max_j \ell^j_{\omega,b}(x)) \le \theta_{\omega,b}(x)$, because every tangent is below
+$\theta_{\omega,b}$ and $\theta_{\omega,b} \ge 0$. Summing over $b$ gives
+$\Lh_\omega(x) \le \theta_\omega(x)$.
+
+\emph{Lower inequality.} For any iterate $j$ and each block,
+$\ell^j_{\omega,b}(x) \le \max(0, \max_{j'} \ell^{j'}_{\omega,b}(x))$, so summing over $b$,
+$\sum_b \ell^j_{\omega,b}(x) \le \Lh_\omega(x)$ for every $j$. Also $\Lh_\omega(x) \ge 0$. Taking the
+maximum over $j$ and over $0$ gives $\Lt_\omega(x) \le \Lh_\omega(x)$.
+
+The bounds on $V$ follow from Proposition~\ref{prop:reduced}: both the expectation and
+$\CVaR_\Psi$ are nondecreasing in the scenario values, and $\Omega, 1-\Omega \ge 0$.
+\end{proof}
+
+\noindent The gain is that each block may take its best tangent from a different iterate. For
+example, a summer week can use the tangent from iterate 3 and a winter week the one from iterate 7.
+Today one iterate has to supply all of a scenario's blocks at once. The lower inequality is strict
+whenever no single iterate is best for every block of a scenario at $x$.
+
+\begin{corollary}[One block per scenario]\label{cor:b1}
+If $B = 1$, then $\Lh_\omega = \Lt_\omega$ for every $\omega$. So $V_{\text{blk}} = V_{\text{agg}}$, and
+(M\textsubscript{blk}) has the same optimal $x$, lower bound and CVaR term as today's master. It
+replaces the per-iteration \texttt{cvar\_tail\_cuts} rows with the single fixed row
+\eqref{eq:link} per scenario.
+\end{corollary}
+
+\begin{proof}
+With $B = 1$, $\Lh_\omega(x) = \max(0, \max_j \ell^j_{\omega,1}(x)) = \Lt_\omega(x)$. Since the two
+reduced objectives in Proposition~\ref{prop:reduced} are then the same function of $x$, the two
+masters have the same minimizers and optimal value.
+\end{proof}
+
+\begin{remark}[Why tie CVaR to the block variables instead of keeping CVaR cuts]
+CVaR cuts on $u_\omega$ can only use one iterate's tangent per row:
+$u_\omega \ge \sum_b \ell^j_{\omega,b}(x) - \zeta$. That bounds $u_\omega$ by $\Lt_\omega(x) - \zeta$
+however many block cuts there are, so the CVaR term would stay at today's looser estimate while the
+expectation term gets $\Lh$. With the link \eqref{eq:link}, the CVaR term picks up $\Lh$ too
+(Proposition~\ref{prop:reduced}), and the master has fewer rows.
+\end{remark}
+
+\begin{remark}[$\Omega = 0$, which is the same as today]
+When $\Omega = 0$, $\alpha$ appears in the objective only through $u$. For a scenario outside the
+tail, the link \eqref{eq:link} is slack, so $\alpha_{\omega,b}$ can take any value at or above its
+cuts with the same objective. The optimal $x$, the lower bound
+$c^\top x + \CVaR_\Psi(\Lh(x))$ and the feasible set in $x$ are unaffected, since the argument of
+Proposition~\ref{prop:reduced} still gives the optimal value. Only the reported \texttt{Alpha}
+values can sit above $\Lh$. Today, at $\Omega = 0$, $\alpha$ has zero objective weight and appears only
+in its cuts (and in any budget rows), so it is at least as loose. Budget constraints that contain \texttt{expected\_alpha}
+only become harder to meet if $\alpha$ rises, so they do not change which $x$ is feasible either.
+\end{remark}
+
+\section{What else stays the same}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Lower bound} reported by the Benders loop:
+        $\Omega\cdot\texttt{expected\_alpha} + (1-\Omega)\cdot\texttt{cvar\_term} + c^\top x$,
+        unchanged in form. By Proposition~\ref{prop:reduced} it equals $V_{\text{blk}}$ at the
+        master solution.
+  \item \textbf{Upper bound}: computed from the true scenario costs $\theta_\omega(x^j)$, as now.
+  \item \textbf{GridFill and the cut export} use cuts without the master, so they get the same
+        block form. A scenario's lower bound at a blend $\bar x$ becomes
+        $\mathrm{LB}_\omega(\bar x) = \sum_b \max_{k \in (\omega, b)} (a_k + g_k^\top \bar x)$
+        instead of $\max_{k \in \omega}(a_k + g_k^\top \bar x)$. It is valid for the same reason as
+        the upper inequality of Proposition~\ref{prop:tight}.
+\end{itemize}
+
+\section{Size of the master}
+
+Per Benders iteration, with $|\W|$ scenarios and $B$ blocks per scenario:
+
+\begin{center}
+\begin{tabular}{@{}lcc@{}}
+  \toprule
+                                   & Today (M\textsubscript{agg}) & Proposed (M\textsubscript{blk}) \\
+  \midrule
+  Cost variables                   & $|\W|$                      & $B\,|\W|$ \\
+  Optimality cut rows / iteration  & $|\W|$                      & $B\,|\W|$ \\
+  CVaR cut rows / iteration        & $|\W|$ (risk on)            & $0$ \\
+  Fixed CVaR rows                  & $|\W|$ ($u \ge -\zeta$)     & $|\W|$ (link) \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+\noindent With risk on, $B = 1$ halves the cut rows added per iteration. With $B = 12$ (one per week
+on the 16-zone case) each iteration adds $12|\W|$ rows, six times today's $2|\W|$. The cut pool's
+pruning and archiving keep the live set small. Fewer iterations should offset part of the growth,
+but the ``Cuts retained'' cap may need raising for large runs.
+
+\end{document}

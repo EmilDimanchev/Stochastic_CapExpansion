@@ -16,6 +16,10 @@ holds everything GridFill needs about that portfolio:
        (write_subproblem_results: "capacity dual" and "line dual"). They are usually <= 0.
        An empty d × 0 matrix means "no gradients available".
   p  - scenario probabilities (P_s[s]*P_f[f]*P_k[k]), length S.
+  θb, βb - the same per subproblem (scenario × time block, see subproblem_blocks): length S·B
+       and d × S·B, flattened column-major over (s,f,k,b), so entry ω + (b−1)·S is block b of
+       scenario ω. θ and β are their sums over blocks. The cuts GridFill and the cut export use
+       are these per-block tangents; with one block per scenario θb = θ and βb = β.
 
 Important: θ and β are always taken from subproblems solved AT x. The Summary columns
 EV_OpCost/CVaR_OpCost come from the last Benders iterate's estimate, which can belong to a
@@ -32,9 +36,14 @@ mutable struct FinalSolve
     p::Vector{Float64}
     inv_cost::Float64
     ok::Bool                  # false if any scenario failed to solve to optimality
+    θb::Vector{Float64}       # per subproblem op cost, length S·B
+    βb::Matrix{Float64}       # per subproblem gradient, d × S·B
 end
 
-has_gradients(fs::FinalSolve) = size(fs.β, 2) == length(fs.θ) && !isempty(fs.θ)
+# One block per scenario: the subproblem terms are the scenario terms
+FinalSolve(name, x, θ, β, p, inv_cost, ok) = FinalSolve(name, x, θ, β, p, inv_cost, ok, θ, β)
+
+has_gradients(fs::FinalSolve) = size(fs.βb, 2) == length(fs.θb) && !isempty(fs.θb)
 
 # Expected and CVaR operating cost of a solve, from its own per-scenario costs
 solve_ev(fs::FinalSolve) = dot(fs.p, fs.θ) / sum(fs.p)
@@ -69,7 +78,11 @@ function final_solve_from_sp_outputs(name::String, x::Vector{Float64}, sp_output
     β = reduce(hcat, [vcat(o["capacity dual"], o["line dual"]) for o in outs])
     ok = all(o["coeff"] == 1 for o in outs)
     ok || @warn("Solve $name has subproblems that did not solve to optimality; it will not be used as a parent.")
-    return FinalSolve(name, copy(x), θ, Matrix{Float64}(β), p, inv_cost, ok)
+    # Per subproblem, scenario index fastest (see the header)
+    blocks = [(ω, b) for ω in eachindex(outs), b in eachindex(outs[1]["Block SP objective"])]
+    θb = vec([outs[ω]["Block SP objective"][b] for (ω, b) in blocks])
+    βb = reduce(hcat, vec([vcat(outs[ω]["Block capacity dual"][:, b], outs[ω]["Block line dual"][:, b]) for (ω, b) in blocks]))
+    return FinalSolve(name, copy(x), θ, Matrix{Float64}(β), p, inv_cost, ok, θb, Matrix{Float64}(βb))
 end
 
 # Called on a Benders output dict just before release_heavy_payload! deletes "SPs".

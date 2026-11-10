@@ -48,12 +48,12 @@ cx_input(bank; pool_cuts = [], skipped = 0, picks = GridFillPick[], seed = 7) = 
 function cx_pool_cuts(tc, p; n = 60, seed = 9)
     rng = Xoshiro(seed)
     S = length(p)
-    cuts = NamedTuple{(:scenario, :a, :g, :name), Tuple{Int, Float64, Vector{Float64}, String}}[]
+    cuts = NamedTuple{(:group, :a, :g, :name), Tuple{Int, Float64, Vector{Float64}, String}}[]
     for j in 1:n
         x = 30 .* rand(rng, CX_D)
         θ, β = toy_eval(tc, x)
         for s in 1:S
-            push!(cuts, (scenario = s, a = θ[s] - dot(β[:, s], x), g = β[:, s], name = "optimality_cut_Risk_Weight_0.5_$(j)_[$s,1,1]"))
+            push!(cuts, (group = s, a = θ[s] - dot(β[:, s], x), g = β[:, s], name = "optimality_cut_Risk_Weight_0.5_$(j)_[$s,1,1,1]"))
         end
     end
     return cuts
@@ -172,25 +172,24 @@ end
         bank, _, _ = cx_bank(S = S * F, n = 4)
         MP = Model()
         @variable(MP, x[1:3] >= 0); @variable(MP, x_line[1:1] >= 0)
-        @variable(MP, alpha[1:S, 1:F, 1:1] >= 0); @variable(MP, u[1:S, 1:F, 1:1] >= 0); @variable(MP, ζ)
+        @variable(MP, alpha[1:S, 1:F, 1:1, 1:1] >= 0)     # one block per scenario
         pool = CutPool(settings)
         for (it, fs) in enumerate(bank)
-            θ = reshape(fs.θ ./ scale, S, F, 1); β = reshape(fs.β ./ scale, 4, S, F, 1)
+            θ = reshape(fs.θ ./ scale, S, F, 1, 1); β = reshape(fs.β ./ scale, 4, S, F, 1, 1)
             xp = fs.x
             coeff(s) = (it == 4 && s == 1) ? 0 : 1      # the last solve's first scenario "failed"
-            opt = @constraint(MP, [s in 1:S, f in 1:F, k in 1:1], coeff(s) * alpha[s,f,k] >= θ[s,f,k] + sum(β[r,s,f,k]*(x[r] - xp[r]) for r in 1:3) + β[4,s,f,k]*(x_line[1] - xp[4]), base_name = "optimality_cut_t_$(it)_")
-            tail = @constraint(MP, [s in 1:S, f in 1:F, k in 1:1], u[s,f,k] >= θ[s,f,k] + sum(β[r,s,f,k]*(x[r] - xp[r]) for r in 1:3) + β[4,s,f,k]*(x_line[1] - xp[4]) - ζ, base_name = "cvar_tail_cuts_t_$(it)_")
-            add_cuts!(pool, Dict(name(c) => c for c in vcat(vec(opt), vec(tail))))
+            opt = @constraint(MP, [s in 1:S, f in 1:F, k in 1:1, b in 1:1], coeff(s) * alpha[s,f,k,b] >= θ[s,f,k,b] + sum(β[r,s,f,k,b]*(x[r] - xp[r]) for r in 1:3) + β[4,s,f,k,b]*(x_line[1] - xp[4]), base_name = "optimality_cut_t_$(it)_")
+            add_cuts!(pool, Dict(name(c) => c for c in vec(opt)))
         end
         _archive!(pool, MP, [n for n in keys(pool.live) if occursin("_t_2_", n)])
         cuts, skipped = pool_optimality_cuts(pool, MP, settings)
-        @test skipped == F                      # the scenarios with s == 1 in solve 4; tail rows aren't counted
+        @test skipped == F                      # the scenarios with s == 1 in solve 4
         @test length(cuts) == 4 * S * F - F
         for cut in cuts
             _, it = parse_cut_name(cut.name)
             fs = bank[it]
-            @test cut.a + dot(cut.g, fs.x) ≈ fs.θ[cut.scenario] rtol = 1e-9     # unscaled, right scenario, right column order
-            @test cut.g ≈ fs.β[:, cut.scenario] rtol = 1e-9
+            @test cut.a + dot(cut.g, fs.x) ≈ fs.θ[cut.group] rtol = 1e-9     # unscaled, right scenario, right column order
+            @test cut.g ≈ fs.β[:, cut.group] rtol = 1e-9
         end
     end
 
@@ -237,6 +236,36 @@ end
         # Ordinary numbers stay in Float32
         ordinary = choose_float_types(input.cuts, [collect(eachindex(a)) for a in input.cuts.alpha], input.plan_x, 1e-5)
         @test ordinary.beta == Float32 && ordinary.x == Float32
+    end
+
+    @testset "Blocks: the file stores scenario and block, and floors sum the block maxima" begin
+        S, B = 4, 3
+        rng = Xoshiro(21)
+        tc = toy_cost(rng, S * B, 15, CX_D)
+        p = fill(1 / S, S)
+        bank = [toy_block_solve("Plan_$i", 30 .* rand(rng, CX_D), tc, p, B) for i in 1:25]
+        input = cx_input(bank)
+        @test input.cuts.n_blocks == B && length(input.cuts.alpha) == S * B
+        out = export_cut_archive(input, joinpath(CX_FOLDER, "blocks"), cx_settings(); file_stem = "b")
+        scenario, block, alpha, beta = HDF5.h5open(out.path, "r") do f
+            @test read(f["meta/n_blocks"]) == B
+            read(f["cuts/scenario"]), read(f["cuts/block"]), read(f["cuts/alpha"]), Float64.(read(f["cuts/beta"]))
+        end
+        @test sort(unique(block)) == 1:B && sort(unique(scenario)) == 1:S
+        # The floor a reader computes from the raw datasets: sum over blocks of each block's max
+        file_floor(X, s) = sum(vec(maximum(alpha[r] .+ beta[:, r]' * X; dims = 1)) for r in (findall((scenario .== s) .& (block .== b)) for b in 1:B))
+        X = input.plan_x
+        Y = 30 .* rand(Xoshiro(5), CX_D, 200)
+        for s in 1:S
+            @test file_floor(X, s) ≈ input.plan_θ[s, :] rtol = 1e-3       # pruned to the 1e-4 gap tolerance per block
+            truth = [sum(toy_eval(tc, Y[:, j])[1][s .+ (0:B-1) .* S]) for j in axes(Y, 2)]
+            @test all(file_floor(Y, s) .<= truth .+ 1e-6 .* abs.(truth))      # valid elsewhere, up to Float32 storage of beta
+        end
+        # Unpruned, the plans' own block tangents make the floor exact there; the package's reader agrees with the raw one
+        @test cut_values(table_cut_bank(input.cuts), X) ≈ input.plan_θ rtol = 1e-9
+        @test cut_values(table_cut_bank(out.report.written.cuts), X) ≈ reduce(vcat, [file_floor(X, s)' for s in 1:S]) rtol = 1e-9
+        summed = CutBank(S, CX_D); foreach(fs -> add_final_solve!(summed, FinalSolve(fs.name, fs.x, fs.θ, fs.β, fs.p, 0.0, true)), bank)
+        @test all(cut_values(table_cut_bank(input.cuts), Y) .>= cut_values(summed, Y) .- 1e-9)
     end
 
     @testset "Budget: shrink order, tradeoff reported, and a cap that can't be met writes nothing" begin

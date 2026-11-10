@@ -54,10 +54,11 @@ function test_capacity_bound_tightening(test_index = "cap_bound")
     # collapsing to a bound.
     x_prev = zeros(R)
     x_prev_line = zeros(L)
-    cap_dual = (cost_inv .* (0.9 .+ 0.2 .* rand(R))) .* ones(R, S, F, K)
-    line_dual = 100 .* rand(L, S, F, K)
-    SP_obj = 1e6 .* (0.9 .+ 0.2 .* rand(S, F, K))
-    coeffs = fill(1.0, S, F, K)
+    B = size(MP[:alpha], 4)
+    cap_dual = (cost_inv .* (0.9 .+ 0.2 .* rand(R))) .* ones(R, S, F, K, B)
+    line_dual = 100 .* rand(L, S, F, K, B)
+    SP_obj = 1e6 .* (0.9 .+ 0.2 .* rand(S, F, K, B))
+    coeffs = fill(1.0, S, F, K, B)
 
     add_optimality_cuts!(MP, SP_obj, cap_dual, line_dual, x_prev, x_prev_line, coeffs, inputs, settings, 1, "boundtest")
     output = run_planning_model(MP, settings, 0.5)
@@ -492,5 +493,115 @@ function test_worker_only_subproblems(test_index = "worker_only_sps")
     run_all_subproblems(replacement, inputs, settings, caps[1], lines[1])
 
     @info("[$(test_index)] PASSED: parallel subproblems live only on the workers, match a serial build, and a replaced set errors.")
+    return true
+end
+
+#=========
+
+Per-subproblem cut test (master_planning.jl, docs/benders_block_cuts.pdf): one optimality cut per
+(scenario, time block) and CVaR tied to the block cost estimates by u >= Σ_b alpha − ζ. With
+real laptop subproblems (5 per scenario, risk on, Ω = 0.5) solved at 3 capacity points:
+  1. cut validity: every block cut stays below that block's solved cost at the other points
+  2. reduced objective (Prop. 1): with x fixed at a 4th point, the master's objective equals
+     Inv + Ω·E[L̂] + (1−Ω)·CVaR(L̂), L̂_ω = Σ_b max(0, max_j ℓ_{ω,b}^j), computed by hand
+  3. tighter and valid (Prop. 2): that value is >= the one-cut-per-scenario master's (built from
+     the summed results, with its own L̃ checked the same way) and <= the true objective at x
+  4. one block per scenario (Cor. 1): with x free, the linked master and today's formulation
+     (CVaR cut rows u >= ℓ − ζ and u >= −ζ) reach the same optimal value
+
+==========#
+
+function test_block_cuts(test_index = "block_cuts")
+    folder = joinpath("inputs", "Inputs_2z_7tech")
+    settings = load_settings(folder)
+    settings["Scenarios"]["Gas"]["Count"] = 1
+    settings["Scenarios"]["Weather"]["Count"] = 2
+    settings["Scenarios"]["Demand"]["Count"] = 3
+    settings["Risk aversion flag"] = true
+    settings["Parallel flag"] = false
+    settings["Subproblems per scenario"] = 5
+    Ω, Ψ, scale = 0.5, settings["Value-at-Risk percent"], settings["Scaling factor cost"]
+    inputs = load_input_data(folder, settings)
+    P, P_f, P_k = inputs["Demand scenario probabilities"], inputs["Gas price scenario probabilities"], inputs["Weather scenario probabilities"]
+    R, L = length(inputs["Resources"]), inputs["Number of lines"]
+    lb, ub = inputs["Capacity lower bounds"], inputs["Capacity upper bounds"]
+    SPs = build_all_subproblems(inputs, settings)
+    S, F, K = scenario_dims(SPs)
+    B = size(SPs, 4)
+    rng = Xoshiro(13)
+    point() = (clamp.(0.3 .* ub .* rand(rng, R), lb, ub), 300 .* rand(rng, L))
+    points = [point() for _ in 1:4]
+    outs = [run_all_subproblems(SPs, inputs, settings, cap, line; minimal_payload = true) for (cap, line) in points]
+    terms = [block_cut_terms(o) for o in outs]
+    rel(a, b) = abs(a - b) / max(1.0, abs(b))
+
+    # Block tangent j at (cap, line), S × F × K × B
+    tangent(t, (cj, lj), (cap, line)) = t.objective .+ dropdims(sum(t.capacity_dual .* (cap .- cj); dims = 1); dims = 1) .+
+                                        dropdims(sum(t.line_dual .* (line .- lj); dims = 1); dims = 1)
+
+    # 1. Validity of every block cut at the other points
+    worst = 0.0
+    for j in 1:3, i in 1:4
+        i == j && continue
+        excess = tangent(terms[j], points[j], points[i]) .- terms[i].objective
+        worst = max(worst, maximum(excess ./ max.(1.0, abs.(terms[i].objective))))
+    end
+    @assert worst <= 1e-6 "a block cut overestimates its block's cost at another point by $(worst) (relative)"
+
+    # Masters from the first 3 points: per block, and one cut per scenario from the summed results
+    function master(n_blocks)
+        s = merge(settings, Dict("Subproblems per scenario" => n_blocks))
+        return build_planning_model(inputs, s; risk_aversion_weight = Ω), s
+    end
+    MP_blk, s_blk = master(B)
+    MP_agg, s_agg = master(1)
+    summed(t) = (objective = sum(t.objective; dims = 4), capacity_dual = sum(t.capacity_dual; dims = 5),
+                 line_dual = sum(t.line_dual; dims = 5), coeff = minimum(t.coeff; dims = 4))
+    for j in 1:3
+        cap, line = points[j]
+        t, ta = terms[j], summed(terms[j])
+        add_optimality_cuts!(MP_blk, t.objective, t.capacity_dual, t.line_dual, cap, line, t.coeff, inputs, s_blk, j, "blk")
+        add_optimality_cuts!(MP_agg, ta.objective, ta.capacity_dual, ta.line_dual, cap, line, ta.coeff, inputs, s_agg, j, "agg")
+    end
+
+    # 2 and 3. Fix x at the 4th point and compare with the hand-computed reduced objectives
+    cap4, line4 = points[4]
+    inv4 = investment_cost(vcat(cap4, line4), inputs)[1]
+    reduced(Lest) = inv4 + Ω * sum(P[s]*P_f[f]*P_k[k]*Lest[s,f,k] for s in 1:S, f in 1:F, k in 1:K) + (1 - Ω) * compute_cvar(Lest, P, P_f, P_k, Ψ)
+    ℓ = [tangent(terms[j], points[j], points[4]) for j in 1:3]
+    L̂ = dropdims(sum(max.(0.0, reduce((a, b) -> max.(a, b), ℓ)); dims = 4); dims = 4)
+    L̃ = max.(0.0, reduce((a, b) -> max.(a, b), [dropdims(sum(l; dims = 4); dims = 4) for l in ℓ]))
+    θ4 = reshape([outs[4][s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K))
+    true4 = reduced(θ4)
+    function fixed_value(MP)
+        fix.(MP[:x], cap4; force = true); fix.(MP[:x_line], line4; force = true)
+        return run_planning_model(MP, settings, Ω)["Planning objective"]
+    end
+    V_blk, V_agg = fixed_value(MP_blk), fixed_value(MP_agg)
+    @assert rel(V_blk, reduced(L̂)) <= 1e-5 "block master at fixed x: $(V_blk), hand-computed Inv + Ω·E[L̂] + (1−Ω)·CVaR(L̂) = $(reduced(L̂))"
+    @assert rel(V_agg, reduced(L̃)) <= 1e-5 "summed master at fixed x: $(V_agg), hand-computed with L̃ = $(reduced(L̃))"
+    @assert all(L̂ .>= L̃ .- 1e-6 .* abs.(L̃)) "L̂ should be >= L̃ in every scenario"
+    @assert V_agg <= V_blk * (1 + 1e-6) && V_blk <= true4 * (1 + 1e-6) "expected V_agg <= V_blk <= true objective, got $(V_agg), $(V_blk), $(true4)"
+    @info("[$(test_index)] at a fixed 4th point: summed-cut master $(round(V_agg; sigdigits = 7)) <= block-cut master $(round(V_blk; sigdigits = 7)) <= true $(round(true4; sigdigits = 7)); gap closed by block cuts $(round(100 * (V_blk - V_agg) / (true4 - V_agg); digits = 1))%")
+
+    # 4. One block per scenario, x free: linked master vs today's formulation (CVaR cut rows)
+    MP_link, s1 = master(1)
+    MP_old, _ = master(1)
+    delete.(MP_old, vec(MP_old[:cvar_tail])); unregister(MP_old, :cvar_tail)
+    @constraint(MP_old, [s in 1:S, f in 1:F, k in 1:K], MP_old[:u][s,f,k] >= -MP_old[:ζ])
+    for j in 1:3
+        cap, line = points[j]
+        ta = summed(terms[j])
+        add_optimality_cuts!(MP_link, ta.objective, ta.capacity_dual, ta.line_dual, cap, line, ta.coeff, inputs, s1, j, "link")
+        add_optimality_cuts!(MP_old, ta.objective, ta.capacity_dual, ta.line_dual, cap, line, ta.coeff, inputs, s1, j, "old")
+        lt = ta.objective ./ scale
+        @constraint(MP_old, [s in 1:S, f in 1:F, k in 1:K], MP_old[:u][s,f,k] >= lt[s,f,k,1] +
+            sum(ta.capacity_dual[r,s,f,k,1] / scale * (MP_old[:x][r] - cap[r]) for r in 1:R) +
+            sum(ta.line_dual[l,s,f,k,1] / scale * (MP_old[:x_line][l] - line[l]) for l in 1:L) - MP_old[:ζ])
+    end
+    V_link, V_old = run_planning_model(MP_link, settings, Ω)["Planning objective"], run_planning_model(MP_old, settings, Ω)["Planning objective"]
+    @assert rel(V_link, V_old) <= 1e-5 "one block per scenario: linked master $(V_link) vs CVaR-cut formulation $(V_old)"
+
+    @info("[$(test_index)] PASSED: block cuts valid (worst $(worst)), reduced objectives match by hand, block master between summed and true, and B = 1 matches the CVaR-cut formulation ($(round(V_link; sigdigits = 8)) vs $(round(V_old; sigdigits = 8))).")
     return true
 end

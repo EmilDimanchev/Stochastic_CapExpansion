@@ -20,7 +20,7 @@ function _log_iteration_memory!(settings::Dict, label::String, iteration::Int, M
     ], ", ")
 
     n_cuts = count(
-        con -> startswith(name(con), "optimality_cut_") || startswith(name(con), "cvar_tail_cuts_"),
+        con -> startswith(name(con), "optimality_cut_"),
         all_constraints(MP, include_variable_in_set_constraints = false),
     )
     free_mem_mb = round(Sys.free_memory() / 1024^2; digits = 2)
@@ -183,8 +183,6 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
 
         @info("Running economic dispatch sub-problems")
         sp_obj_per_iter = zeros(S, F, K)
-        capacity_duals_sp_per_iter = zeros(R, S, F, K)
-        line_duals_sp_per_iter = zeros(R, S, F, K)
         sp_all_results = Array{Any}(undef, S, F, K)
 
 
@@ -200,14 +198,12 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
 
         sp_obj_per_iter = reshape([outputs_sp[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K))
         
-        capacity_duals_sp_per_iter =reshape([outputs_sp[s,f,k]["capacity dual"][r] for r in 1:R, s in 1:S, f in 1:F, k in 1:K],(R, S, F, K))
-        line_duals_sp_per_iter = reshape([outputs_sp[s,f,k]["line dual"][l] for l in 1:L, s in 1:S, f in 1:F, k in 1:K],(L, S, F, K))
-        coeffs = reshape([outputs_sp[s,f,k]["coeff"] for s in 1:S, f in 1:F, k in 1:K],(S, F, K))
+        # One cut per subproblem (scenario × time block); sp_obj_per_iter stays per scenario for the UB
+        cut_terms = block_cut_terms(outputs_sp)
         _log_iteration_memory!(settings, "benders-subproblem", j, MP, [
             "outputs_sp" => outputs_sp,
             "sp_obj_per_iter" => sp_obj_per_iter,
-            "capacity_duals" => capacity_duals_sp_per_iter,
-            "line_duals" => line_duals_sp_per_iter,
+            "cut_terms" => cut_terms,
         ])
         expected_value = sum(P[s]*P_f[f]*P_k[k]*sp_obj_per_iter[s,f,k] for s in 1:S, f in 1:F, k in 1:K)/settings["Scaling factor cost"] 
         cvar_estimate = 0.0
@@ -315,7 +311,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
                 end
             end
 
-            add_cuts!(cut_pool, add_optimality_cuts!(MP, sp_obj_per_iter, capacity_duals_sp_per_iter, line_duals_sp_per_iter, capacity_mix[j], line_expansion[j], coeffs, inputs,settings, j, case_name))
+            add_cuts!(cut_pool, add_optimality_cuts!(MP, cut_terms.objective, cut_terms.capacity_dual, cut_terms.line_dual, capacity_mix[j], line_expansion[j], cut_terms.coeff, inputs, settings, j, case_name))
             @info("Running investment problem")
             time_mp = time()
             output_mp_unst, sep = separate!(cut_pool, MP, settings, risk_aversion_weight)
@@ -601,8 +597,6 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict
         # Actual sps
         @info("Running economic dispatch sub-problems")
         sp_obj_per_iter = zeros(S, F, K)
-        capacity_duals_sp_per_iter = zeros(R, S, F, K)
-        line_duals_sp_per_iter = zeros(R, S, F, K)
         sp_all_results = Array{Any}(undef, S, F, K)
 
 
@@ -618,14 +612,12 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict
 
         sp_obj_per_iter = reshape([outputs_sp[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K))
         
-        capacity_duals_sp_per_iter =reshape([outputs_sp[s,f,k]["capacity dual"][r] for r in 1:R, s in 1:S, f in 1:F, k in 1:K],(R, S, F, K))
-        line_duals_sp_per_iter =reshape([outputs_sp[s,f,k]["line dual"][l] for l in 1:L, s in 1:S, f in 1:F, k in 1:K],(L, S, F, K))
-        coeffs = reshape([outputs_sp[s,f,k]["coeff"] for s in 1:S, f in 1:F, k in 1:K],(S, F, K))
+        # One cut per subproblem (scenario × time block); sp_obj_per_iter stays per scenario for the UB
+        cut_terms = block_cut_terms(outputs_sp)
         _log_iteration_memory!(settings, "mga-subproblem", j, MP, [
             "outputs_sp" => outputs_sp,
             "sp_obj_per_iter" => sp_obj_per_iter,
-            "capacity_duals_sp_per_iter" => capacity_duals_sp_per_iter,
-            "line_duals_sp_per_iter" => line_duals_sp_per_iter,
+            "cut_terms" => cut_terms,
         ])
 
         
@@ -740,7 +732,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict
                 end
             end
 
-            add_cuts!(cut_pool, add_optimality_cuts!(MP, sp_obj_per_iter, capacity_duals_sp_per_iter, line_duals_sp_per_iter, capacity_mix[j], line_expansion[j], coeffs, inputs,settings, j, case_name))
+            add_cuts!(cut_pool, add_optimality_cuts!(MP, cut_terms.objective, cut_terms.capacity_dual, cut_terms.line_dual, capacity_mix[j], line_expansion[j], cut_terms.coeff, inputs, settings, j, case_name))
             @info("Running investment problem")
             time_mp = time()
             output_mp, sep = separate!(cut_pool, MP, settings, risk_aversion_weight)

@@ -25,3 +25,15 @@ function toy_eval(tc::ToyCost, x)
     end
     return θ, β
 end
+
+#---- Block-split scenarios ------------------------------------------------------------------
+# Each scenario s is split into B blocks with their own convex costs: tc has S·B rows, row
+# g = s + (b−1)·S being block b of scenario s (the FinalSolve θb order). A scenario's cost and
+# gradient are the sums over its blocks.
+function toy_block_solve(name, x, tc::ToyCost, p, B; inv_cost = 0.0)
+    θb, βb = toy_eval(tc, x)
+    S, d = length(p), length(x)
+    θ = vec(sum(reshape(θb, S, B); dims = 2))
+    β = dropdims(sum(reshape(βb, d, S, B); dims = 3); dims = 3)
+    return FinalSolve(name, copy(x), θ, β, p, inv_cost, true, θb, βb)
+end

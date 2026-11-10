@@ -471,8 +471,16 @@ const BLOCK_TIME_COLUMN_KEYS = ("Generation", "Storage charging", "Storage disch
 
 # One scenario's result from the results of its blocks. Every key needs a rule above, so a new
 # subproblem output can't be silently dropped.
+# Every merged result also carries its blocks' own cut terms (Block SP objective, Block capacity
+# dual, Block line dual, Block coeff; one entry or column per block, B = 1 included): the master
+# builds one optimality cut per block from them (add_optimality_cuts!).
 function merge_block_results(outs::AbstractVector)
-    length(outs) == 1 && return outs[1]
+    block_terms = Dict{String, Any}(
+        "Block SP objective" => [o["SP objective"] for o in outs],
+        "Block capacity dual" => reduce(hcat, [o["capacity dual"] for o in outs]),
+        "Block line dual" => reduce(hcat, [o["line dual"] for o in outs]),
+        "Block coeff" => [o["coeff"] for o in outs])
+    length(outs) == 1 && return merge(outs[1], block_terms)
     merged = Dict{String, Any}()
     for key in keys(outs[1])
         parts = [o[key] for o in outs]
@@ -488,7 +496,21 @@ function merge_block_results(outs::AbstractVector)
             error("merge_block_results: no rule for subproblem output \"$(key)\". Add it to one of the BLOCK_*_KEYS lists.")
         end
     end
-    return merged
+    return merge!(merged, block_terms)
+end
+
+# The per-block cut terms of a run_all_subproblems result (S × F × K), as the arrays
+# add_optimality_cuts! takes: objective and coeff S × F × K × B, capacity duals R × S × F × K × B,
+# line duals L × S × F × K × B. All unscaled.
+function block_cut_terms(outputs_sp::AbstractArray{<:AbstractDict,3})
+    S, F, K = size(outputs_sp)
+    B = length(outputs_sp[1]["Block SP objective"])
+    R, L = size(outputs_sp[1]["Block capacity dual"], 1), size(outputs_sp[1]["Block line dual"], 1)
+    objective = [outputs_sp[s,f,k]["Block SP objective"][b] for s in 1:S, f in 1:F, k in 1:K, b in 1:B]
+    coeff = [outputs_sp[s,f,k]["Block coeff"][b] for s in 1:S, f in 1:F, k in 1:K, b in 1:B]
+    capacity_dual = [outputs_sp[s,f,k]["Block capacity dual"][r,b] for r in 1:R, s in 1:S, f in 1:F, k in 1:K, b in 1:B]
+    line_dual = [outputs_sp[s,f,k]["Block line dual"][l,b] for l in 1:L, s in 1:S, f in 1:F, k in 1:K, b in 1:B]
+    return (objective = objective, capacity_dual = capacity_dual, line_dual = line_dual, coeff = coeff)
 end
 
 # Per-block results (S × F × K × B) to per-scenario results (S × F × K)

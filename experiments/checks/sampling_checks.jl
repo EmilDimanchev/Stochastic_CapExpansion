@@ -14,7 +14,7 @@ function test_gridfill_real_model(test_index = "gridfill_real")
     settings = load_settings(inputs_folder)
     settings["Scenarios"]["Gas"]["Count"] = 1
     settings["Scenarios"]["Weather"]["Count"] = 1
-    settings["Risk aversion flag"] = true          # also writes cvar_tail_cuts_*, which must be skipped
+    settings["Risk aversion flag"] = true          # so the MP also has u, ζ and the cvar_tail link rows
     inputs = load_input_data(inputs_folder, settings)
     configure_parallel_workers!(settings)
     SPs = build_all_subproblems(inputs, settings)
@@ -30,11 +30,8 @@ function test_gridfill_real_model(test_index = "gridfill_real")
     for j in 1:4
         cap, line = 0.3 .* ub .* rand(rng, R), 200 .* rand(rng, L)
         sp = run_all_subproblems(SPs, inputs, settings, cap, line; minimal_payload = true)
-        obj = reshape([sp[s,f,k]["SP objective"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K))
-        cd = reshape([sp[s,f,k]["capacity dual"][r] for r in 1:R, s in 1:S, f in 1:F, k in 1:K], (R, S, F, K))
-        ld = reshape([sp[s,f,k]["line dual"][l] for l in 1:L, s in 1:S, f in 1:F, k in 1:K], (L, S, F, K))
-        co = reshape([sp[s,f,k]["coeff"] for s in 1:S, f in 1:F, k in 1:K], (S, F, K))
-        add_cuts!(pool, add_optimality_cuts!(MP, obj, cd, ld, cap, line, co, inputs, settings, j, "gfcheck"))
+        t = block_cut_terms(sp)
+        add_cuts!(pool, add_optimality_cuts!(MP, t.objective, t.capacity_dual, t.line_dual, cap, line, t.coeff, inputs, settings, j, "gfcheck"))
         x = vcat(cap, line)
         fs = final_solve_from_sp_outputs("Point_$j", x, sp, p, investment_cost(x, inputs)[1])
         push!(solves, fs)

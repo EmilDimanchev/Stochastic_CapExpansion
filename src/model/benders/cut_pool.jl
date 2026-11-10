@@ -6,7 +6,7 @@ export CutPool, seed!, separate!, prune!, add_cuts!, trim_cuts!, count_live_cuts
 
 Cut pool
 
-One object owns every Benders cut (optimality_cut_* and cvar_tail_cuts_*) built against a
+One object owns every Benders cut (optimality_cut_*, one per subproblem) built against a
 shared master problem, across every solve that reuses it (the risk-weight anchors and every
 MGA vector's budget/cap solves). Each cut is either
   - live:     a constraint in MP right now (`live`, name => ConstraintRef), or
@@ -17,7 +17,7 @@ The Benders loops use three operations:
   separate! - every MP solve: solve, then bring back archived cuts the solution violates
   prune!    - after every MP solve: archive live cuts that haven't bound for `window` iterations
 
-Archive layout. Every cut is a scalar `a'v >= b` over MP variables v (x, x_line, alpha, u, ζ).
+Archive layout. Every cut is a scalar `a'v >= b` over MP variables v (x, x_line, alpha).
 Column j of the matrix Aᵀ holds the a of archived cut j over the pool's variable columns
 (`vars`), and b[j] its RHS - an exact copy of the constraint, so restoring it is lossless.
 The matrix is stored as raw CSC vectors (colptr/rowval/nzval) so archiving a cut is a cheap
@@ -34,7 +34,8 @@ Settings come from the "Cut settings" block of settings.yaml (see CutPool below)
 
 =====================================#
 
-is_cut_name(n::AbstractString) = startswith(n, "optimality_cut_") || startswith(n, "cvar_tail_cuts_")
+# CVaR has no cut rows of its own: the fixed cvar_tail rows tie u to the alphas (add_risk_terms!)
+is_cut_name(n::AbstractString) = startswith(n, "optimality_cut_")
 
 mutable struct CutPool
     cfg::Dict{String, Any}                  # settings["Cut settings"]
@@ -66,7 +67,11 @@ end
 # Hard-indexes every key so a missing setting fails loudly rather than silently defaulting.
 function CutPool(settings::Dict)
     cfg = settings["Cut settings"]
-    for key in ("Cuts retained", "Trim rule", "Prune window", "Binding tolerance", "Separation tolerance", "Cuts per round", "Max rounds")
+    for (old, new) in (("Cuts retained", "Cuts retained per subproblem"), ("Cuts per round", "Cuts per round per subproblem"))
+        haskey(cfg, old) && error("Cut settings: \"$old\" is now \"$new\", a count per subproblem (it's multiplied by the number of subproblems, " *
+                                  "S·F·K·B). Rename it, e.g. in settings_della.yaml.")
+    end
+    for key in ("Cuts retained per subproblem", "Trim rule", "Prune window", "Binding tolerance", "Separation tolerance", "Cuts per round per subproblem", "Max rounds")
         haskey(cfg, key) || error("Cut settings is missing \"$key\"")
     end
     return CutPool(cfg, Dict{String, ConstraintRef}(),
@@ -76,6 +81,13 @@ function CutPool(settings::Dict)
 end
 
 prune_window(pool::CutPool, solve_type::String) = pool.cfg["Prune window"][solve_type]
+
+# Every Benders iteration adds one optimality cut per subproblem (scenario × time block), so the
+# retention cap and the separation batch are set per subproblem and scaled by the master's count.
+# The same setting then keeps the same depth of history whatever "Subproblems per scenario" is.
+n_subproblems(MP::Model) = length(MP[:alpha])
+cuts_retained(pool::CutPool, MP::Model) = round(Int, pool.cfg["Cuts retained per subproblem"] * n_subproblems(MP))
+cuts_per_round(pool::CutPool, MP::Model) = max(1, round(Int, pool.cfg["Cuts per round per subproblem"] * n_subproblems(MP)))
 n_archived(pool::CutPool) = length(pool.colof)
 
 # Number of cuts currently live in MP (scans MP, so it also works without a pool).
@@ -212,11 +224,11 @@ end
 
 # Solves MP, then checks every archived cut at the solution and restores those violated by
 # more than "Separation tolerance" (relative to max(1,|b|)), most violated first, at most
-# "Cuts per round" per round, re-solving after each round until nothing is violated or
+# cuts_per_round per round, re-solving after each round until nothing is violated or
 # "Max rounds" rounds have run. The sub-problems should only see the point this returns.
 # Returns the planning-model output of the last solve and a NamedTuple of separation stats.
 function separate!(pool::CutPool, MP::Model, settings::Dict, risk_aversion_weight)
-    tol, per_round, max_rounds = pool.cfg["Separation tolerance"], pool.cfg["Cuts per round"], pool.cfg["Max rounds"]
+    tol, per_round, max_rounds = pool.cfg["Separation tolerance"], cuts_per_round(pool, MP), pool.cfg["Max rounds"]
     output = run_planning_model(MP, settings, risk_aversion_weight)
     restored, rounds, t_check, t_extra_mp = 0, 0, 0.0, 0.0
     while rounds < max_rounds && n_archived(pool) > 0
@@ -266,7 +278,7 @@ function prune!(pool::CutPool, MP::Model, iteration::Int, window::Int)
     return _archive!(pool, MP, to_archive)
 end
 
-# Trims the combined pool - live cuts *and* archived ones - down to at most "Cuts retained",
+# Trims the combined pool - live cuts *and* archived ones - down to at most cuts_retained,
 # permanently discarding the rest (their stats go too). This only bounds memory: seed! no
 # longer reactivates the whole archive, so the archive size doesn't set the MP size. Rule
 # ("Trim rule"):
@@ -275,10 +287,10 @@ end
 # Cuts with no stats yet count as newest, so they survive. Always logs, including when it's a
 # no-op, so a trim that never engages is visible. Returns (live cuts deleted, archived deleted).
 function trim_cuts!(MP::Model, pool::CutPool)
-    n_keep, rule = pool.cfg["Cuts retained"], pool.cfg["Trim rule"]
+    n_keep, rule = cuts_retained(pool, MP), pool.cfg["Trim rule"]
     n_live, n_arch = length(pool.live), n_archived(pool)
     if n_live + n_arch <= n_keep
-        @info("Cut trim ($rule): $n_live live + $n_arch archived = $(n_live + n_arch) cuts <= Cuts retained ($n_keep); nothing trimmed")
+        @info("Cut trim ($rule): $n_live live + $n_arch archived = $(n_live + n_arch) cuts <= cap $n_keep ($(pool.cfg["Cuts retained per subproblem"]) per subproblem × $(n_subproblems(MP))); nothing trimmed")
         return (0, 0)
     end
     names = vcat(collect(keys(pool.live)), collect(keys(pool.colof)))

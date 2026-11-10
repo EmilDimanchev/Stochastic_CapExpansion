@@ -6,14 +6,17 @@ using LinearAlgebra, Printf, Random, Serialization, SparseArrays, Statistics
 Pruned Benders cut archive for the Grid Options Explorer
 
 The dashboard builds blends x̄ = Σ w_i x_i of solved plans and needs lower bounds on each
-scenario's operating cost at those blends:
-    LB_s(x̄) = max_k (α_k + β_k·x̄),  over the cuts k of scenario s.
+scenario's operating cost at those blends. Each scenario is split into B time blocks
+("Subproblems per scenario"), every cut belongs to one block, and a scenario's cost is the sum of
+its blocks':
+    LB_s(x̄) = Σ_b max_k (α_k + β_k·x̄),  over the cuts k of block b of scenario s.
+With B = 1 (meta/n_blocks) that is the plain max over the scenario's cuts.
 This file picks the few cuts that matter for such blends and writes them to one HDF5 file.
 
 Flow (export_cut_archive):
-  1. collect   pool cuts + final-solve cuts, unscaled and grouped by scenario
+  1. collect   pool cuts + final-solve cuts, unscaled and grouped by subproblem (scenario × block)
   2. save      a temporary raw copy, so a failure here can't lose the cuts of a long run
-  3. prune     one scenario at a time:
+  3. prune     one subproblem at a time:
                  dedupe -> keep cuts active at probe blends -> check held-out blends -> repair
   4. write     the HDF5 file, shrinking the probe set if it is over budget
   5. validate  reproduce the logged GridFill bounds, check validity and tightness at the plans
@@ -24,6 +27,7 @@ s (variable generation + non-served energy + capacity-reserve slack; no investme
 File layout, as h5py shows it (K cuts, n first-stage variables, N plans). Julia stores arrays
 column-major, so a Julia n×K matrix reads as K×n in h5py.
   cuts/scenario    K, int16, 1-based, index into meta/scenario_label and meta/scenario_probability
+  cuts/block       K, int16, 1-based, time block of the scenario (1 to meta/n_blocks)
   cuts/alpha       K, float64
   cuts/beta        K×n, float32 or float64 (or cuts/beta_csr/{indptr,indices,data}, 0-based,
                    when sparse; meta/beta_format says which)
@@ -41,14 +45,20 @@ const CUT_EXPORT_CHUNK_PROBES = 500   # probes evaluated at once; bounds the K �
 
 #---- 1. Collect ----------------------------------------------------------------------------
 
-# Cuts per scenario. Within a scenario the order is: pool cuts, then final solves in bank order.
+# Cuts per subproblem group g = s + (b−1)·S (scenario s, block b; the CutBank and FinalSolve.θb order).
+# Within a group the order is: pool cuts, then final solves in bank order.
 struct CutTable
-    alpha::Vector{Vector{Float64}}   # per scenario: K_s intercepts, $
-    beta::Vector{Matrix{Float64}}    # per scenario: n × K_s slopes, $/MW
-    source::Vector{Vector{Int}}      # per scenario: index into CutExportInput.sources
-    iteration::Vector{Vector{Int}}   # per scenario: Benders iteration (0 for a final solve)
-    batch::Vector{Vector{Int}}       # per scenario: GridFill batch (0 for anything before GridFill)
+    alpha::Vector{Vector{Float64}}   # per group: K_g intercepts, $
+    beta::Vector{Matrix{Float64}}    # per group: n × K_g slopes, $/MW
+    source::Vector{Vector{Int}}      # per group: index into CutExportInput.sources
+    iteration::Vector{Vector{Int}}   # per group: Benders iteration (0 for a final solve)
+    batch::Vector{Vector{Int}}       # per group: GridFill batch (0 for anything before GridFill)
+    n_blocks::Int                    # B: groups are S·B
 end
+
+# The table's cuts (or a subset) as a GridFill CutBank, whose cut_values sum over blocks
+table_cut_bank(table::CutTable, masks = [trues(length(a)) for a in table.alpha]) =
+    CutBank([table.alpha[g][masks[g]] for g in eachindex(masks)], [table.beta[g][:, masks[g]] for g in eachindex(masks)], table.n_blocks)
 
 n_table_cuts(t::CutTable) = sum(length, t.alpha)
 
@@ -76,43 +86,43 @@ struct CutExportInput
     picks::Vector{GridFillPick}      # empty if GridFill didn't run
 end
 
-# Cut names are optimality_cut_<case>_<iteration>_[s,f,k]; see add_optimality_cuts!.
+# Cut names are optimality_cut_<case>_<iteration>_[s,f,k,b]; see add_optimality_cuts!.
 function parse_cut_name(name::AbstractString)
     m = match(r"^optimality_cut_(.*)_(\d+)_\[", name)
     m === nothing && error("Unexpected cut name \"$name\"")
     return String(m.captures[1]), parse(Int, m.captures[2])
 end
 
-# Group pool cuts and final-solve cuts by scenario. `pool_cuts` comes from pool_optimality_cuts.
+# Group pool cuts and final-solve cuts by subproblem. `pool_cuts` comes from pool_optimality_cuts.
 function collect_cut_table(pool_cuts, bank::AbstractVector, plan_batch::AbstractVector{Int})
-    S, n = length(bank[1].θ), length(bank[1].x)
-    alpha = [Float64[] for _ in 1:S]
-    slopes = [Vector{Float64}[] for _ in 1:S]
-    source, iteration, batch = ([Int[] for _ in 1:S] for _ in 1:3)
+    S, G, n = length(bank[1].θ), length(bank[1].θb), length(bank[1].x)
+    alpha = [Float64[] for _ in 1:G]
+    slopes = [Vector{Float64}[] for _ in 1:G]
+    source, iteration, batch = ([Int[] for _ in 1:G] for _ in 1:3)
     sources = String[]
     source_id = Dict{String, Int}()
     id_of(label) = get!(source_id, label) do
         push!(sources, label)
         length(sources)
     end
-    function add!(s, a, g, label, iter, b)
-        push!(alpha[s], a); push!(slopes[s], g); push!(source[s], id_of(label))
-        push!(iteration[s], iter); push!(batch[s], b)
+    function add!(group, a, g, label, iter, b)
+        push!(alpha[group], a); push!(slopes[group], g); push!(source[group], id_of(label))
+        push!(iteration[group], iter); push!(batch[group], b)
     end
     for cut in pool_cuts
         case, iter = parse_cut_name(cut.name)
-        add!(cut.scenario, cut.a, cut.g, case, iter, 0)
+        add!(cut.group, cut.a, cut.g, case, iter, 0)
     end
-    # The same tangent add_final_solve! builds: θ_s(x) >= θ_s(x_j) + g'(x - x_j)
+    # The same tangent add_final_solve! builds: θ_g(x) >= θ_g(x_j) + g'(x - x_j)
     for (fs, b) in zip(bank, plan_batch)
         (fs.ok && has_gradients(fs)) || continue
-        for s in 1:S
-            g = fs.β[:, s]
-            add!(s, fs.θ[s] - dot(g, fs.x), g, fs.name, 0, b)
+        for group in 1:G
+            g = fs.βb[:, group]
+            add!(group, fs.θb[group] - dot(g, fs.x), g, fs.name, 0, b)
         end
     end
-    beta = [isempty(slopes[s]) ? zeros(n, 0) : reduce(hcat, slopes[s]) for s in 1:S]
-    return CutTable(alpha, beta, source, iteration, batch), sources
+    beta = [isempty(slopes[g]) ? zeros(n, 0) : reduce(hcat, slopes[g]) for g in 1:G]
+    return CutTable(alpha, beta, source, iteration, batch, G ÷ S), sources
 end
 
 # Input from toy or real parts; the inputs/settings wrapper is below.
@@ -260,7 +270,7 @@ function dedupe_cuts(alpha::AbstractVector, beta::AbstractMatrix, xscale::Abstra
     return sort!(collect(values(best_of_group)))
 end
 
-# Prune one scenario; returns the kept cut indices (sorted) and the repair rounds used.
+# Prune one subproblem's cuts; returns the kept cut indices (sorted) and the repair rounds used.
 # Repair stops after `clean_rounds` held-out sets in a row expose no gap. One clean set isn't enough
 # evidence: gaps can sit in small regions of the blend space that a single sample easily misses.
 function prune_scenario(alpha::AbstractVector, beta::AbstractMatrix, probes::AbstractMatrix, held_out_sets::AbstractVector,
@@ -285,15 +295,16 @@ function prune_scenario(alpha::AbstractVector, beta::AbstractMatrix, probes::Abs
     return findall(kept), rounds
 end
 
-# Prune every scenario, streaming through them so only one scenario's temporaries exist at a time.
+# Prune every subproblem group, streaming through them so only one group's temporaries exist at a
+# time. Each block's max is held to the gap tolerance, so a scenario's sum over blocks is too.
 # Reports the final gaps on `test_blends`, which no repair round has seen.
 function prune_cut_table(table::CutTable, probes::AbstractMatrix, held_out_sets::AbstractVector, test_blends::AbstractMatrix,
                          xscale::AbstractVector, near_tol::Real, gap_tol::Real, duplicate_tol::Real, clean_rounds::Int)
-    S = length(table.alpha)
-    kept = Vector{Vector{Int}}(undef, S)
-    rounds = zeros(Int, S)
+    n_groups = length(table.alpha)
+    kept = Vector{Vector{Int}}(undef, n_groups)
+    rounds = zeros(Int, n_groups)
     gaps = Float64[]
-    for s in 1:S
+    for s in 1:n_groups
         alpha, beta = table.alpha[s], table.beta[s]
         kept[s], rounds[s] = prune_scenario(alpha, beta, probes, held_out_sets, xscale, near_tol, gap_tol, duplicate_tol, clean_rounds)
         full_values, _ = best_cut_at(alpha, beta, test_blends)
@@ -344,21 +355,22 @@ function write_compressed(group, name::AbstractString, data::AbstractArray)
     HDF5.write_dataset(group, name, data; chunk = chunk, shuffle = true, deflate = 6)
 end
 
-# Writes the kept cuts of every scenario. Everything the budget loop can vary is an argument.
+# Writes the kept cuts of every subproblem. Everything the budget loop can vary is an argument.
 function write_cut_h5(path::AbstractString, input::CutExportInput, kept, float_types, cfg, step, coverage)
     table = input.cuts
     n = size(input.plan_x, 1)
+    S = length(input.p)
     K = sum(length, kept)
-    scenario = Vector{Int16}(undef, K)
+    scenario, block = Vector{Int16}(undef, K), Vector{Int16}(undef, K)
     alpha = Vector{Float64}(undef, K)
     iteration, source, batch = Vector{Int16}(undef, K), Vector{Int16}(undef, K), Vector{Int16}(undef, K)
     beta = Matrix{float_types.beta}(undef, n, K)
     position = 0
-    for s in eachindex(kept), k in kept[s]
+    for g in eachindex(kept), k in kept[g]
         position += 1
-        scenario[position], alpha[position] = s, table.alpha[s][k]
-        iteration[position], source[position], batch[position] = table.iteration[s][k], table.source[s][k], table.batch[s][k]
-        beta[:, position] = table.beta[s][:, k]
+        scenario[position], block[position], alpha[position] = mod1(g, S), cld(g, S), table.alpha[g][k]
+        iteration[position], source[position], batch[position] = table.iteration[g][k], table.source[g][k], table.batch[g][k]
+        beta[:, position] = table.beta[g][:, k]
     end
     density = K == 0 ? 0.0 : count(!iszero, beta) / length(beta)
     use_csr = density < cfg.sparse_density
@@ -366,6 +378,7 @@ function write_cut_h5(path::AbstractString, input::CutExportInput, kept, float_t
     HDF5.h5open(path, "w") do f
         cuts = HDF5.create_group(f, "cuts")
         write_compressed(cuts, "scenario", scenario)
+        write_compressed(cuts, "block", block)
         write_compressed(cuts, "alpha", alpha)
         write_compressed(cuts, "iteration", iteration)
         write_compressed(cuts, "source", source)
@@ -391,6 +404,8 @@ function write_cut_h5(path::AbstractString, input::CutExportInput, kept, float_t
         meta = HDF5.create_group(f, "meta")
         meta["run_id"] = input.run_id
         meta["n_scenarios"] = length(input.p)
+        meta["n_blocks"] = table.n_blocks
+        meta["lower_bound"] = "LB_s(x) = sum over blocks b of max over the cuts of (scenario s, block b) of alpha + beta . x"
         meta["scenario_probability"] = input.p
         meta["scenario_label"] = input.scenario_label
         meta["sources"] = input.sources
@@ -402,8 +417,9 @@ function write_cut_h5(path::AbstractString, input::CutExportInput, kept, float_t
         meta["feasibility_cuts"] = "none: subproblems have complete recourse"
         meta["skipped_pool_rows"] = input.skipped_rows
         meta["failed_plans"] = input.plan_ids[.!input.plan_ok]
-        meta["raw_cuts_per_scenario"] = length.(table.alpha)
-        meta["pruned_cuts_per_scenario"] = length.(kept)
+        # Per (scenario, block), scenario fastest: entry s + (b-1)·n_scenarios
+        meta["raw_cuts_per_subproblem"] = length.(table.alpha)
+        meta["pruned_cuts_per_subproblem"] = length.(kept)
         meta["raw_cuts_total"] = n_table_cuts(table)
         meta["pruned_cuts_total"] = K
         meta["beta_format"] = use_csr ? "csr" : "dense"
@@ -429,9 +445,9 @@ end
 # The cuts in a written file, as a CutTable, plus the plans. Used to validate what was really written.
 function read_cut_h5(path::AbstractString)
     HDF5.h5open(path, "r") do f
-        scenario = read(f["cuts/scenario"])
+        scenario, block = read(f["cuts/scenario"]), read(f["cuts/block"])
         alpha, iteration, source, batch = read(f["cuts/alpha"]), read(f["cuts/iteration"]), read(f["cuts/source"]), read(f["cuts/batch"])
-        S = Int(read(f["meta/n_scenarios"]))
+        S, B = Int(read(f["meta/n_scenarios"])), Int(read(f["meta/n_blocks"]))
         n = length(read(f["vars/name"]))
         K = length(alpha)
         beta = if read(f["meta/beta_format"]) == "csr"
@@ -440,9 +456,9 @@ function read_cut_h5(path::AbstractString)
         else
             Float64.(read(f["cuts/beta"]))
         end
-        rows = [findall(==(s), scenario) for s in 1:S]
+        rows = vec([findall((scenario .== s) .& (block .== b)) for s in 1:S, b in 1:B])   # group order s + (b−1)·S
         table = CutTable([alpha[r] for r in rows], [beta[:, r] for r in rows], [Int.(source[r]) for r in rows],
-                         [Int.(iteration[r]) for r in rows], [Int.(batch[r]) for r in rows])
+                         [Int.(iteration[r]) for r in rows], [Int.(batch[r]) for r in rows], B)
         return (cuts = table, plan_ids = read(f["plans/id"]), plan_x = Float64.(read(f["plans/x"])))
     end
 end
@@ -467,10 +483,7 @@ end
 #---- 5. Validate ---------------------------------------------------------------------------
 
 # The cuts that existed when GridFill batch b was aimed: everything from before b, in table order.
-function cut_bank_before_batch(table::CutTable, b::Integer)
-    masks = [table.batch[s] .< b for s in eachindex(table.alpha)]
-    return CutBank([table.alpha[s][masks[s]] for s in eachindex(masks)], [table.beta[s][:, masks[s]] for s in eachindex(masks)])
-end
+cut_bank_before_batch(table::CutTable, b::Integer) = table_cut_bank(table, [table.batch[g] .< b for g in eachindex(table.alpha)])
 
 # Recomputes GF_LB_EV and GF_LB_CVaR by repeating exactly what the sampler did for each batch:
 # the same plans and cuts, the same prune_cuts with the same seeded blends, and the same clamp
@@ -517,7 +530,7 @@ function validate_export(path::AbstractString, input::CutExportInput, cfg; prune
     lines = String[]
     say(text) = push!(lines, text)
     say("Cut archive report: $(input.run_id)")
-    say(@sprintf("Cuts: %d raw -> %d pruned, %d scenarios, %d variables, %d plans", n_table_cuts(input.cuts), n_table_cuts(written.cuts), length(input.p), size(input.plan_x, 1), length(input.plan_ids)))
+    say(@sprintf("Cuts: %d raw -> %d pruned, %d scenarios × %d blocks, %d variables, %d plans", n_table_cuts(input.cuts), n_table_cuts(written.cuts), length(input.p), input.cuts.n_blocks, size(input.plan_x, 1), length(input.plan_ids)))
     say("Feasibility cuts: none (complete recourse). Pool rows with no alpha term, skipped: $(input.skipped_rows).")
     !all(input.plan_ok) && say("Plans with failed subproblems, no checks and no cuts: $(join(input.plan_ids[.!input.plan_ok], ", "))")
 
@@ -547,8 +560,8 @@ function validate_export(path::AbstractString, input::CutExportInput, cfg; prune
                      label, n_over, length(excess), cfg.validity_tol, excess[i], (L .- θ)[i], input.plan_ids[ok[i[2]]], input.scenario_label[i[1]]))
         return n_over
     end
-    violations_raw = report_excess("full archive", cut_values(CutBank(input.cuts.alpha, input.cuts.beta), X))
-    L_file = cut_values(CutBank(written.cuts.alpha, written.cuts.beta), written.plan_x[:, ok])
+    violations_raw = report_excess("full archive", cut_values(table_cut_bank(input.cuts), X))
+    L_file = cut_values(table_cut_bank(written.cuts), written.plan_x[:, ok])
     violations_file = report_excess("written file", L_file)
     slack = (θ .- L_file) ./ max.(abs.(θ), 1.0)
     say(@sprintf("3. Tightness of the written file, (Op_s - LB_s) / Op_s: max %.2e, mean %.2e; share below 1e-6: %.3f", maximum(abs, slack), mean(abs, slack), mean(abs.(slack) .< 1e-6)))

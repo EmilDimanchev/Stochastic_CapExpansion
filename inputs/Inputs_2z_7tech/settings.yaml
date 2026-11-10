@@ -108,12 +108,12 @@ Sampling settings: # portfolios evaluated after exploration, labelled by subprob
     Boundary margin: 0.0 # drop target cells less than this many cells from the hull's lower edge before sampling (0 = off)
 
 Cut settings: # cut pool, see src/model/benders/cut_pool.jl
-  Cuts retained: 200000 # memory cap on live + archived cuts, applied at each new risk weight / MGA vector
-  Trim rule: "recent_binding" # which cuts survive "Cuts retained": "recent_binding" or "earliest"
+  Cuts retained per subproblem: 1600 # memory cap on live + archived cuts, × the number of subproblems (S·F·K·B; each iteration adds one cut per subproblem, so this is roughly iterations of history), applied at each new risk weight / MGA vector.
+  Trim rule: "recent_binding" # which cuts survive the cap: "recent_binding" or "earliest"
   Prune window: {Anchor: 8, Budget: 2, EV cap: 2, CVaR cap: 3} # iterations without binding before a live cut is archived, per solve type
   Binding tolerance: 1.0e-6 # a cut whose MP dual is at least this counts as binding
   Separation tolerance: 1.0e-6 # relative violation (over max(1,|rhs|)) at which an archived cut is restored
-  Cuts per round: 500 # most-violated archived cuts restored per separation round
+  Cuts per round per subproblem: 4 # most-violated archived cuts restored per separation round, × the number of subproblems
   Max rounds: 5 # separation rounds per MP solve before the sub-problems run
 
 Cut export settings: # pruned cut archive for the Grid Options Explorer, see src/results/Export_cuts.jl

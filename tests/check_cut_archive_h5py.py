@@ -7,8 +7,8 @@ Usage:
 
 It shares no code with src/results/Export_cuts.jl, so a wrong column order, scenario order or
 array orientation in the file makes it fail. For every plan and scenario, the floor from the
-file, LB_s(x) = max_k (alpha_k + beta_k . x), is compared with the operating cost the run wrote
-to the Summary CSV.
+file, LB_s(x) = sum over blocks b of max_k (alpha_k + beta_k . x) over the cuts of (s, b), is
+compared with the operating cost the run wrote to the Summary CSV.
 """
 
 import sys
@@ -44,6 +44,8 @@ def main(archive_path, summary_path, relative_tolerance=1e-4):
         plan_ids = text(f["plans/id"][()])
         plan_x = f["plans/x"][()].astype(np.float64)  # N x n
         scenario = f["cuts/scenario"][()]  # 1-based
+        block = f["cuts/block"][()]  # 1-based
+        n_blocks = int(f["meta/n_blocks"][()])
         alpha = f["cuts/alpha"][()]
         beta = read_beta(f, len(names)).astype(np.float64)  # K x n
         labels = text(f["meta/scenario_label"][()])
@@ -64,14 +66,16 @@ def main(archive_path, summary_path, relative_tolerance=1e-4):
     checked_plans = [i for i, plan in enumerate(plan_ids) if plan not in failed]
     gaps = []
     for s, label in enumerate(labels, start=1):
-        rows = scenario == s
-        assert rows.any(), f"scenario {s} has no cuts"
-        floor = (alpha[rows, None] + beta[rows] @ plan_x[checked_plans].T).max(axis=0)
+        floor = 0.0
+        for b in range(1, n_blocks + 1):
+            rows = (scenario == s) & (block == b)
+            assert rows.any(), f"scenario {s}, block {b} has no cuts"
+            floor = floor + (alpha[rows, None] + beta[rows] @ plan_x[checked_plans].T).max(axis=0)
         cost = summary.loc[[plan_ids[i] for i in checked_plans], f"OperatingCost_{label}"].to_numpy()
         gaps.append((cost - floor) / np.maximum(np.abs(cost), 1.0))
     gaps = np.concatenate(gaps)
 
-    print(f"Cuts {len(alpha)}, scenarios {len(labels)}, variables {len(names)}, plans {len(plan_ids)}")
+    print(f"Cuts {len(alpha)}, scenarios {len(labels)} x {n_blocks} blocks, variables {len(names)}, plans {len(plan_ids)}")
     print(f"(Op_s - LB_s) / Op_s over {gaps.size} pairs: min {gaps.min():.2e}, max {gaps.max():.2e}, mean {gaps.mean():.2e}")
     assert np.abs(gaps).max() < relative_tolerance, "floors from the file don't match the Summary's op costs"
     print("PASSED")

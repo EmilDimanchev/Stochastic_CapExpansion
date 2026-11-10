@@ -2,12 +2,14 @@ using LinearAlgebra, Random, Statistics, JuMP
 
 #==========================================================================================
 
-GridFill: the per-scenario cut bank and the op-cost bracket of a blend
+GridFill: the per-subproblem cut bank and the op-cost bracket of a blend
 
-Every subproblem solve at a capacity x_j gives one supporting hyperplane per scenario,
-    θ_s(x) >= θ_s(x_j) + β_sᵀ (x − x_j) = a + gᵀx,
-valid everywhere because each scenario's op cost is convex in capacity. The CutBank holds
-these per scenario, from two sources:
+Every subproblem solve at a capacity x_j gives one supporting hyperplane per subproblem
+(scenario s × time block b, see subproblem_blocks),
+    θ_{s,b}(x) >= θ_{s,b}(x_j) + β_{s,b}ᵀ (x − x_j) = a + gᵀx,
+valid everywhere because each block's op cost is convex in capacity. A scenario's cost is the
+sum of its blocks', so its floor is the sum over blocks of each block's best cut. The CutBank
+holds the cuts per subproblem, in groups g = s + (b−1)·S, from two sources:
   - the CutPool (live + archived optimality_cut_* rows of the master): every Benders
     iterate of every anchor / MGA / wing solve, not just the final ones;
   - FinalSolves: the bank's final solves and every evaluated GridFill sample.
@@ -16,7 +18,7 @@ All values are unscaled ($ and $/MW), in the [x; x_line] order of capacity_varia
 Bracket for a blend x = Σ w_j x_j of solved parents (θ_j their per-scenario costs):
   upper: θ_s(x) <= Σ w_j θ_{j,s} =: θ̄_s                  (convexity)
          EV <= p·θ̄,  CVaR <= CVaR(θ̄)  (tighter than Σ w_j CVaR_j)
-  lower: θ_s(x) >= l_s := max over scenario-s cuts
+  lower: θ_s(x) >= l_s := Σ_b max over the cuts of block b of scenario s
          EV >= p·l,  CVaR >= CVaR(l)  (CVaR is monotone in the scenario costs)
 The aiming predictor is LB + f·(UB − LB) ("Aim fraction" f, see predicted_position); it is
 never used as a label. The midpoint (f = 0.5) is kept as a lineage column.
@@ -24,39 +26,43 @@ never used as a label. The midpoint (f = 0.5) is kept as a lineage column.
 ==========================================================================================#
 
 mutable struct CutBank
-    a::Vector{Vector{Float64}}     # per scenario: cut intercepts, $
-    G::Vector{Matrix{Float64}}     # per scenario: d × n_s cut gradients, $/MW
+    a::Vector{Vector{Float64}}     # per group (scenario × block): cut intercepts, $
+    G::Vector{Matrix{Float64}}     # per group: d × n_g cut gradients, $/MW
+    n_blocks::Int                  # B; there are S·B groups, g = s + (b−1)·S
 end
 
-CutBank(S::Int, d::Int) = CutBank([Float64[] for _ in 1:S], [zeros(d, 0) for _ in 1:S])
+CutBank(a::Vector{Vector{Float64}}, G::Vector{<:AbstractMatrix}) = CutBank(a, Vector{Matrix{Float64}}(G), 1)
+CutBank(S::Int, d::Int; n_blocks::Int = 1) = CutBank([Float64[] for _ in 1:S*n_blocks], [zeros(d, 0) for _ in 1:S*n_blocks], n_blocks)
 
 n_cuts(cb::CutBank) = sum(length, cb.a)
+n_scenarios(cb::CutBank) = length(cb.a) ÷ cb.n_blocks
 
-# One cut per scenario from a solve at fs.x (only solves with gradients and all scenarios optimal)
+# One cut per subproblem from a solve at fs.x (only solves with gradients and all scenarios optimal)
 function add_final_solve!(cb::CutBank, fs)
     (fs.ok && has_gradients(fs)) || return cb
-    for s in eachindex(cb.a)
-        g = fs.β[:, s]
-        push!(cb.a[s], fs.θ[s] - dot(g, fs.x))
-        cb.G[s] = hcat(cb.G[s], g)
+    length(fs.θb) == length(cb.a) || error("add_final_solve!: $(fs.name) has $(length(fs.θb)) subproblems, the cut bank $(length(cb.a)) groups.")
+    for g in eachindex(cb.a)
+        grad = fs.βb[:, g]
+        push!(cb.a[g], fs.θb[g] - dot(grad, fs.x))
+        cb.G[g] = hcat(cb.G[g], grad)
     end
     return cb
 end
 
 # Every optimality cut in the pool, live or archived, unscaled and in pool order. The master row is
-#     c·alpha[s,f,k] + Σ a_r x_r + Σ a_l x_line_l >= b      (scaled by "Scaling factor cost")
+#     c·alpha[s,f,k,b] + Σ a_r x_r + Σ a_l x_line_l >= b      (scaled by "Scaling factor cost")
 # with c = 1 for an optimal subproblem (c = 0 rows carry no information and are skipped).
-# alpha is the scaled op cost of scenario (s,f,k), so θ_s(x) >= scale·(b − aᵀx)/c.
-# cvar_tail_cuts_* repeat the same tangent with −ζ and are skipped.
-# Returns the cuts as (scenario, a, g, name) and the number of optimality rows skipped.
+# alpha is the scaled op cost of block b of scenario (s,f,k), so θ_{s,b}(x) >= scale·(b − aᵀx)/c.
+# Returns the cuts as (group, a, g, name), group = s + (b−1)·S over (s,f,k,b) column-major (the
+# FinalSolve θb order), and the number of optimality rows skipped.
 function pool_optimality_cuts(pool, MP::Model, settings::Dict)
     scale = settings["Scaling factor cost"]
     alpha = MP[:alpha]
     xvars = vcat(vec(collect(MP[:x])), vec(collect(MP[:x_line])))
-    scen_of = Dict(alpha[I] => li for (li, I) in enumerate(CartesianIndices(size(alpha))))   # (s,f,k) column-major, same as θ
+    scen_of = Dict(alpha[I] => li for (li, I) in enumerate(CartesianIndices(size(alpha))))   # (s,f,k,b) column-major, same as θb
     pos_of = Dict(v => i for (i, v) in enumerate(xvars))
     d = length(xvars)
-    cuts = NamedTuple{(:scenario, :a, :g, :name), Tuple{Int, Float64, Vector{Float64}, String}}[]
+    cuts = NamedTuple{(:group, :a, :g, :name), Tuple{Int, Float64, Vector{Float64}, String}}[]
     skipped = 0
     function add_row!(terms, b, cut_name)
         s, c = 0, 0.0
@@ -72,7 +78,7 @@ function pool_optimality_cuts(pool, MP::Model, settings::Dict)
             skipped += 1
             return
         end
-        push!(cuts, (scenario = s, a = scale * b / c, g = -scale .* g ./ c, name = cut_name))
+        push!(cuts, (group = s, a = scale * b / c, g = -scale .* g ./ c, name = cut_name))
     end
     for (n, con) in pool.live
         startswith(n, "optimality_cut_") || continue
@@ -92,9 +98,10 @@ function add_pool_cuts!(cb::CutBank, pool, MP::Model, settings::Dict)
     cuts, _ = pool_optimality_cuts(pool, MP, settings)
     a_new = [Float64[] for _ in eachindex(cb.a)]
     g_new = [Vector{Float64}[] for _ in eachindex(cb.a)]
+    length(cb.a) == length(MP[:alpha]) || error("add_pool_cuts!: the cut bank has $(length(cb.a)) groups, the master $(length(MP[:alpha])) subproblems.")
     for cut in cuts
-        push!(a_new[cut.scenario], cut.a)
-        push!(g_new[cut.scenario], cut.g)
+        push!(a_new[cut.group], cut.a)
+        push!(g_new[cut.group], cut.g)
     end
     for s in eachindex(cb.a)
         isempty(a_new[s]) && continue
@@ -105,21 +112,29 @@ function add_pool_cuts!(cb::CutBank, pool, MP::Model, settings::Dict)
     return cb
 end
 
-# Per-scenario cut maximum at each column of X (d × m): S × m. −Inf where a scenario has no cut.
-function cut_values(cb::CutBank, X::AbstractMatrix)
+# Per-group cut maximum at each column of X (d × m): (S·B) × m. −Inf where a group has no cut.
+function group_cut_values(cb::CutBank, X::AbstractMatrix)
     l = fill(-Inf, length(cb.a), size(X, 2))
-    for s in eachindex(cb.a)
-        isempty(cb.a[s]) && continue
-        l[s, :] = vec(maximum(cb.a[s] .+ cb.G[s]' * X; dims = 1))
+    for g in eachindex(cb.a)
+        isempty(cb.a[g]) && continue
+        l[g, :] = vec(maximum(cb.a[g] .+ cb.G[g]' * X; dims = 1))
     end
     return l
 end
 
-# Keep, per scenario, only the cuts that attain the maximum at one of the reference points
-# (columns of Xref). Any subset of cuts still gives a valid lower bound; keeping those active
+# Per-scenario floor at each column of X: S × m, the sum over a scenario's blocks of each block's
+# best cut. −Inf where any block of the scenario has no cut.
+function cut_values(cb::CutBank, X::AbstractMatrix)
+    l = group_cut_values(cb, X)
+    S = n_scenarios(cb)
+    return dropdims(sum(reshape(l, S, cb.n_blocks, size(X, 2)); dims = 2); dims = 2)
+end
+
+# Keep, per group (scenario × block), only the cuts that attain the maximum at one of the reference
+# points (columns of Xref). Any subset of cuts still gives a valid lower bound; keeping those active
 # around the parents keeps the bound almost as tight at a fraction of the cost.
 function prune_cuts(cb::CutBank, Xref::AbstractMatrix)
-    out = CutBank(length(cb.a), size(Xref, 1))
+    out = CutBank(n_scenarios(cb), size(Xref, 1); n_blocks = cb.n_blocks)
     for s in eachindex(cb.a)
         isempty(cb.a[s]) && continue
         keep = Int[]

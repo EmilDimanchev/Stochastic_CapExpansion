@@ -215,13 +215,17 @@ function build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
     @variable(MP, x_line[l in 1:L] >= 0) # Transmission line expansion, MW
     @constraint(MP, max_line_expansion[l in 1:L], x_line[l] <= inputs["Max expansion"][l])
 
-    # Cuts
-    @variable(MP, alpha[s in 1:S, f in 1:F, k in 1:K] >= 0)
+    # Operating cost estimates: one per subproblem, i.e. per scenario and time block (see
+    # subproblem_blocks). Each block gets its own optimality cuts (add_optimality_cuts!), and a
+    # scenario's estimate is the sum over its blocks. docs/benders_block_cuts.pdf has the math.
+    B = length(subproblem_blocks(inputs, settings))
+    @variable(MP, alpha[s in 1:S, f in 1:F, k in 1:K, b in 1:B] >= 0)
+    @expression(MP, scenario_alpha[s in 1:S, f in 1:F, k in 1:K], sum(alpha[s,f,k,b] for b in 1:B))
 
 
     # Cost Expressions
     @expression(MP, inv_cost, sum(x[r]*cost_inv[r] for r in 1:R) + sum(x_line[l]*capex_line[l] for l in 1:L))
-    @expression(MP, expected_alpha, sum(P[s]*P_f[f]*P_k[k]*alpha[s,f,k] for s in 1:S, f in 1:F, k in 1:K))
+    @expression(MP, expected_alpha, sum(P[s]*P_f[f]*P_k[k]*scenario_alpha[s,f,k] for s in 1:S, f in 1:F, k in 1:K))
     @expression(MP, exp_sys_cost, expected_alpha + inv_cost)
     if risk_aversion_flag
         add_risk_terms!(MP, inputs, settings)
@@ -263,8 +267,10 @@ function add_risk_terms!(MP::Model, inputs, settings)
     @variable(MP, u[s in 1:S, f in 1:F, k in 1:K] >= 0) # loss relative to VaR, $/MW
     @variable(MP, ζ) # VaR variable, $/MW
     
-    # CVaR definition constraint
-    @constraint(MP, cvar_tail[s in 1:S, f in 1:F, k in 1:K], MP[:u][s,f,k] >= -MP[:ζ])
+    # CVaR definition constraint: u is each scenario's cost estimate above VaR. Tied to the block cost
+    # estimates (scenario_alpha), so CVaR sees every block cut and no CVaR cut rows are needed. With
+    # alpha >= 0 this also covers the old u >= -ζ row. See docs/benders_block_cuts.pdf.
+    @constraint(MP, cvar_tail[s in 1:S, f in 1:F, k in 1:K], MP[:u][s,f,k] >= MP[:scenario_alpha][s,f,k] - MP[:ζ])
     
     # Accounting for risk in the objective function
     @expression(MP, cvar_term, ζ + 1/Ψ*sum(P[s]*P_f[f]*P_k[k]*u[s,f,k] for s in 1:S, f in 1:F, k in 1:K))
@@ -272,23 +278,17 @@ function add_risk_terms!(MP::Model, inputs, settings)
 
 end
 
-function add_optimality_cuts!(MP, SP_obj, cap_dual, line_dual, x_prev, x_prev_line, coeffs, inputs,settings, iteration, case)
+# One optimality cut per subproblem (scenario × time block) at the capacity point (x_prev, x_prev_line):
+#     coeff·alpha[s,f,k,b] >= θ_b + β_bᵀ(x − x_prev) + β_line_bᵀ(x_line − x_prev_line)
+# SP_obj and coeffs are S × F × K × B, cap_dual R × S × F × K × B, line_dual L × S × F × K × B, all
+# unscaled (the "Block ..." terms of run_all_subproblems). A block that didn't solve has coeff 0, so
+# its row carries no information. CVaR needs no rows of its own: cvar_tail ties u to the alphas.
+function add_optimality_cuts!(MP, SP_obj, cap_dual, line_dual, x_prev, x_prev_line, coeffs, inputs, settings, iteration, case)
     scaling_factor_cost = settings["Scaling factor cost"]
-    cvar_tail = settings["Risk aversion flag"]
-
-    # Input Sets
-    P = inputs["Demand scenario probabilities"]
-    P_f = inputs["Gas price scenario probabilities"]
-    P_k = inputs["Weather scenario probabilities"]
-
-    # Set Sizes
-    S = size(P)[1] # number of demand scenarios
-    F = size(P_f)[1] # number of gas price scenarios
-    K = size(P_k)[1] # number of weather scenarios
-    G = inputs["Number of generation resources"]
-    O =  inputs["Number of storage resources"]
-    R = G + O
-    L = inputs["Number of lines"]
+    S, F, K, B = size(MP[:alpha])
+    size(SP_obj) == (S, F, K, B) || error("add_optimality_cuts!: SP_obj is $(size(SP_obj)), the master's alpha is $((S, F, K, B)).")
+    R = length(MP[:x])
+    L = length(MP[:x_line])
 
     SP_obj = SP_obj./scaling_factor_cost
     cap_dual = cap_dual./scaling_factor_cost
@@ -298,14 +298,7 @@ function add_optimality_cuts!(MP, SP_obj, cap_dual, line_dual, x_prev, x_prev_li
     # cache them (name => ConstraintRef) instead of later paying for constraint_by_name,
     # which forces MathOptInterface to rebuild its entire name index (see CutPool).
     new_cut_refs = Dict{String, ConstraintRef}()
-    if cvar_tail
-        cvar_cuts = @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:u][s,f,k] >= SP_obj[s,f,k] + sum(cap_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) + sum(line_dual[l,s,f,k]*(MP[:x_line][l]-x_prev_line[l]) for l in 1:L) - MP[:ζ], base_name = "cvar_tail_cuts_"*case*"_"*string(iteration)*"_")
-        for con in cvar_cuts
-            new_cut_refs[name(con)] = con
-        end
-    end
-
-    opt_cuts = @constraint(MP, [s in 1:S, f in 1:F, k in 1:K], coeffs[s,f,k]*MP[:alpha][s,f,k] >= SP_obj[s,f,k] + sum(cap_dual[r,s,f,k]*(MP[:x][r]-x_prev[r]) for r in 1:R) + sum(line_dual[l,s,f,k]*(MP[:x_line][l]-x_prev_line[l]) for l in 1:L), base_name = "optimality_cut_"*case*"_"*string(iteration)*"_")
+    opt_cuts = @constraint(MP, [s in 1:S, f in 1:F, k in 1:K, b in 1:B], coeffs[s,f,k,b]*MP[:alpha][s,f,k,b] >= SP_obj[s,f,k,b] + sum(cap_dual[r,s,f,k,b]*(MP[:x][r]-x_prev[r]) for r in 1:R) + sum(line_dual[l,s,f,k,b]*(MP[:x_line][l]-x_prev_line[l]) for l in 1:L), base_name = "optimality_cut_"*case*"_"*string(iteration)*"_")
     for con in opt_cuts
         new_cut_refs[name(con)] = con
     end
@@ -575,7 +568,8 @@ function write_outputs(MP, settings; risk_aversion_weight=0.5)
     output["Planning objective"] = value(MP[:eObj])*scaling_factor_cost
     output["Capacity"] = value.(MP[:x])
     output["Line expansion"] = value.(MP[:x_line])
-    output["Alpha"] = value.(MP[:alpha]).*scaling_factor_cost
+    output["Alpha"] = value.(MP[:scenario_alpha]).*scaling_factor_cost   # per scenario (sum over blocks)
+    output["Block alpha"] = value.(MP[:alpha]).*scaling_factor_cost      # S × F × K × B
     output["Contract volume"] = 0
     output["Contract price"] = 0
     output["Inv_cost"] = value(MP[:inv_cost])*scaling_factor_cost

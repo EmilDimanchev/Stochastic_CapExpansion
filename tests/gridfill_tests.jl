@@ -133,25 +133,45 @@ end
         S, F = 5, 4                                 # 20 scenarios, flattened (s,f) column-major
         MP = Model()
         @variable(MP, x[1:3] >= 0); @variable(MP, x_line[1:1] >= 0)
-        @variable(MP, alpha[1:S, 1:F, 1:1] >= 0); @variable(MP, u[1:S, 1:F, 1:1] >= 0); @variable(MP, ζ)
+        @variable(MP, alpha[1:S, 1:F, 1:1, 1:1] >= 0)     # one block per scenario
         pool = CutPool(settings)
         cb_ref = CutBank(S * F, 4)
         for (it, fs) in enumerate(bank[1:6])
             add_final_solve!(cb_ref, fs)
-            θ = reshape(fs.θ ./ scale, S, F, 1); β = reshape(fs.β ./ scale, 4, S, F, 1)
+            θ = reshape(fs.θ ./ scale, S, F, 1, 1); β = reshape(fs.β ./ scale, 4, S, F, 1, 1)
             xp = fs.x
-            opt = @constraint(MP, [s in 1:S, f in 1:F, k in 1:1], alpha[s,f,k] >= θ[s,f,k] + sum(β[r,s,f,k]*(x[r] - xp[r]) for r in 1:3) + β[4,s,f,k]*(x_line[1] - xp[4]), base_name = "optimality_cut_t_$(it)_")
-            tail = @constraint(MP, [s in 1:S, f in 1:F, k in 1:1], u[s,f,k] >= θ[s,f,k] + sum(β[r,s,f,k]*(x[r] - xp[r]) for r in 1:3) + β[4,s,f,k]*(x_line[1] - xp[4]) - ζ, base_name = "cvar_tail_cuts_t_$(it)_")
-            add_cuts!(pool, Dict(name(c) => c for c in vcat(vec(opt), vec(tail))))
+            opt = @constraint(MP, [s in 1:S, f in 1:F, k in 1:1, b in 1:1], alpha[s,f,k,b] >= θ[s,f,k,b] + sum(β[r,s,f,k,b]*(x[r] - xp[r]) for r in 1:3) + β[4,s,f,k,b]*(x_line[1] - xp[4]), base_name = "optimality_cut_t_$(it)_")
+            add_cuts!(pool, Dict(name(c) => c for c in vec(opt)))
         end
         # Archive half of them: both the live and the archived path are read
         to_archive = [n for n in keys(pool.live) if occursin("_t_2_", n) || occursin("_t_5_", n)]
         _archive!(pool, MP, to_archive)
         cb_pool = CutBank(S * F, 4)
         add_pool_cuts!(cb_pool, pool, MP, settings)
-        @test n_cuts(cb_pool) == n_cuts(cb_ref) == 6 * S * F       # tail cuts skipped
+        @test n_cuts(cb_pool) == n_cuts(cb_ref) == 6 * S * F
         Y = permutedims(reduce(vcat, [fs.x' for fs in bank]))
         @test cut_values(cb_pool, Y) ≈ cut_values(cb_ref, Y) rtol = 1e-9
+    end
+
+    @testset "Block cut bank: floors sum block maxima, valid, and tighter than summed cuts" begin
+        S, B, d = 5, 3, 4
+        rng = Xoshiro(17)
+        tc = toy_cost(rng, S * B, 12, d)
+        p = fill(1 / S, S)
+        solves = [toy_block_solve("P_$i", 30 .* rand(rng, d), tc, p, B) for i in 1:12]
+        blocks = CutBank(S, d; n_blocks = B); foreach(fs -> add_final_solve!(blocks, fs), solves)
+        summed = CutBank(S, d); foreach(fs -> add_final_solve!(summed, FinalSolve(fs.name, fs.x, fs.θ, fs.β, fs.p, 0.0, true)), solves)
+        @test n_cuts(blocks) == B * n_cuts(summed)
+        X = reduce(hcat, [fs.x for fs in solves])
+        Y = 30 .* rand(Xoshiro(2), d, 300)
+        truth = reduce(hcat, [vec(sum(reshape(toy_eval(tc, Y[:, j])[1], S, B); dims = 2)) for j in axes(Y, 2)])
+        @test size(cut_values(blocks, Y)) == (S, size(Y, 2))
+        @test cut_values(blocks, X) ≈ reduce(hcat, [fs.θ for fs in solves]) rtol = 1e-9     # exact at the solves
+        @test all(cut_values(blocks, Y) .<= truth .+ 1e-9)                                     # valid
+        @test all(cut_values(blocks, Y) .>= cut_values(summed, Y) .- 1e-9)                     # never looser
+        @test any(cut_values(blocks, Y) .> cut_values(summed, Y) .+ 1e-6)                      # and tighter somewhere
+        pr = prune_cuts(blocks, X)
+        @test pr.n_blocks == B && cut_values(pr, X) ≈ cut_values(blocks, X)
     end
 
     @testset "Cells, frontier and unreachable cells" begin

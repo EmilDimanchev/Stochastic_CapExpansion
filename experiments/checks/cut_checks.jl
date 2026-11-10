@@ -20,7 +20,7 @@ full Benders loop:
 function _cut_test_setup(n_iterations::Int; case = "cuttest", seed = 1)
     inputs_folder = joinpath("inputs", "Inputs_2z_7tech")
     settings = load_settings(inputs_folder)
-    settings["Risk aversion flag"] = true # so cvar_tail_cuts_* (and u, ζ) are exercised too
+    settings["Risk aversion flag"] = true # so u, ζ and the cvar_tail link rows are in the MP too
     inputs = load_input_data(inputs_folder, settings)
     MP = build_planning_model(inputs, settings)
     pool = CutPool(deepcopy(settings))
@@ -29,31 +29,30 @@ function _cut_test_setup(n_iterations::Int; case = "cuttest", seed = 1)
     for it in 1:n_iterations
         add_cuts!(pool, _add_random_cuts!(MP, inputs, settings, it, case, rng))
     end
-    S, F, K = size(inputs["Demand scenario probabilities"], 1), size(inputs["Gas price scenario probabilities"], 1), size(inputs["Weather scenario probabilities"], 1)
-    return MP, pool, inputs, settings, S*F*K
+    return MP, pool, inputs, settings, length(MP[:alpha])   # cuts per iteration: one per subproblem
 end
 
-# One Benders iteration's worth of cuts (both kinds) from random SP outputs; returns their refs.
+# One Benders iteration's worth of cuts (one per subproblem) from random SP outputs; returns their refs.
 function _add_random_cuts!(MP, inputs, settings, it, case, rng)
-    S, F, K = size(inputs["Demand scenario probabilities"], 1), size(inputs["Gas price scenario probabilities"], 1), size(inputs["Weather scenario probabilities"], 1)
+    S, F, K, B = size(MP[:alpha])
     R = inputs["Number of generation resources"] + inputs["Number of storage resources"]
     L = inputs["Number of lines"]
-    sp_obj = settings["Scaling factor cost"] .* (1 .+ rand(rng, S, F, K))
-    cap_dual = -settings["Scaling factor cost"] .* rand(rng, R, S, F, K) ./ 1e3 # op cost falls with capacity
-    line_dual = -settings["Scaling factor cost"] .* rand(rng, L, S, F, K) ./ 1e3
+    sp_obj = settings["Scaling factor cost"] .* (1 .+ rand(rng, S, F, K, B))
+    cap_dual = -settings["Scaling factor cost"] .* rand(rng, R, S, F, K, B) ./ 1e3 # op cost falls with capacity
+    line_dual = -settings["Scaling factor cost"] .* rand(rng, L, S, F, K, B) ./ 1e3
     x_prev = rand(rng, R) .* inputs["Capacity upper bounds"]
-    return add_optimality_cuts!(MP, sp_obj, cap_dual, line_dual, x_prev, rand(rng, L), ones(S, F, K), inputs, settings, it, case)
+    return add_optimality_cuts!(MP, sp_obj, cap_dual, line_dual, x_prev, rand(rng, L), ones(S, F, K, B), inputs, settings, it, case)
 end
 
 _cut_signature(con) = (obj = constraint_object(con); (Dict(obj.func.terms), MOI.constant(obj.set) - obj.func.constant))
 
 function test_cut_management(test_index = "cut_mgmt")
     n_iterations = 6
-    MP, pool, inputs, settings, n_scen = _cut_test_setup(n_iterations)
+    MP, pool, inputs, settings, n_sub = _cut_test_setup(n_iterations)
     total_cuts = length(pool.live)
-    @assert total_cuts == 2 * n_iterations * n_scen "expected $(2*n_iterations*n_scen) cuts, got $(total_cuts)"
+    @assert total_cuts == n_iterations * n_sub "expected $(n_iterations*n_sub) cuts, got $(total_cuts)"
     @assert count_live_cuts(MP) == total_cuts
-    @info("Added $(total_cuts) cuts across $(n_iterations) iterations ($(n_scen) scenarios/iteration, optimality + CVaR tail).")
+    @info("Added $(total_cuts) cuts across $(n_iterations) iterations ($(n_sub) subproblems/iteration; CVaR has no cut rows).")
 
     # --- Correctness: archive + restore round trip ---
     to_archive = sort(collect(keys(pool.live)))[1:50]
@@ -76,7 +75,7 @@ function test_cut_management(test_index = "cut_mgmt")
         # recent_binding keeps the last k, earliest keeps the first k
         pool_t.stats = Dict(n => (i, i) for (i, n) in enumerate(names_t))
         pool_t.clock = length(names_t)
-        pool_t.cfg["Cuts retained"], pool_t.cfg["Trim rule"] = k, rule
+        pool_t.cfg["Cuts retained per subproblem"], pool_t.cfg["Trim rule"] = k / n_subproblems(MP_t), rule   # cap of k cuts
         return MP_t, pool_t, names_t
     end
     for (rule, pick) in (("recent_binding", names -> names[end-k+1:end]), ("earliest", names -> names[1:k]))
@@ -90,7 +89,7 @@ function test_cut_management(test_index = "cut_mgmt")
         @assert count_live_cuts(MP_t) == length(live_after) && length(pool_t.names) == n_archived(pool_t) "trim should compact the archive"
     end
     MP_t, pool_t, names_t = make_trim_pool("earliest")
-    pool_t.cfg["Cuts retained"] = 10_000
+    pool_t.cfg["Cuts retained per subproblem"] = 10_000
     @assert trim_cuts!(MP_t, pool_t) == (0, 0) "trim should be a no-op under the cap"
     @info("trim_cuts! trims live + archived cuts and keeps the expected ones for both rules.")
 
@@ -182,7 +181,7 @@ function test_cut_pool(test_index = "cut_pool")
     output, sep = separate!(pool, MP, settings, settings["Risk aversion weight"])
     @assert sep.rounds < pool.cfg["Max rounds"] "separation should finish well inside 50 rounds here"
     @assert maximum(archive_violations(pool, value.(pool.vars)); init = -Inf) <= pool.cfg["Separation tolerance"] "separate! left an archived cut violated"
-    @assert all(s -> s.restored <= pool.cfg["Cuts per round"] * s.rounds, [sep])
+    @assert all(s -> s.restored <= cuts_per_round(pool, MP) * s.rounds, [sep])
     @info("separate! restored $(sep.restored) cuts in $(sep.rounds) rounds; nothing archived is violated at the final MP solution.")
 
     # --- prune!: records binding cuts in bound_cur, archives non-binding ones after `window` ---
@@ -215,7 +214,7 @@ end
 
 Cut trim rule comparison: runs the same laptop risk-pareto + MGA exploration (same seed, so the
 same MGA vectors and budget schedule) once with archive trimming effectively off (baseline), then
-once per trim rule ("recent_binding", "earliest") with a small "Cuts retained". Objectives/gaps
+once per trim rule ("recent_binding", "earliest") with a small cut cap. Objectives/gaps
 should agree across configs; the signal for which rule keeps the more useful cuts is the number
 of Benders iterations needed (a worse cut set needs more). Solve *times* are reported but are not
 meaningful at laptop scale (see CLAUDE.md traps), so don't read a performance win from them.
@@ -229,6 +228,7 @@ function test_cut_trim_rules(test_index = "cut_trim"; cuts_retained_small::Int =
     configure_parallel_workers!(base_settings)
     SPs = build_all_subproblems(inputs, base_settings)
 
+    n_sub = length(SPs)   # subproblems, S·F·K·B: cut caps are set per subproblem
     configs = [("baseline", 10^9, "recent_binding"),
                ("recent_binding", cuts_retained_small, "recent_binding"),
                ("earliest", cuts_retained_small, "earliest")]
@@ -243,14 +243,14 @@ function test_cut_trim_rules(test_index = "cut_trim"; cuts_retained_small::Int =
             budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
             mapping_settings = Dict("Mapping" => false),
             run_settings = Dict("Summary name" => "pareto", "Run log" => run_log, "MGA vectors" => n_vectors), # more than one trim event
-            cut_settings = Dict("Cuts retained" => n_keep, "Trim rule" => rule))
+            cut_settings = Dict("Cuts retained per subproblem" => n_keep / n_sub, "Trim rule" => rule))   # a cap of n_keep cuts
         mga_runs = filter(r -> startswith(r.label, "Random_"), run_log)
         summaries[label] = (total_iterations = sum(r.iterations for r in run_log), mga_iterations = sum(r.iterations for r in mga_runs), mp_time = sum(r.mp_time for r in run_log), wall_time = t, max_archive_at_run_start = maximum(r.archive_before for r in run_log), run_log = run_log)
         # Invariant: trimming happens at vector/risk-weight starts, so the archive going *into*
         # the first run of each vector must already be within the cap.
         if n_keep < 10^9
             first_runs = filter(r -> occursin(r"^Random_\d+(_Budget_1)?$", r.label) || startswith(r.label, "Risk_Weight_"), run_log)
-            @assert all(r -> r.archive_before <= n_keep, first_runs) "live + archived cuts exceeded Cuts retained at a vector boundary for $label"
+            @assert all(r -> r.archive_before <= n_keep, first_runs) "live + archived cuts exceeded the cut cap at a vector boundary for $label"
         end
     end
 
@@ -354,4 +354,56 @@ function compare_cut_pool_ab(old_folder::String, new_folder::String; tol = 1e-3)
     n_flag = count(!isempty, df.flags)
     @info("Cut pool A/B: $(nrow(df)) solves compared, $n_flag flagged; SP rounds old/new = $(sum(df.sp_rounds_old))/$(sum(df.sp_rounds_new)), live cuts at first MP old/new = $(sum(df.live_at_start_old))/$(sum(df.live_at_start_new))")
     return df
+end
+
+#=========
+
+Cut cap scaling test (cut_pool.jl): "Cuts retained per subproblem" and "Cuts per round per
+subproblem" are multiplied by the master's number of subproblems (S·F·K·B), so they keep the same
+meaning whatever "Subproblems per scenario" is. Checks the totals at 1 and 5 subproblems per
+scenario, that trim_cuts! uses the scaled cap, and that the old absolute keys are rejected.
+
+==========#
+
+function test_cut_cap_scaling(test_index = "cut_cap_scaling")
+    folder = joinpath("inputs", "Inputs_2z_7tech")
+    settings = load_settings(folder)
+    settings["Scenarios"]["Gas"]["Count"] = 1
+    settings["Scenarios"]["Weather"]["Count"] = 2
+    inputs = load_input_data(folder, settings)
+    n_scenarios = inputs["Number of demand scenarios"] * inputs["Number of gas price scenarios"] * inputs["Number of weather scenarios"]
+    cfg = settings["Cut settings"]
+    for B in (1, 5)
+        s = merge(settings, Dict("Subproblems per scenario" => B))
+        MP = build_planning_model(inputs, s)
+        pool = CutPool(s)
+        @assert n_subproblems(MP) == n_scenarios * B
+        @assert cuts_retained(pool, MP) == round(Int, cfg["Cuts retained per subproblem"] * n_scenarios * B)
+        @assert cuts_per_round(pool, MP) == round(Int, cfg["Cuts per round per subproblem"] * n_scenarios * B)
+    end
+
+    # trim_cuts! keeps exactly the scaled cap: 3 iterations of cuts, cap of 2 iterations' worth
+    MP = build_planning_model(inputs, settings)
+    pool = CutPool(deepcopy(settings))
+    rng = MersenneTwister(2)
+    for it in 1:3
+        add_cuts!(pool, _add_random_cuts!(MP, inputs, settings, it, "scaling", rng))
+    end
+    pool.cfg["Cuts retained per subproblem"] = 2
+    deleted = trim_cuts!(MP, pool)
+    @assert sum(deleted) == n_subproblems(MP) && length(pool.live) + n_archived(pool) == 2 * n_subproblems(MP) "trim should keep 2 cuts per subproblem"
+
+    # The old absolute keys are rejected, so a stale profile override can't be silently ignored
+    for old in ("Cuts retained", "Cuts per round")
+        stale = deepcopy(settings)
+        stale["Cut settings"][old] = 500000
+        rejected = try
+            CutPool(stale); false
+        catch e
+            occursin("per subproblem", sprint(showerror, e))
+        end
+        @assert rejected "CutPool should reject the old \"$old\" key"
+    end
+    @info("[$(test_index)] PASSED: cut caps scale with the subproblem count ($(n_scenarios) scenarios × 1 and 5 blocks), trim uses the scaled cap, old keys are rejected.")
+    return true
 end

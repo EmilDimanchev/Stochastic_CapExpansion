@@ -150,7 +150,7 @@ function run_gridfill_sampling!(bank::AbstractVector, cut_pool, MP, SPs, inputs:
     anchors = gridfill_anchors(solves, α)
     S, d = length(solves[1].θ), length(solves[1].x)
 
-    cuts = CutBank(S, d)
+    cuts = CutBank(S, d; n_blocks = length(solves[1].θb) ÷ S)   # one cut group per subproblem
     cut_pool === nothing || add_pool_cuts!(cuts, cut_pool, MP, settings)
     foreach(fs -> add_final_solve!(cuts, fs), solves)
     log_memory_status("GridFill start: cut bank $(n_cuts(cuts)) cuts, $(length(solves)) solved plans")
