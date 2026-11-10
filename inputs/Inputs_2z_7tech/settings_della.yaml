@@ -5,5 +5,5 @@ Workers: 64
 "Sampling settings":
   Samples: 3000
 "Cut settings":
-  "Cuts retained per subproblem": 4000
+  "Cuts retained per subproblem": 3000
 Solver: "Gurobi"
