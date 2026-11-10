@@ -57,10 +57,17 @@ function _log_solver_work!(label::String, model::Model, settings::Dict)
     return nothing
 end
 
+# "Max iterations" caps each Benders solve; one that hasn't converged by then errors.
+# Defaults to 150 for settings files written before the key existed.
+function max_benders_iterations(settings::AbstractDict)
+    J_max = get(settings, "Max iterations", 150)
+    (J_max isa Integer && J_max >= 1) || error("\"Max iterations\" must be a positive integer, got $(repr(J_max)).")
+    return J_max
+end
+
 # SPs (and Eval_SPs) are SubproblemSets; not annotated because worker_functions.jl is included after this file
 function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_pool = CutPool(settings), solve_type::String = "Anchor", mga_vector::Int = 0)
-    # Iterations
-    J_max = 150
+    J_max = max_benders_iterations(settings)
 
     # Initialize
     settings["Search equilibria"] = false
@@ -488,8 +495,7 @@ end
 # solve_type is "Budget", "EV cap" or "CVaR cap" (the keys of Cut settings' "Prune window").
 # SPs (and Eval_SPs) are SubproblemSets; not annotated because worker_functions.jl is included after this file
 function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict, case_name::String; Eval_SPs = nothing, mapping = false, cut_pool = CutPool(settings), solve_type::String = "Budget", mga_vector::Int = 0)
-    # Iterations 
-    J_max = 150
+    J_max = max_benders_iterations(settings)
 
     # Initialize
     settings["Search equilibria"] = false
