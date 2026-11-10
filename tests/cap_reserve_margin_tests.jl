@@ -32,8 +32,7 @@ end
 
 function solve_with_capacity(inputs, settings, capacity::Vector{Float64}, capacity_line::Vector{Float64})
     SP = build_subproblem(inputs, settings, [1, 1, 1])
-    set_parameter_value.(SP[:x], capacity)
-    set_parameter_value.(SP[:x_line], capacity_line)
+    set_subproblem_capacity!(SP, capacity, capacity_line)
     optimize!(SP)
     @test termination_status(SP) == MOI.OPTIMAL
     return SP

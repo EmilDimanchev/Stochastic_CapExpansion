@@ -420,4 +420,38 @@ end
             @test all(diff(sub.GF_Attempt) .> 0)   # attempts count up per target cell
         end
     end
+    @testset "nearest_distance in row chunks matches the full distance matrix" begin
+        full_nearest(Y, R, sc) = size(R, 1) == 0 ? fill(Inf, size(Y, 1)) : vec(minimum(pairwise_distances(Y ./ sc', R ./ sc'); dims = 2))
+        rng = Xoshiro(5)
+        d = 14
+        sc = 1 .+ 100 .* rand(rng, d)
+        R = 1000 .* rand(rng, 60, d)
+        for (m, chunk) in [(50, 1), (50, 7), (5, 1024), (2048, 1024), (2500, 1024), (0, 16)]
+            Y = 1000 .* rand(rng, m, d)
+            got, want = nearest_distance(Y, R, sc; chunk = chunk), full_nearest(Y, R, sc)
+            @test length(got) == m
+            if got != want
+                @info("nearest_distance chunk = $chunk, m = $m: not bit-identical, max difference $(maximum(abs.(got .- want)))")
+            end
+            @test got ≈ want rtol = 1e-12
+        end
+        @test nearest_distance(rand(rng, 10, d), zeros(0, d), sc) == fill(Inf, 10)
+        @test_throws ErrorException nearest_distance(rand(rng, 3, d), R, sc; chunk = 0)
+
+        # Peak memory is measured in fresh processes by test_nearest_distance_memory(): @allocated
+        # counts every block, so it is the same for both versions and can't show the peak.
+    end
+
+    @testset "Valid-blend count per cell (sizes the candidate-stage temporaries)" begin
+        ctx = gf_context(bank)
+        counts = cell_counts(ctx.K, ctx.g)
+        targets = [c for c in grid_cells(cost_coords([fs for fs in bank if startswith(fs.name, "Risk_Weight")], a, GF_ALPHA), 0.1, 1.1) if !haskey(counts, c)]
+        res = [cell_candidates(ctx, c, GRIDFILL_TUNING, 30, 7, 1) for c in targets]
+        drawn = GRIDFILL_TUNING.aims_per_cell * GRIDFILL_TUNING.triples_per_aim
+        @test all(0 <= r.n_valid <= drawn for r in res)
+        @test all(r.n_valid > 0 for r in res if r.status == :ok)
+        @test all(r.n_valid == 0 for r in res if r.status in (:no_blend, :outside_hull))
+        fr = [r.n_valid / drawn for r in res if r.n_valid > 0]
+        @info("GridFill toy ($(length(bank)) plans): valid blends per cell, as a share of the $drawn drawn: median $(round(median(fr); digits = 3)), max $(round(maximum(fr); digits = 3))")
+    end
 end

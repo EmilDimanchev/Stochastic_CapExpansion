@@ -133,6 +133,7 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
 
         bank_record!(case_name, output, results_destination)
         release_heavy_payload!(output)
+        log_memory_status("after $case_name (cut pool $(pool_size()) cuts, bank $(length(bank)) plans)")
     end
 
     export_cuts && !run_settings["Capacity exploration"] && @warn("Export cuts is on but Capacity exploration is off, so no cut archive will be written.")
@@ -269,11 +270,13 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
                     @warn("Summary checkpoint failed", exception = (e, catch_backtrace()))
                 end
             end
+            log_memory_status("after MGA vector $iteration of $iterations (cut pool $(pool_size()) cuts, bank $(length(bank)) plans, $(sum(nrow, results_cap; init = 0)) summary rows)")
         end
         #write_gaps!(gaps, run_labels, joinpath(results_path, "Gaps"))
 
         # Sample the interior after exploration
         if sampling_method == "GridFill"
+            log_memory_status("before GridFill (cut pool $(pool_size()) cuts, bank $(length(bank)) plans)")
             # GridFill_k rows carry lineage + prediction columns (GF_*). The Summary is rewritten
             # after every batch with the MGA rows plus the samples solved so far.
             n_mga = length(results_cap)
@@ -285,13 +288,16 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
             append!(results_emissions, rows_emissions)
             append!(run_labels, gf_labels)
         end
+        log_memory_status("before final summary write ($(length(run_labels)) runs)")
         t_final = @elapsed write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
         @info("Final summary write: $(round(t_final; digits=3)) s; total checkpoint time $(round(checkpoint_time; digits=3)) s")
         # Last, and guarded, so a failed export can't affect anything the run has already written
         if export_cuts
             try
+                log_memory_status("before cut export input (cut pool $(pool_size()) cuts, bank $(length(bank)) plans, $(length(gridfill_picks)) GridFill picks)")
                 export_input = build_cut_export_input(cut_pool, MP, bank, gridfill_picks, inputs, settings; run_id = "$(summary_name) | $(results_folder)")
                 export_cut_archive(export_input, summary_folder, cut_export_settings; file_stem = "cut_archive_$(summary_name)")
+                log_memory_status("after cut export")
             catch e
                 @error("Cut export failed; the run's other results are unaffected", exception = (e, catch_backtrace()))
             end

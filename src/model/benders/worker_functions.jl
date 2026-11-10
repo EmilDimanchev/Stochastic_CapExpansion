@@ -100,8 +100,7 @@ end
 
 function _run_cached_subproblem!(scenario_key::SubproblemKey, capacity::Vector{Float64}, capacity_line::Vector{Float64}, minimal_payload::Bool)
     SP = WORKER_SP_CACHE[scenario_key]
-    set_parameter_value.(SP[:x], capacity)
-    set_parameter_value.(SP[:x_line], capacity_line)
+    set_subproblem_capacity!(SP, capacity, capacity_line)
     result = run_subproblem(SP, WORKER_DATA_CACHE[:inputs], WORKER_DATA_CACHE[:settings]; minimal_payload=minimal_payload)
     return result
 end
@@ -198,6 +197,9 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector; hour
 
     # Model
     ED = Model()
+    # Name strings for every variable and constraint live on the worker's GC heap and are never read
+    # (subproblem results use the registered containers, ED[:g] etc.), so they can be skipped.
+    get(settings, "Subproblem names", true) || set_string_names_on_creation(ED, false)
     ED.ext[:Variable_costs_scenario] = variable_costs_scenario
     ED.ext[:Availability_scenario] = availability_scenario
     ED.ext[:Period_weights_scenario] = period_weights_scenario
@@ -206,8 +208,8 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector; hour
         set_optimizer(ED, HiGHS.Optimizer)
         set_optimizer_attribute(ED, "primal_feasibility_tolerance", 1e-3)
         set_optimizer_attribute(ED, "optimality_tolerance", 1e-3)
-        # Force crossover on so a vertex/basis is always produced: x/x_line are Parameter
-        # variables (see below), so re-solves after set_parameter_value! are pure bound
+        # Force crossover on so a vertex/basis is always produced: x/x_line are fixed
+        # variables (see below), so re-solves after set_subproblem_capacity! are pure bound
         # changes on an otherwise-static LP - a basis lets HiGHS warm-start the next
         # solve instead of re-deriving a starting point from scratch every iteration.
         set_optimizer_attribute(ED, "run_crossover", "on")
@@ -296,8 +298,15 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector; hour
 
     # Generation
     @variable(ED, g[r in 1:G, t in 1:T] >= 0) # MWh
-    @variable(ED, x[r in 1:R] in Parameter(0.0)) # Capacity, MW
-    @variable(ED, x_line[l in 1:L] in Parameter(0.0)) # Line capacity, MW
+    # Capacities are fixed variables, set with set_subproblem_capacity!. Not JuMP Parameters: no solver
+    # here supports MOI.Parameter natively, and the bridge that stands in for it can't change a value in
+    # place, so every new value made JuMP drop the solver model and copy the whole LP in again (no warm
+    # start, and tens of MB of garbage per solve). A fixed variable's value is a bound the solver updates
+    # in place. Its dual, dual(FixRef(x)), is the same quantity the parameter dual was.
+    @variable(ED, x[r in 1:R]) # Capacity, MW
+    @variable(ED, x_line[l in 1:L]) # Line capacity, MW
+    fix.(x, 0.0)
+    fix.(x_line, 0.0)
     # Non-servED energy
     @variable(ED, y[seg in 1:nse_segs, t in 1:T, z in 1:Z] >= 0) # $/MWh
     @expression(ED, cost_nse[t in 1:T, z in 1:Z], sum(price_nse[seg]*y[seg,t,z] for seg in 1:nse_segs))
@@ -424,9 +433,16 @@ end
 function set_capacity_parameters!(SPs::SubproblemSet, capacity::Vector{Float64}, capacity_line::Vector{Float64})
     on_workers(SPs) && error("set_capacity_parameters!: these subproblems live on the workers; run_all_subproblems sets their capacities there.")
     for SP in SPs.models
-        set_parameter_value.(SP[:x], capacity)
-        set_parameter_value.(SP[:x_line], capacity_line)
+        set_subproblem_capacity!(SP, capacity, capacity_line)
     end
+end
+
+# Capacities a subproblem is solved at (MW): a bound change on the fixed x / x_line variables, made in
+# place in the solver so the next solve warm-starts from the previous basis.
+function set_subproblem_capacity!(SP::Model, capacity::AbstractVector{<:Real}, capacity_line::AbstractVector{<:Real})
+    fix.(SP[:x], capacity)
+    fix.(SP[:x_line], capacity_line)
+    return SP
 end
 
 function run_subproblem(ED::Model, inputs, settings; minimal_payload::Bool=false)
@@ -481,6 +497,38 @@ function merge_block_results(block_results::Array{<:Any,4})
     return [merge_block_results(view(block_results, s, f, k, :)) for s in 1:S, f in 1:F, k in 1:K]
 end
 
+# Blocking garbage collection on every process (main and workers) after a round of subproblem solves.
+# Like `@everywhere GC.gc()`, it returns only once every process is done, so no process starts the
+# next round still holding the last round's garbage.
+#
+# "Worker GC threshold MB" (top-level setting) gates each process's full collection on how much it has
+# allocated since its previous forced collection here. Garbage can't exceed what was allocated, so a
+# process that skips holds at most that much extra (worst case threshold × number of processes over the
+# node). Since subproblem capacities became fixed variables, a minimal-payload round allocates almost
+# nothing, and the full collection was mostly re-marking live models. null (the default) collects
+# every time, which is the previous behavior.
+const LAST_FORCED_GC_TOTAL_BYTES = Ref{Int64}(0)
+
+function _gc_if_allocated(threshold_bytes::Union{Nothing,Int64})
+    allocated = Base.gc_total_bytes(Base.gc_num()) - LAST_FORCED_GC_TOTAL_BYTES[]
+    threshold_bytes === nothing || allocated >= threshold_bytes || return false
+    GC.gc()
+    LAST_FORCED_GC_TOTAL_BYTES[] = Base.gc_total_bytes(Base.gc_num())
+    return true
+end
+
+# Returns how many processes collected.
+function gc_all_processes!(settings)
+    mb = get(settings, "Worker GC threshold MB", nothing)
+    threshold = mb === nothing ? nothing : round(Int64, mb * 2^20)
+    pids = procs()
+    collected = Vector{Bool}(undef, length(pids))
+    @sync for (i, pid) in enumerate(pids)
+        @async collected[i] = remotecall_fetch(_gc_if_allocated, pid, threshold)
+    end
+    return count(collected)
+end
+
 function run_all_subproblems(SPs::SubproblemSet, inputs, settings, capacity::Vector{Float64}, capacity_line::Vector{Float64}; minimal_payload::Bool=get(settings, "Minimal worker payload flag", true))
 
     block_results = Array{Dict{String, Any},4}(undef, size(SPs)...)
@@ -506,7 +554,7 @@ function run_all_subproblems(SPs::SubproblemSet, inputs, settings, capacity::Vec
 
             end
         end
-        @everywhere GC.gc()
+        gc_all_processes!(settings)
     else
         if scenario_dims(SPs) == (1, 1, 1)
             @info("One scenario loaded, running on main process")
@@ -542,7 +590,7 @@ function run_subproblems_batch(SPs::SubproblemSet, inputs, settings, capacities:
             end
         end
     end
-    @everywhere GC.gc()
+    gc_all_processes!(settings)
     return [merge_block_results(r) for r in block_results]
 end
 
@@ -577,8 +625,8 @@ function write_subproblem_results(ED::Model, inputs, settings; minimal_payload::
     nse_segs = length(max_nse)
     
     
-    output["capacity dual"] = dual.(ParameterRef.(ED[:x])).*settings["Scaling factor cost"]
-    output["line dual"] = dual.(ParameterRef.(ED[:x_line])).*settings["Scaling factor cost"]
+    output["capacity dual"] = dual.(FixRef.(ED[:x])).*settings["Scaling factor cost"]
+    output["line dual"] = dual.(FixRef.(ED[:x_line])).*settings["Scaling factor cost"]
 
     output["SP objective"] = objective_value(ED).*(settings["Scaling factor cost"]*settings["Scaling factor demand"])
     if minimal_payload

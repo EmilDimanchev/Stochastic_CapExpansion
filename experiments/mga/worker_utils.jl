@@ -36,6 +36,9 @@ function configure_parallel_workers!(settings::Dict)
             end
             using .Stochastic_CapExpansion
             using Revise, JuMP, Ipopt, Gurobi, HiGHS, DataFrames, CSV, YAML, Random, LinearAlgebra, Combinatorics, Dates, Distributions
+            # One BLAS thread per worker: the workers already outnumber the cores, so a BLAS pool
+            # in each one only adds threads that spin while waiting (seen as system CPU time).
+            LinearAlgebra.BLAS.set_num_threads(1)
             nothing
         end
         @sync for pid in workers()
@@ -43,7 +46,8 @@ function configure_parallel_workers!(settings::Dict)
         end
 
         settings["Workers"] = nworkers()
-        @info("Running with parallelization using $(nworkers()) distributed workers")
+        worker_blas = remotecall_fetch(() -> LinearAlgebra.BLAS.get_num_threads(), first(workers()))
+        @info("Running with parallelization using $(nworkers()) distributed workers; BLAS threads: main $(LinearAlgebra.BLAS.get_num_threads()), worker $(worker_blas); CPU threads seen: $(Sys.CPU_THREADS)")
     else
         @info("Running without parallelization")
     end

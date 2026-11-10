@@ -301,8 +301,7 @@ function test_cost_by_zone(test_index = "cost_by_zone")
         settings["CRM flag"] = crm_flag
         inputs = load_input_data(inputs_folder, settings)
         SP = build_subproblem(inputs, settings, [5, 1, 1])
-        set_parameter_value.(SP[:x], fill(1500.0, length(inputs["Resources"])))
-        set_parameter_value.(SP[:x_line], fill(500.0, inputs["Number of lines"]))
+        set_subproblem_capacity!(SP, fill(1500.0, length(inputs["Resources"])), fill(500.0, inputs["Number of lines"]))
         output = run_subproblem(SP, inputs, settings; minimal_payload = false)
 
         @assert output["coeff"] == 1 "subproblem did not solve to optimality"

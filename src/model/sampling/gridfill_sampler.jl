@@ -219,9 +219,23 @@ function pairwise_distances(A::AbstractMatrix, B::AbstractMatrix)
     return sqrt.(max.(D2, 0.0))     # clip tiny negative round-off
 end
 
-# Distance from each row of Y (MW) to the nearest row of Ref (MW), range-scaled
-nearest_distance(Y::AbstractMatrix, Ref::AbstractMatrix, scale::AbstractVector) =
-    size(Ref, 1) == 0 ? fill(Inf, size(Y, 1)) : vec(minimum(pairwise_distances(Y ./ scale', Ref ./ scale'); dims = 2))
+# Distance from each row of Y (MW) to the nearest row of Ref (MW), range-scaled.
+# Works through Y in blocks of `chunk` rows, so the distance matrix is at most chunk × size(Ref, 1)
+# instead of size(Y, 1) × size(Ref, 1). Each row's minimum depends only on that row, so the result
+# doesn't depend on the block size. In the candidate stage Y holds up to 48k blends per cell and Ref
+# every solved plan, on every worker at once, which made the unchunked matrix the largest allocation.
+function nearest_distance(Y::AbstractMatrix, Ref::AbstractMatrix, scale::AbstractVector; chunk::Int = 1024)
+    chunk >= 1 || error("nearest_distance: chunk must be >= 1, got $chunk.")
+    m = size(Y, 1)
+    size(Ref, 1) == 0 && return fill(Inf, m)
+    Rs = Ref ./ scale'
+    out = Vector{Float64}(undef, m)
+    for rows in Iterators.partition(1:m, chunk)
+        D = pairwise_distances(view(Y, rows, :) ./ scale', Rs)
+        out[rows] = vec(minimum(D; dims = 2))
+    end
+    return out
+end
 
 #---- Step 2: candidates for one cell ------------------------------------------------------
 # status: :ok, :aim_missed (blends exist but no midpoint landed in the cell),
@@ -237,11 +251,12 @@ struct GridFillCellResult
     pred::Matrix{Float64}       # m × 2 predicted midpoint position
     bracket::NamedTuple         # m-vectors: inv, ub/lb/mid for EV and CVaR
     novelty::Vector{Float64}    # range-scaled distance to the nearest solved point
+    n_valid::Int                # valid blends drawn for the cell before the novelty pre-screen (sizes the largest temporaries)
 end
 
-function empty_cell_result(cell, status, d)
+function empty_cell_result(cell, status, d; n_valid::Int = 0)
     br = (inv = Float64[], ub_ev = Float64[], lb_ev = Float64[], mid_ev = Float64[], ub_cvar = Float64[], lb_cvar = Float64[], mid_cvar = Float64[])
-    return GridFillCellResult(cell, status, zeros(Int, 0, 3), zeros(0, 3), zeros(0, 2), zeros(0, d), zeros(0, 2), br, Float64[])
+    return GridFillCellResult(cell, status, zeros(Int, 0, 3), zeros(0, 3), zeros(0, 2), zeros(0, d), zeros(0, 2), br, Float64[], n_valid)
 end
 
 subset_bracket(br, idx) = map(v -> v[idx], br)
@@ -264,6 +279,7 @@ function cell_candidates(ctx::GridFillContext, cell::Tuple{Int,Int}, tuning, n_k
     end
 
     # Pre-screen: only the most novel blends are worth re-aiming
+    n_valid = size(tri, 1)
     W = barycentric(ctx.K, tri, aim)
     nov = nearest_distance(blend_capacities(ctx.X, tri, W), ctx.X, ctx.scale)
     top = sortperm(nov; rev = true)[1:min(tuning.reaim_pool, length(nov))]
@@ -279,18 +295,18 @@ function cell_candidates(ctx::GridFillContext, cell::Tuple{Int,Int}, tuning, n_k
         W = barycentric(ctx.K, tri, aim_eff)
         ok = valid_weights(W, tuning.max_weight)
         tri, aim, aim_eff, W = tri[ok, :], aim[ok, :], aim_eff[ok, :], W[ok, :]
-        isempty(tri) && return empty_cell_result(cell, :aim_missed, d)
+        isempty(tri) && return empty_cell_result(cell, :aim_missed, d; n_valid = n_valid)
         X = blend_capacities(ctx.X, tri, W)
         br = blend_bracket(ctx.cuts, ctx.Θ, ctx.inv, ctx.p, ctx.α, tri, W, permutedims(X))
         P = predicted_position(ctx, br)
     end
 
     landed = [cell_of(P[i, :], g) == cell for i in axes(P, 1)]
-    any(landed) || return empty_cell_result(cell, :aim_missed, d)
+    any(landed) || return empty_cell_result(cell, :aim_missed, d; n_valid = n_valid)
     nov = nearest_distance(X, ctx.X, ctx.scale)
     keep = filter(i -> landed[i], sortperm(nov; rev = true))
     keep = keep[1:min(n_keep, length(keep))]
-    return GridFillCellResult(cell, :ok, tri[keep, :], W[keep, :], aim[keep, :], X[keep, :], P[keep, :], subset_bracket(br, keep), nov[keep])
+    return GridFillCellResult(cell, :ok, tri[keep, :], W[keep, :], aim[keep, :], X[keep, :], P[keep, :], subset_bracket(br, keep), nov[keep], n_valid)
 end
 
 #---- Step 2, distributed: one remotecall per worker over a static slice of the cells -------

@@ -607,6 +607,7 @@ function write_within_budget(output_path::AbstractString, input::CutExportInput,
         mb = filesize(candidate) / 1e6
         push!(rows, format_budget_row(step, sum(length, kept), mb, coverage))
         @info("Cut export budget step: " * rows[end])
+        log_memory_status("cut export after budget step $(length(rows))")
         if mb < best_mb
             best_mb = mb
             mv(candidate, output_path; force = true)
@@ -635,7 +636,9 @@ function export_cut_archive(input::CutExportInput, folder::AbstractString, setti
     catch e
         @warn("Cut export: couldn't save the raw copy; continuing without one", exception = (e, catch_backtrace()))
     end
+    log_memory_status("cut export: before pruning ($(n_table_cuts(input.cuts)) cuts, $(length(input.plan_ids)) plans)")
     prune_seconds = @elapsed tradeoff = write_within_budget(output_path, input, cfg)
+    log_memory_status("cut export: before validation")
     validate_seconds = @elapsed report = validate_export(output_path, input, cfg; prune_blends = prune_blends)
     @info(@sprintf("Cut export: pruning and writing %.1f s, validation %.1f s", prune_seconds, validate_seconds))
     HDF5.h5open(output_path, "r+") do f

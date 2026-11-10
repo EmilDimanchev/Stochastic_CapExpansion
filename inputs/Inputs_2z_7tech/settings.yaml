@@ -45,6 +45,8 @@ Regularization strategy: "Level Set" # options are "QTR" and "Level Set"
 # Distributed Memory Parallelization
 Parallel flag: true
 Workers: 8
+Worker GC threshold MB: null # after each subproblem round, a process only does its forced full GC if it allocated at least this many MB since the last one (null: always, the original behavior)
+Subproblem names: true # false: skip JuMP name strings on subproblem variables/constraints (smaller worker heap; nothing reads them)
 Memory debug flag: false
 # Temporal decomposition: split each scenario's representative periods evenly into this many
 # subproblems (1 = one per scenario; 12 = one per week on the 16z case). Must divide the number of
@@ -137,10 +139,10 @@ Cut export settings: # pruned cut archive for the Grid Options Explorer, see src
 "Discount rate": 0.0768
 Scenarios:
   Gas:
-    Low: 2.0
+    Low: 2.9 # 2030: scaled with the median (2.0 at today's 3.45)
     Sigma: 0.4
-    Median: 3.45
-    High: 6.5
+    Median: 5.0 # 2030: EIA AEO2026 puts Henry Hub at $5-6/MMBtu through the early 2030s
+    High: 9.4 # 2030: scaled with the median (6.5 at today's 3.45)
     Count: 5
     Distribution: "LogNormal"
   Weather:

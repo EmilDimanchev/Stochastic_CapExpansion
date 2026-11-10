@@ -153,6 +153,7 @@ function run_gridfill_sampling!(bank::AbstractVector, cut_pool, MP, SPs, inputs:
     cuts = CutBank(S, d)
     cut_pool === nothing || add_pool_cuts!(cuts, cut_pool, MP, settings)
     foreach(fs -> add_final_solve!(cuts, fs), solves)
+    log_memory_status("GridFill start: cut bank $(n_cuts(cuts)) cuts, $(length(solves)) solved plans")
 
     sweep = cost_coords([fs for fs in solves if startswith(fs.name, "Risk_Weight")], anchors, α)
     cells = grid_cells(sweep, g, δcap)
@@ -185,7 +186,10 @@ function run_gridfill_sampling!(bank::AbstractVector, cut_pool, MP, SPs, inputs:
         X = reduce(vcat, [fs.x' for fs in solves])
         Xref = hcat(permutedims(X), random_parent_blends(X, tuning.prune_blends, Xoshiro(hash((seed, rnd)))))
         ctx = GridFillContext(solves, prune_cuts(cuts, Xref), anchors, α, g; aim_frac = [aim_frac.ev, aim_frac.cvar], aim_margin = aim_margin)
+        log_memory_status("GridFill round $rnd: before candidates ($(length(solves)) solved plans, $(length(open_cells)) open cells, $(n_cuts(ctx.cuts)) of $(n_cuts(cuts)) cuts after pruning)")
         t_cand = @elapsed results = run_candidate_stage(ctx, open_cells, tuning, n_keep, seed, rnd; parallel = parallel)
+        max_valid = maximum((r.n_valid for r in results); init = 0)
+        log_memory_status("GridFill round $rnd: after candidates (largest valid-blend count per cell $max_valid)")
         mark_outside_hull!(state, results)
         for r in results
             r.status in (:no_blend, :aim_missed) || continue   # no candidate this round: a miss if empty, else a dry round
@@ -207,6 +211,7 @@ function run_gridfill_sampling!(bank::AbstractVector, cut_pool, MP, SPs, inputs:
         pick_log === nothing || append!(pick_log, picks)
 
         t_eval = @elapsed c, s, e, new_solves = evaluate(picks, SPs, inputs, settings, g)
+        log_memory_status("GridFill round $rnd: after evaluating $(length(picks)) samples")
         append!(rows_cap, c); append!(rows_syscost, s); append!(rows_emissions, e)
         append!(labels, [pk.name for pk in picks])
         for fs in new_solves
@@ -235,6 +240,7 @@ function run_gridfill_sampling!(bank::AbstractVector, cut_pool, MP, SPs, inputs:
               "Layer $layer (quota $per_cell). Target cells reached $reached/$(length(targets)), full ($per_cell per cell) $full, still empty $(length(targets) - reached), " *
               "exhausted this round $(length(state.exhausted) - n_exhausted0) (total $(length(state.exhausted))), parked $(length(state.parked)) " *
               "(this round: $(n_status(:outside_hull)) outside the parents' cost hull, $(n_status(:no_blend)) without a valid blend, $(n_status(:aim_missed)) missed).")
+        flush(stderr)
         try
             checkpoint(rows_cap, rows_syscost, rows_emissions, labels)
         catch err

@@ -270,8 +270,7 @@ function test_scenario_counts_end_to_end(test_index = "scenario_counts")
         capacity = 60_000 .* capacity_share
         solve(index) = begin
             SP = build_subproblem(inputs, settings, index)
-            set_parameter_value.(SP[:x], capacity)
-            set_parameter_value.(SP[:x_line], [2000.0])
+            set_subproblem_capacity!(SP, capacity, [2000.0])
             output = run_subproblem(SP, inputs, settings; minimal_payload = false)
             @assert output["coeff"] == 1 "scenario $index did not solve"
             output["SP objective"]
@@ -402,8 +401,7 @@ function test_genx_conversion(test_index = "genx_conversion")
     limit_point = zeros(length(resources))
     limit_point[index("Hydro-z2")] = 500.0
     limit_SP = build_subproblem(inputs, settings, [1, 1, 1])
-    set_parameter_value.(limit_SP[:x], limit_point)
-    set_parameter_value.(limit_SP[:x_line], zeros(inputs["Number of lines"]))
+    set_subproblem_capacity!(limit_SP, limit_point, zeros(inputs["Number of lines"]))
     limited = run_subproblem(limit_SP, inputs, settings; minimal_payload = true)
     @assert limited["coeff"] == 1
     hydro_output = value.(limit_SP[:g])[hydro, :]
@@ -418,7 +416,7 @@ function test_genx_conversion(test_index = "genx_conversion")
     # The capacity dual, which forms the Benders cuts, has to price the energy limit
     step = 1.0
     limit_point[index("Hydro-z2")] += step
-    set_parameter_value.(limit_SP[:x], limit_point)
+    fix.(limit_SP[:x], limit_point)
     stepped = run_subproblem(limit_SP, inputs, settings; minimal_payload = true)
     predicted = limited["SP objective"] + limited["capacity dual"][index("Hydro-z2")] * step
     @assert isapprox(stepped["SP objective"], predicted; rtol = 1e-4) "cut predicts $predicted, solve gives $(stepped["SP objective"])"
@@ -428,8 +426,7 @@ function test_genx_conversion(test_index = "genx_conversion")
     SP = build_subproblem(inputs, settings, [1, 1, 1])
     capacity = zeros(length(resources))
     capacity[index("Hydro-z2")] = 500.0
-    set_parameter_value.(SP[:x], capacity)
-    set_parameter_value.(SP[:x_line], zeros(inputs["Number of lines"]))
+    set_subproblem_capacity!(SP, capacity, zeros(inputs["Number of lines"]))
     output = run_subproblem(SP, inputs, settings; minimal_payload = false)
     @assert output["coeff"] == 1
     @assert maximum(abs.(output["Net Flow"][:, 1])) > 100 "the existing line should carry power"
@@ -441,7 +438,7 @@ function test_genx_conversion(test_index = "genx_conversion")
     capacity[index("Wind T1-z1")] = 1000.0
     capacity[index("Hydro-z2")] = 100.0
     capacity[index("Battery-z1")] = 50.0
-    set_parameter_value.(SP[:x], capacity)
+    fix.(SP[:x], capacity)
     output = run_subproblem(SP, inputs, settings; minimal_payload = false)
     discharge = value.(SP[:z_dch])
     storage_names = inputs["Storage"].Resources
