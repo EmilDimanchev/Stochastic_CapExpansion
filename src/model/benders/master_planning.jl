@@ -150,14 +150,13 @@ function build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
     # deliberately use interior-point methods for numerical reasons and temporarily
     # override these settings for their own solve.
     if settings["Solver"] == "HiGHS"
-        my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "off", "primal_feasibility_tolerance" => 1e-3, "optimality_tolerance" => 1e-3, "user_bound_scale" => -6)
-        set_optimizer(MP, my_optimizer)
+        set_optimizer(MP, master_highs_optimizer())
     elseif settings["Solver"] == "Gurobi"
         set_optimizer(MP, Gurobi.Optimizer)
         set_optimizer_attribute(MP, "OptimalityTol", 1e-5)
         set_optimizer_attribute(MP, "FeasibilityTol", 1e-3)
-        #set_optimizer_attribute(MP, "Crossover", 0)
-        #set_optimizer_attribute(MP, "Method", 1)
+        set_optimizer_attribute(MP, "Crossover", 0)
+        set_optimizer_attribute(MP, "Method", 1)
         set_optimizer_attribute(MP, "MultiObjMethod", 0)
         set_optimizer_attribute(MP, "LPWarmStart", 2)
     end
@@ -383,21 +382,35 @@ function adjust_gamma(prev_UB, UBnew, LB, gamma)
 end
 
 
+# The HiGHS options every ordinary master solve uses. The level-set and QTR solves swap the
+# optimizer out and back, and set_optimizer drops every attribute, so they restore from here.
+master_highs_optimizer() = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "off",
+    "primal_feasibility_tolerance" => 1e-3, "optimality_tolerance" => 1e-3, "user_bound_scale" => -6)
+
+# Sets the level-set row eObj <= rhs, building it if needed.
+# The row is kept between calls (RHS updated in place) rather than added and deleted every
+# call, and it is relaxed to +Inf between calls (see level_set_regularization). It is rebuilt
+# when the objective changes: one MP is reused across the risk-weight anchors, and
+# set_objective_bendersMP! replaces eObj with a new expression each time. A row built from an
+# earlier anchor's eObj would cap the wrong mix of investment, expected cost and CVaR, with an
+# RHS computed from the current anchor's bounds.
+function set_level_set_row!(MP, rhs)
+    if haskey(MP.obj_dict, :cLevel_set) && get(MP.ext, :level_set_eObj, nothing) === MP[:eObj]
+        set_normalized_rhs(MP[:cLevel_set], rhs)
+        return MP[:cLevel_set]
+    end
+    if haskey(MP.obj_dict, :cLevel_set)
+        delete(MP, MP[:cLevel_set])
+        unregister(MP, :cLevel_set)
+    end
+    @constraint(MP, cLevel_set, MP[:eObj] <= rhs)
+    MP.ext[:level_set_eObj] = MP[:eObj]
+    return MP[:cLevel_set]
+end
+
 function level_set_regularization(MP, UB, LB, gamma, settings)
     gamma = 0.5
-    level_set_rhs = LB + gamma*(UB-LB)
-    # Kept as a persistent constraint (RHS updated in place) rather than added and
-    # deleted every call: deleting a row forces JuMP/MOI to re-index every constraint
-    # after it and discards any basis information for the whole model, whereas
-    # set_normalized_rhs is a pure incremental modify. Between regularization calls the
-    # bound is relaxed (see below) rather than the row being removed, since the ordinary
-    # (non-regularized) master solve that runs in between must not see a stale tight
-    # level-set bound from a previous iteration.
-    if haskey(MP.obj_dict, :cLevel_set)
-        set_normalized_rhs(MP[:cLevel_set], level_set_rhs)
-    else
-        @constraint(MP, cLevel_set, MP[:eObj] <= level_set_rhs)
-    end
+    set_level_set_row!(MP, LB + gamma*(UB-LB))
 
     if settings["Solver"] == "HiGHS"
         set_optimizer(MP, () -> Clarabel.Optimizer())
@@ -415,7 +428,13 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
         #set_optimizer_attribute(MP, "presolve", "off")
         set_silent(MP)
     elseif settings["Solver"] == "Gurobi"
+        # Barrier, without the warm start. With LPWarmStart = 2 and a basis left by the previous
+        # master solve, Gurobi skips barrier entirely, even with Method = 2: it crushes that basis
+        # and goes straight to crossover and primal simplex. On the 16-zone case that start had
+        # primal infeasibility ~7e9, simplex reached Kappa ~1e16, and the solve was declared
+        # infeasible. Both are restored after the solve.
         set_optimizer_attribute(MP, "Method", 2)
+        set_optimizer_attribute(MP, "LPWarmStart", 0)
     end
     #unset_silent(MP)
     @objective(MP, Min, 0.0)
@@ -464,20 +483,19 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
     # Write outputs (only meaningful if the level-set solve actually succeeded)
     output = (infeasible || numerical_trouble) ? nothing : write_outputs(MP, settings)
 
-    # Relax rather than delete: keeps the row (and MOI's row indexing) stable across
-    # calls. Sized relative to UB rather than an arbitrary large constant, to avoid the
-    # "huge RHS next to small-scale rows" numerical range issue noted in cut_pool.jl (_archive!).
-    set_normalized_rhs(MP[:cLevel_set], 1e3 * max(abs(UB), 1.0))
+    # Relax rather than delete: keeps the row (and MOI's row indexing) stable across calls.
+    # +Inf makes the row free, so the ordinary master solves see no RHS at all. The previous
+    # finite relaxation (1e3·|UB|, ~1e8 scaled) was the largest RHS in the model, three orders
+    # above any cut, and widened the RHS range every solver scales over.
+    set_normalized_rhs(MP[:cLevel_set], Inf)
     @objective(MP,Min, MP[:eObj])
     if settings["Solver"] == "HiGHS"
-        # Restore the same run_crossover="on" base setting build_planning_model uses, so
-        # the ordinary solve on the next iteration still gets a basis to warm-start from -
-        # otherwise every regularized iteration (i.e. most of them, since this runs
-        # whenever gap*100 >= 1) would silently undo that warmstart setup on the way out.
-        my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "off")
-        set_optimizer(MP, my_optimizer)
+        # Back to the ordinary master settings. A bare HiGHS.Optimizer here (as before) silently
+        # dropped the master's tolerances and user_bound_scale after the first regularized iteration.
+        set_optimizer(MP, master_highs_optimizer())
     elseif settings["Solver"] == "Gurobi"
-        set_optimizer_attribute(MP, "Method", -1) # changed for testing with simplex warmstarting
+        set_optimizer_attribute(MP, "Method", -1)
+        set_optimizer_attribute(MP, "LPWarmStart", 2)
         if numerical_trouble
             set_optimizer_attribute(MP, "BarHomogeneous", 0)
         end
@@ -533,8 +551,7 @@ function qtr_regularization(MP, stab_cent_cap, stab_cent_line, gamma_qtr, settin
         # optimizer instance, and unconditionally rebuilding it (the prior behavior) threw
         # away Gurobi's warm-start state for no reason. Restore the same attributes
         # build_planning_model uses, not a bare HiGHS.Optimizer with no attributes at all.
-        my_optimizer = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "on", "primal_feasibility_tolerance" => 1e-3, "optimality_tolerance" => 1e-3, "user_bound_scale" => -6)
-        set_optimizer(MP, my_optimizer)
+        set_optimizer(MP, master_highs_optimizer())
     end
     return output
 end
