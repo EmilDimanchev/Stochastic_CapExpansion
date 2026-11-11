@@ -65,9 +65,22 @@ function max_benders_iterations(settings::AbstractDict)
     return J_max
 end
 
+# The risk weight w that LB and UB use: the one the master's objective was set with
+# (objective_risk_weight). A caller may still pass risk_aversion_weight, but it has to agree.
+function bound_risk_weight(MP::Model, risk_aversion_weight)
+    w = objective_risk_weight(MP)
+    w === nothing && error("benders_algorithm: the master's objective isn't a cost objective; set it with set_objective_bendersMP! first.")
+    if risk_aversion_weight !== nothing && !isapprox(risk_aversion_weight, w; atol = 1e-9)
+        error("benders_algorithm: risk_aversion_weight = $(risk_aversion_weight), but the master's objective uses weight $(w).")
+    end
+    return w
+end
+
 # SPs (and Eval_SPs) are SubproblemSets; not annotated because worker_functions.jl is included after this file
-function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_pool = CutPool(settings), solve_type::String = "Anchor", mga_vector::Int = 0)
+# risk_aversion_weight defaults to the weight of the master's objective (bound_risk_weight).
+function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = nothing, cut_pool = CutPool(settings), solve_type::String = "Anchor", mga_vector::Int = 0)
     J_max = max_benders_iterations(settings)
+    risk_aversion_weight = bound_risk_weight(MP, risk_aversion_weight)
     solve_start = time()
 
     # Initialize
@@ -111,7 +124,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
     P_f = inputs["Gas price scenario probabilities"]
     P_k = inputs["Weather scenario probabilities"]
     VaR_Percent = settings["Value-at-Risk percent"] 
-    risk_aversion_flag = settings["Risk aversion flag"]
+    # Bounds include CVaR whenever the master's objective does, whatever "Risk aversion flag" says
+    risk_aversion_flag = risk_aversion_weight < 1
     expected_value = 0.0
     cvar_estimate = 0.0
     min_UB = Inf

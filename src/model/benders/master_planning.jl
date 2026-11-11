@@ -239,13 +239,24 @@ function build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
     if risk_aversion_flag
         @expression(MP, eObj, inv_cost + Ω*expected_alpha + (1-Ω)*MP[:cvar_term])
         @objective(MP, Min, eObj)
+        MP.ext[:objective_risk_weight] = Float64(Ω)
     else
         @expression(MP, eObj, inv_cost + expected_alpha)
         @objective(MP, Min, eObj)
+        MP.ext[:objective_risk_weight] = 1.0
     end
     return MP
 
 end
+
+# Weight w of the master's cost objective, inv + w·E[op cost] + (1 - w)·CVaR[op cost] (1.0 for expected
+# cost alone). build_planning_model and set_objective_bendersMP! record it whenever they set eObj, and
+# benders_algorithm builds LB and UB from it, so both bounds always describe the objective the master
+# actually minimizes. Not a settings flag: "Risk aversion flag" can be false while the objective has a
+# CVaR term (set_objective_bendersMP! adds the risk terms itself), and bounds built from the flag then
+# compare inv + E[cost] with a master minimizing the weighted objective, which goes negative.
+# nothing: the objective isn't a cost (MGA capacity directions).
+objective_risk_weight(MP::Model) = get(MP.ext, :objective_risk_weight, nothing)
 
 function add_risk_terms!(MP::Model, inputs, settings)
     # Sets and flags
@@ -594,8 +605,9 @@ function write_outputs(MP, settings; risk_aversion_weight=0.5)
     output["Expected System Cost"] = value.(MP[:exp_sys_cost])*scaling_factor_cost
     output["Inv cost by zone"] = value.(MP[:inv_cost_by_zone]).*scaling_factor_cost
     
-    # Record results from the linearization or not
-    if settings["Risk aversion flag"]
+    # CVaR results whenever the master has the CVaR terms, which set_objective_bendersMP! and the budget
+    # constraints can add even when "Risk aversion flag" is false
+    if haskey(MP, :cvar_term)
         output["CVaR Loss"] = value.(MP[:u]).*scaling_factor_cost
         output["VaR"] = value.(MP[:ζ]).*scaling_factor_cost
         output["CVaR term"] = value(MP[:cvar_term])*scaling_factor_cost
@@ -620,6 +632,7 @@ function set_objective_bendersMP!(model, objective_type::String, inputs, setting
         unregister(model, :eObj)
         @expression(model, eObj, model[:exp_sys_cost])
         @objective(model, Min, model[:eObj])
+        model.ext[:objective_risk_weight] = 1.0
         log_detail("Objective set to minimize expected system cost: $(objective_function(model))")
     elseif objective_type == "System_Weighted_CVaR"
         if obj_weight < -0.0001 || obj_weight > 1.001
@@ -629,11 +642,11 @@ function set_objective_bendersMP!(model, objective_type::String, inputs, setting
         if !haskey(model, :u) || !haskey(model, :cvar_term)
             log_detail("Initializing risk terms for Weighted CVaR objective.")
             add_risk_terms!(model, inputs, settings)
-            settings["risk aversion flag"] = true
         end
         unregister(model, :eObj)
         @expression(model, eObj, model[:inv_cost] + (obj_weight)*model[:expected_alpha] + (1-obj_weight)*model[:cvar_term])
         @objective(model, Min, model[:eObj])
+        model.ext[:objective_risk_weight] = Float64(obj_weight)
         log_detail("Objective set to minimize weighted CVaR. Weight is: $obj_weight Objective function: $(objective_function(model))")
     elseif objective_type == "Capacity"
         if set_coeffs == []
@@ -641,6 +654,7 @@ function set_objective_bendersMP!(model, objective_type::String, inputs, setting
         end
         x_full = [collect(model[:x][r] for r in 1:length(model[:x])); collect(model[:x_line][l] for l in 1:length(model[:x_line]))]
         @objective(model, Min, set_coeffs' * x_full)
+        delete!(model.ext, :objective_risk_weight)
         log_detail("Objective set to minimize capacity expression: $(objective_function(model))")
     else
         error("Unsupported objective type. Please choose from 'Expectation', 'Weighted CVaR', or 'Capacity'.")
@@ -667,7 +681,6 @@ function add_budget_constraint_bendersMP(model::Model, budget::Float64, budget_t
         if !haskey(model, :u) || !haskey(model, :cvar_term)
             log_detail("Initializing risk terms for Weighted CVaR objective.")
             add_risk_terms!(model, inputs, settings)
-            settings["risk aversion flag"] = true
         end
         new_budget = @constraint(model, c_budget_cvar, model[:cvar_term] <= budget)
         push!(budget_added, :c_budget_cvar)
@@ -685,7 +698,6 @@ function add_budget_constraint_bendersMP(model::Model, budget::Float64, budget_t
         if !haskey(model, :u) || !haskey(model, :cvar_term)
             log_detail("Initializing risk terms for Weighted CVaR objective.")
             add_risk_terms!(model, inputs, settings)
-            settings["risk aversion flag"] = true
         end
         new_budget = @constraint(model, c_budget_sys_cvar, model[:inv_cost] + (risk_aversion)*model[:expected_alpha] + (1-risk_aversion)*model[:cvar_term]<= budget)
         push!(budget_added, :c_budget_sys_cvar)
