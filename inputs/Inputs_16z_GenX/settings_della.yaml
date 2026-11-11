@@ -7,3 +7,4 @@ Workers: 64
 "Cut settings":
   "Cuts retained per subproblem": 333
 Solver: "Gurobi"
+Log style: "della"

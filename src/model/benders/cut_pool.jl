@@ -218,7 +218,7 @@ function seed!(pool::CutPool, MP::Model, group::Int)
     _archive!(pool, MP, [n for n in keys(pool.live) if !(n in target)])
     _restore!(pool, MP, [pool.colof[n] for n in target if haskey(pool.colof, n)])
     empty!(pool.last_bound_iter)
-    @info("Cut pool seed ($(new_group ? "new group $group" : "same group $group")): $(length(pool.live)) live cuts at first MP solve, $(n_archived(pool)) archived")
+    log_detail("Cut pool seed ($(new_group ? "new group $group" : "same group $group")): $(length(pool.live)) live cuts at first MP solve, $(n_archived(pool)) archived")
     return length(pool.live)
 end
 
@@ -242,7 +242,7 @@ function separate!(pool::CutPool, MP::Model, settings::Dict, risk_aversion_weigh
         t_extra_mp += @elapsed output = run_planning_model(MP, settings, risk_aversion_weight)
     end
     if restored > 0
-        @info("Cut separation: restored $restored cuts in $rounds round(s), check $(round(t_check; digits=3)) s, extra MP $(round(t_extra_mp; digits=3)) s")
+        log_detail("Cut separation: restored $restored cuts in $rounds round(s), check $(round(t_check; digits=3)) s, extra MP $(round(t_extra_mp; digits=3)) s")
     end
     return output, (restored = restored, rounds = rounds, t_check = t_check, t_extra_mp = t_extra_mp)
 end
@@ -285,12 +285,12 @@ end
 #   "recent_binding" - keep the cuts that bound most recently (ties: later-created first)
 #   "earliest"       - keep the earliest-created cuts
 # Cuts with no stats yet count as newest, so they survive. Always logs, including when it's a
-# no-op, so a trim that never engages is visible. Returns (live cuts deleted, archived deleted).
+# no-op (at the laptop-only detail level), so a trim that never engages is visible. Returns (live cuts deleted, archived deleted).
 function trim_cuts!(MP::Model, pool::CutPool)
     n_keep, rule = cuts_retained(pool, MP), pool.cfg["Trim rule"]
     n_live, n_arch = length(pool.live), n_archived(pool)
     if n_live + n_arch <= n_keep
-        @info("Cut trim ($rule): $n_live live + $n_arch archived = $(n_live + n_arch) cuts <= cap $n_keep ($(pool.cfg["Cuts retained per subproblem"]) per subproblem × $(n_subproblems(MP))); nothing trimmed")
+        log_detail("Cut trim ($rule): $n_live live + $n_arch archived = $(n_live + n_arch) cuts <= cap $n_keep ($(pool.cfg["Cuts retained per subproblem"]) per subproblem × $(n_subproblems(MP))); nothing trimmed")
         return (0, 0)
     end
     names = vcat(collect(keys(pool.live)), collect(keys(pool.colof)))

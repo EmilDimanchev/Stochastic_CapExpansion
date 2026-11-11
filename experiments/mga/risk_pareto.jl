@@ -58,6 +58,14 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
         @info("TRIMRUN|$(entry.label)|iters=$(entry.iterations)|sp_rounds=$(entry.sp_rounds)|mp_solves=$(entry.mp_solves)|live_at_start=$(entry.live_at_start)|mp_time=$(round(entry.mp_time; digits=3))|sep_time=$(round(entry.sep_time; digits=3))|cuts_before=$(entry.archive_before)|archive_after=$(entry.archive_after)")
     end
     pool_size() = length(cut_pool.live) + n_archived(cut_pool)
+    # One SOLVE| line per converged solve (see src/results/Run_log.jl), counted for the closing banner
+    run_start, n_solves, n_iters = time(), Ref(0), Ref(0)
+    log_solve!(tag, label, out; kwargs...) = begin
+        @info(solve_line(tag, label, out; pool_size = pool_size(), kwargs...))
+        n_solves[] += 1
+        n_iters[] += length(out["Time SP hist"])
+    end
+    log_done() = @info("=== Done in $(fmt_duration(time() - run_start)) ($(n_solves[]) solves, $(n_iters[]) iterations)")
 
     # Result containers
     results_cap = []
@@ -79,6 +87,14 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
     transform_sys = 0.0
     transform_cvar = 0.0
 
+    @info(run_header(settings, inputs))
+    @info("RUN| Summary \"$summary_name\" | $(length(risk_aversion_weights)) anchors" *
+          (run_settings["Capacity exploration"] ? ", $iterations MGA vectors ($(run_settings["Vector type"])) | $budget_type budget" *
+              (tighten_budget ? ", tightening step $budget_tighten_step_size" : "") *
+              (cap_wings && tighten_budget && budget_type == "Transformed" ? ", caps at levels $cap_levels ($n_caps per wing)" : "") : ", no MGA") *
+          " | sampling $sampling_method" * (sampling_method == "None" ? "" : " ≤ $(sampling_settings["Samples"])") *
+          " | export cuts $(export_cuts ? "on" : "off")" * (mapping ? " | mapping on" : ""))
+
     MP = build_planning_model(inputs, settings; risk_aversion_weight = risk_aversion_weight)
 
     # Shared across every risk weight / MGA direction solved against this MP, so cuts built
@@ -98,6 +114,7 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
         sampling_method == "GridFill" && sampling_settings["Write gradients"] && write_gradient_file(folder, fs, var_names)
     end
 
+    @info("=== Anchors: $(length(risk_aversion_weights)) risk weights")
     for (i, risk) in enumerate(risk_aversion_weights)
         # Base Runs
         case_name = "Risk_Weight_"*string(risk)
@@ -106,6 +123,7 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
         archive_before = pool_size()
         output = benders_algorithm(inputs, settings, MP, SPs, case_name; Eval_SPs = Eval_SPs, mapping = mapping, risk_aversion_weight = risk, cut_pool = cut_pool, solve_type = "Anchor", mga_vector = 0)
         log_run!(case_name, output, archive_before)
+        log_solve!("A $i/$(length(risk_aversion_weights)) w=$risk", case_name, output; weight = risk)
         log_result_memory!(case_name*" output", output)
         gap_cvar = output["Gaps"]
         push!(run_labels, case_name)
@@ -126,9 +144,9 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
         end
         extreme_values[risk] = Dict("CVaR" => output["CVaR"]/scaling, "System Expected" => (output["Expected Value"] + output["MP"]["Inv_cost"])/scaling)
 
-        @info("Risk weight $risk solution has investment cost of $(output["MP"]["Inv_cost"])")
-        @info("Expected value system cost of " * "Risk weight $risk" * " solution: $(output["Expected Value"] + output["MP"]["Inv_cost"])")
-        @info("Risk adjusted system cost of " * "Risk weight $risk" * " solution: $((1-risk_aversion_weight)*output["CVaR"] + risk_aversion_weight*output["Expected Value"]+ output["MP"]["Inv_cost"])")
+        log_detail("Risk weight $risk solution has investment cost of $(output["MP"]["Inv_cost"])")
+        log_detail("Expected value system cost of " * "Risk weight $risk" * " solution: $(output["Expected Value"] + output["MP"]["Inv_cost"])")
+        log_detail("Risk adjusted system cost of " * "Risk weight $risk" * " solution: $((1-risk_aversion_weight)*output["CVaR"] + risk_aversion_weight*output["Expected Value"]+ output["MP"]["Inv_cost"])")
 
 
         bank_record!(case_name, output, results_destination)
@@ -153,7 +171,7 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
             transform_cvar = 1/(extreme_values[1.0]["CVaR"] - extreme_values[0.0]["CVaR"])
             transform_sys = 1/(extreme_values[0.0]["System Expected"] - extreme_values[1.0]["System Expected"])
             budget_val_transform = transform_cvar*extreme_values[0.0]["CVaR"] + transform_sys*extreme_values[1.0]["System Expected"] + budget_offset
-            @info("Budget value for transformed budget constraint: ", budget_val_transform)
+            @info("Budget value for transformed budget constraint: $budget_val_transform")
             budgets, constraint_dict = add_budget_constraint_bendersMP(MP, budget_val_transform, "Transformed", budgets; extreme_values = extreme_values, constraint_dict = constraint_dict)
             if tighten_budget
                 budget_floor = compute_budget_floor(extreme_values, transform_cvar, transform_sys, floor_offset)
@@ -177,16 +195,19 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
             trim_cuts!(MP, cut_pool)
 
             levels = tighten_budget ? budget_schedule : [budget_val_transform]
+            @info("=== MGA vector $iteration/$iterations" * (tighten_budget ? " ($(length(levels)) budget levels)" : ""))
             local output_random
             for (level, budget_level_val) in enumerate(levels)
                 if tighten_budget
                     budgets = update_budget_constraint_bendersMP!(MP, budget_level_val, "Transformed", budgets)
                 end
                 run_name = tighten_budget ? "Random_$(iteration)_Budget_$(level)" : "Random_"*string(iteration)
+                mga_tag = "MGA $iteration/$iterations" * (tighten_budget ? " L$level/$(length(levels))" : "")
                 try
                     archive_before = pool_size()
                     output_random = mga_benders(inputs, settings, MP, SPs, budgets, run_name; Eval_SPs = Eval_SPs, mapping = mapping, cut_pool = cut_pool, solve_type = "Budget", mga_vector = iteration)
                     log_run!(run_name, output_random, archive_before)
+                    log_solve!(mga_tag, run_name, output_random; budgets = budgets)
                     log_result_memory!(run_name*" output", output_random)
                     gap = output_random["Gaps"]
                     push!(run_labels, run_name)
@@ -224,6 +245,7 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
                                     archive_before = pool_size()
                                     cap_output = mga_benders(inputs, settings, MP, SPs, budgets, cap_run_name; Eval_SPs = Eval_SPs, mapping = mapping, cut_pool = cut_pool, solve_type = key == "CVaR" ? "CVaR cap" : "EV cap", mga_vector = iteration)
                                     log_run!(cap_run_name, cap_output, archive_before)
+                                    log_solve!("$mga_tag $(budget_abbreviation(key)) cap $cap_level/$(length(caps))", cap_run_name, cap_output; budgets = budgets)
                                     log_result_memory!(cap_run_name*" output", cap_output)
                                     push!(run_labels, cap_run_name)
                                     push!(gaps, cap_output["Gaps"])
@@ -264,7 +286,7 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
                     if !isempty(results_cap)
                         t_ckpt = @elapsed write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
                         checkpoint_time += t_ckpt
-                        @info("Summary checkpoint after $run_name: $(round(t_ckpt; digits=3)) s ($(sum(nrow, results_cap)) rows), cumulative $(round(checkpoint_time; digits=3)) s")
+                        log_detail("Summary checkpoint after $run_name: $(round(t_ckpt; digits=3)) s ($(sum(nrow, results_cap)) rows), cumulative $(round(checkpoint_time; digits=3)) s")
                     end
                 catch e
                     @warn("Summary checkpoint failed", exception = (e, catch_backtrace()))
@@ -276,6 +298,7 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
 
         # Sample the interior after exploration
         if sampling_method == "GridFill"
+            @info("=== GridFill: up to $(sampling_settings["Samples"]) samples")
             log_memory_status("before GridFill (cut pool $(pool_size()) cuts, bank $(length(bank)) plans)")
             # GridFill_k rows carry lineage + prediction columns (GF_*). The Summary is rewritten
             # after every batch with the MGA rows plus the samples solved so far.
@@ -288,11 +311,13 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
             append!(results_emissions, rows_emissions)
             append!(run_labels, gf_labels)
         end
+        @info("=== Final summary write ($(length(run_labels)) runs)")
         log_memory_status("before final summary write ($(length(run_labels)) runs)")
         t_final = @elapsed write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, run_labels, summary_name; mapping = mapping)
         @info("Final summary write: $(round(t_final; digits=3)) s; total checkpoint time $(round(checkpoint_time; digits=3)) s")
         # Last, and guarded, so a failed export can't affect anything the run has already written
         if export_cuts
+            @info("=== Cut export")
             try
                 log_memory_status("before cut export input (cut pool $(pool_size()) cuts, bank $(length(bank)) plans, $(length(gridfill_picks)) GridFill picks)")
                 export_input = build_cut_export_input(cut_pool, MP, bank, gridfill_picks, inputs, settings; run_id = "$(summary_name) | $(results_folder)")
@@ -302,8 +327,10 @@ function run_stochastic_exploration_risk_pareto(SPs::SubproblemSet, inputs::Dict
                 @error("Cut export failed; the run's other results are unaffected", exception = (e, catch_backtrace()))
             end
         end
+        log_done()
         return vectors
     end
+    log_done()
 end
 
 function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::String, summary_folder::String; budget_multiplier::Float64 = 1.1, vector_set::Union{AbstractVector, Nothing} = nothing, scenario::Int = -1)
@@ -325,10 +352,15 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
 
     
 
+    run_start = time()
+    @info(run_header(settings, new_inputs))
+    @info("=== Base MGA: cost-optimal solve on scenario $scenario, then $iterations MGA vectors")
     MP = build_planning_model(new_inputs, settings) #### When loaded with one scenario weighted, this is equivalent to a deterministic model with that scenario selected
     SP_one_scen = build_all_subproblems(new_inputs, settings)
     cut_pool = CutPool(settings)
     output = benders_algorithm(new_inputs, settings, MP, SP_one_scen, "OneScenarioLC"; Eval_SPs = SPs, cut_pool = cut_pool)
+    log_solve!(tag, label, out; kwargs...) = @info(solve_line(tag, label, out; pool_size = length(cut_pool.live) + n_archived(cut_pool), kwargs...))
+    log_solve!("CostOptimal", "OneScenarioLC", output)
     log_result_memory!("OneScenarioLC output", output)
     gap = output["Gaps"]
     push!(labels, "OneScenarioLC")
@@ -345,15 +377,16 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
     end
     
     vectors = vector_set !== nothing ? vector_set : generate_weights(iterations, length(MP[:x])+length(MP[:x_line]), settings["Run settings"]["Vector type"], settings)
-    @info("Using budget of ", budget, " for Base MGA test")
+    @info("Using budget of $budget for Base MGA test")
     percent_over_lc = round((budget - lc_value)/lc_value * 100, digits=2)
-    @info("This budget is ", percent_over_lc, "% over the cost optimal solution")
+    @info("This budget is $percent_over_lc% over the cost optimal solution")
     budgets = Dict()
     budgets, _ = add_budget_constraint_bendersMP(MP, budget/settings["Scaling factor cost"], "System_Expected", budgets)
 
     for iteration in 1:iterations
         set_objective_bendersMP!(MP, "Capacity", new_inputs, settings; set_coeffs = vectors[iteration])
         output_random = mga_benders(new_inputs, settings, MP, SP_one_scen, budgets, "Base_MGA_"*string(iteration); Eval_SPs = SPs, cut_pool = cut_pool, mga_vector = iteration)
+        log_solve!("Base MGA $iteration/$iterations", "Base_MGA_$iteration", output_random; budgets = budgets)
         log_result_memory!("Base_MGA_"*string(iteration)*" output", output_random)
         gap = output_random["Gaps"]
         results_destination = joinpath(results_path,"Base_MGA_"*string(iteration))
@@ -367,4 +400,5 @@ function run_base_mga(SPs, new_inputs::Dict, settings::Dict, results_path::Strin
     end
     #write_gaps!(gaps, labels, joinpath(results_path, "Gaps"))
     write_exploration_results!(results_cap, results_syscost, results_emissions, summary_folder, labels, string(scenario))
+    @info("=== Done in $(fmt_duration(time() - run_start)) ($(iterations + 1) solves)")
 end

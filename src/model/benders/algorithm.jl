@@ -68,6 +68,7 @@ end
 # SPs (and Eval_SPs) are SubproblemSets; not annotated because worker_functions.jl is included after this file
 function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_name::String; Eval_SPs = nothing, mapping = false, risk_aversion_weight = 0.5, cut_pool = CutPool(settings), solve_type::String = "Anchor", mga_vector::Int = 0)
     J_max = max_benders_iterations(settings)
+    solve_start = time()
 
     # Initialize
     settings["Search equilibria"] = false
@@ -88,7 +89,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
     output_mp_unst = Dict{String, Any}()
 
     if Eval_SPs !== nothing
-        @info("Evaluation SPs provided. Will use these to catalogue performance in addition to base SPs.")
+        log_detail("Evaluation SPs provided. Will use these to catalogue performance in addition to base SPs.")
         (S_eval, F_eval, K_eval) = scenario_dims(Eval_SPs)
         P_eval = inputs["Full Demand scenario probabilities"]
         P_f_eval = inputs["Full Gas price scenario probabilities"]
@@ -140,12 +141,13 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
     first_write = 1
     indicator_written = false
     sep_hist = []
+    time_reg_iter = nothing # regularization solve time behind the current iterate (none for the first)
 
     if mapping 
         if risk_aversion_weight == 0.0
             mapping = false
         end
-        @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
+        log_detail("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
         minimal_payload = false
     end
 
@@ -180,15 +182,14 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
     algorithm_start_time = time()
 
     for j in 1:J_max
-        println()
-        println(string("*** Iteration: ", j))
+        log_detail("*** Iteration: $j")
 
         
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # MARK: Subproblems
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 
 
-        @info("Running economic dispatch sub-problems")
+        log_detail("Running economic dispatch sub-problems")
         sp_obj_per_iter = zeros(S, F, K)
         sp_all_results = Array{Any}(undef, S, F, K)
 
@@ -252,8 +253,10 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
 
         gap = (min_UB - LB)/abs(LB)
         push!(gaps, gap)
-        @info("Gap: $(gap * 100)%")
-        @info("LB: $(round(LB; digits=2)), UB: $(round(min_UB; digits=2)), Time MP: $(round(time_mp; digits=2)) seconds, Time SP: $(round(time_sp; digits=2)) seconds")
+        log_detail("Gap: $(gap * 100)%")
+        log_detail("LB: $(round(LB; digits=2)), UB: $(round(min_UB; digits=2)), Time MP: $(round(time_mp; digits=2)) seconds, Time SP: $(round(time_sp; digits=2)) seconds")
+        @info(iter_line(case_name, j; gap = gap, LB = LB, UB = min_UB, time_mp = time_mp, time_sp = time_sp, sep = sep_hist[end],
+                        live = length(cut_pool.live), time_reg = time_reg_iter))
         if gap < 0 && abs(gap) > 1e-6
             error("Negative gap detected; check model formulation.")
         end
@@ -261,7 +264,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
 
         #if maximum(abs.(gaps)) <= conv_tol
         if gap <= conv_tol    
-            @info("Convergence achieved with maximum percentage gap of $((gap) * 100)%")
+            log_detail("Convergence achieved with maximum percentage gap of $((gap) * 100)%")
+            final_start = time()
             output_mp = run_planning_model(MP, settings, risk_aversion_weight)
             #set_capacity_parameters!(SPs, output_mp["Capacity"])
             sp_all_results = run_all_subproblems(SPs, inputs, settings, output_mp["Capacity"], output_mp["Line expansion"]; minimal_payload=false)
@@ -295,13 +299,14 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
 
             # Evaluate MP sol on Eval SPs if needed
             if Eval_SPs !== nothing
-                @info("Evaluating current MP solution on evaluation SPs to track performance on these scenarios.")
+                log_detail("Evaluating current MP solution on evaluation SPs to track performance on these scenarios.")
                 outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings, output_mp["Capacity"], output_mp["Line expansion"]; minimal_payload=false)
                 results["SPs_eval"] = outputs_sp_eval
                 results["CVaR_Eval"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)
                 results["Expected Value Eval"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)
             
             end
+            results["Time final"] = time() - final_start
 
             break
         else
@@ -319,7 +324,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
             end
 
             add_cuts!(cut_pool, add_optimality_cuts!(MP, cut_terms.objective, cut_terms.capacity_dual, cut_terms.line_dual, capacity_mix[j], line_expansion[j], cut_terms.coeff, inputs, settings, j, case_name))
-            @info("Running investment problem")
+            log_detail("Running investment problem")
             time_mp = time()
             output_mp_unst, sep = separate!(cut_pool, MP, settings, risk_aversion_weight)
             time_mp = time() - time_mp
@@ -342,6 +347,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
             # Before regularization, so MP still holds the unstabilized solve's duals
             prune!(cut_pool, MP, j, prune_window_j)
 
+            time_reg_iter = nothing # regularization time behind the next iterate, for its ITER| line
             skip_reg_for_stall = lb_stall_count >= lb_stall_limit
             if skip_reg_for_stall && regularization_flag
                 @info("LB has not improved for $lb_stall_count iterations; turning off regularization for remainder of iterations for this problem.")
@@ -350,11 +356,12 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
             if regularization_flag && (gap * 100) > 1 # do not run regularization when gap is tight -> takes extra time and can have numerical issues
                 if settings["Regularization strategy"] == "Level Set"
                     #gamma = adjust_gamma(UB_hist[end-1], min_UB, LB, gamma)
-                    @info("Applying level set regularization to master problem") #(gamma=$(round(gamma; digits=3)))")
+                    log_detail("Applying level set regularization to master problem") #(gamma=$(round(gamma; digits=3)))")
                     time_reg = time()
                     output_mp = level_set_regularization(MP, min_UB, LB, gamma, settings)
                     time_reg = time() - time_reg
-                    @info("Regularization solve time: $(round(time_reg; digits=2)) seconds")
+                    time_reg_iter = time_reg
+                    log_detail("Regularization solve time: $(round(time_reg; digits=2)) seconds")
                     if output_mp === nothing
                         # Level-set solve hit a (numerical, not logical - see the warning
                         # logged inside level_set_regularization) infeasibility. Rather than
@@ -397,7 +404,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
             # Update MP solution outputs
             push!(capacity_mix, output_mp["Capacity"])
             push!(line_expansion, output_mp["Line expansion"])
-            @info("New capacity mix: $(round.(output_mp["Capacity"]; digits=2)), Line expansion: $(round.(output_mp["Line expansion"]; digits=2))")
+            log_detail("New capacity mix: $(round.(output_mp["Capacity"]; digits=2)), Line expansion: $(round.(output_mp["Line expansion"]; digits=2))")
             _log_iteration_memory!(settings, "benders-master", j, MP, [
                 "capacity_mix" => capacity_mix,
                 "line_expansion" => line_expansion,
@@ -407,7 +414,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
         end
     end
     elapsed = time() - algorithm_start_time
-    @info("Total elapsed time for algorithm: $(elapsed) seconds")
+    log_detail("Total elapsed time for algorithm: $(elapsed) seconds")
 
     if isempty(results)
         # Never hit the convergence branch, so `results` was never populated. Fail loudly
@@ -417,7 +424,8 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
     end
 
     # Report results
-    @info("Final capacity mix:" * string(results["Capacity per iteration"]))
+    results["Elapsed"] = time() - solve_start # whole solve, including the first MP solve (unlike `elapsed`)
+    log_detail("Final capacity mix:" * string(results["Capacity per iteration"]))
     return results
 
 end
@@ -496,6 +504,7 @@ end
 # SPs (and Eval_SPs) are SubproblemSets; not annotated because worker_functions.jl is included after this file
 function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict, case_name::String; Eval_SPs = nothing, mapping = false, cut_pool = CutPool(settings), solve_type::String = "Budget", mga_vector::Int = 0)
     J_max = max_benders_iterations(settings)
+    solve_start = time()
 
     # Initialize
     settings["Search equilibria"] = false
@@ -509,7 +518,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict
     L = inputs["Number of lines"]
 
     if Eval_SPs !== nothing
-        @info("Evaluation SPs provided. Will use these to catalogue performance in addition to base SPs.")
+        log_detail("Evaluation SPs provided. Will use these to catalogue performance in addition to base SPs.")
         (S_eval, F_eval, K_eval) = scenario_dims(Eval_SPs)
         P_eval = inputs["Full Demand scenario probabilities"]
         P_f_eval = inputs["Full Gas price scenario probabilities"]
@@ -566,7 +575,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict
     sep_hist = []
 
     if mapping
-        @info("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
+        log_detail("Mapping flag is true; will catalogue full iteration data for feasible space mapping")
     end
 
     live_cuts_at_start = seed!(cut_pool, MP, mga_vector)
@@ -593,15 +602,14 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict
     algorithm_start_time = time()
 
     for j in 1:J_max
-        println()
-        println(string("*** Iteration: ", j))
+        log_detail("*** Iteration: $j")
 
         
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         # MARK: Subproblems
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 
         # Actual sps
-        @info("Running economic dispatch sub-problems")
+        log_detail("Running economic dispatch sub-problems")
         sp_obj_per_iter = zeros(S, F, K)
         sp_all_results = Array{Any}(undef, S, F, K)
 
@@ -654,7 +662,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict
                 UBs[i] = expected_value
             elseif budget_type == "Transformed"
                 UBs[i] = budgets["Transformed"]["transform_cvar"]*cvar_estimate + budgets["Transformed"]["transform_sys"]*(expected_value + output_mp["Inv_cost"]/settings["Scaling factor cost"])
-                @info("Transformed UB: $(UBs[i]), CVaR: $(cvar_estimate), Expected: $(expected_value), Inv_cost: $(output_mp["Inv_cost"]/settings["Scaling factor cost"])")
+                log_detail("Transformed UB: $(UBs[i]), CVaR: $(cvar_estimate), Expected: $(expected_value), Inv_cost: $(output_mp["Inv_cost"]/settings["Scaling factor cost"])")
             else
                 error("Budget type $(budget_type) not recognized for UB calculation.")
             end
@@ -672,12 +680,15 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict
 
         for (i, type) in enumerate(budget_types)
             gaps[i] = (min_UBs[i] - LBs[i])/abs(LBs[i])
-            @info("Budget type: $(type), Gap: $(round(gaps[i], digits=4) * 100)%, LB: $(round(LBs[i], digits=6)), UB: $(round(min_UBs[i], digits=6)), Time MP: $(round(time_mp; digits=2)) seconds, Time SP: $(round(time_sp; digits=2)) seconds")
+            log_detail("Budget type: $(type), Gap: $(round(gaps[i], digits=4) * 100)%, LB: $(round(LBs[i], digits=6)), UB: $(round(min_UBs[i], digits=6)), Time MP: $(round(time_mp; digits=2)) seconds, Time SP: $(round(time_sp; digits=2)) seconds")
         end
+        @info(iter_line(case_name, j; gap = [t => gaps[i] for (i, t) in enumerate(budget_types)], UB = [t => min_UBs[i] for (i, t) in enumerate(budget_types)],
+                        time_mp = time_mp, time_sp = time_sp, sep = sep_hist[end], live = length(cut_pool.live)))
         push!(gap_hist, deepcopy(gaps))
         #if maximum(abs.(gaps)) <= conv_tol
         if isapprox(maximum(gaps), 0; atol = settings["Budget convergence tolerance"]) || all(gaps .<= conv_tol)    
-            @info("Convergence achieved with maximum percentage gap of $((maximum(gaps)) * 100)%")
+            log_detail("Convergence achieved with maximum percentage gap of $((maximum(gaps)) * 100)%")
+            final_start = time()
 
             output_mp = run_planning_model(MP, settings, risk_aversion_weight)
             #set_capacity_parameters!(SPs, output_mp["Capacity"], output_mp["Line expansion"])
@@ -709,20 +720,21 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict
             results["Sep hist"] = sep_hist
             results["Live cuts at start"] = live_cuts_at_start
 
-            println("Gaps at convergence: ", gap_hist[end])
+            log_detail("Gaps at convergence: $(gap_hist[end])")
             
 
             
 
             # Evaluate MP sol on Eval SPs if needed
             if Eval_SPs !== nothing
-                @info("Evaluating current MP solution on evaluation SPs to track performance on these scenarios.")
+                log_detail("Evaluating current MP solution on evaluation SPs to track performance on these scenarios.")
                 #set_capacity_parameters!(Eval_SPs, output_mp["Capacity"], output_mp["Line expansion"])
                 outputs_sp_eval = run_all_subproblems(Eval_SPs, inputs, settings, output_mp["Capacity"], output_mp["Line expansion"]; minimal_payload=false)
                 results["SPs_eval"] = outputs_sp_eval
                 results["CVaR_Eval"] = compute_cvar(reshape([outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval], (S_eval, F_eval, K_eval)), P_eval, P_f_eval, P_k_eval, VaR_Percent)
                 results["Expected Value Eval"] = sum(P_eval[s]*P_f_eval[f]*P_k_eval[k]*outputs_sp_eval[s,f,k]["SP objective"] for s in 1:S_eval, f in 1:F_eval, k in 1:K_eval)
             end
+            results["Time final"] = time() - final_start
             break
         else
             if mapping && maximum(gaps) <= settings["Mapping settings"]["Mapping gap threshold"]
@@ -739,7 +751,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict
             end
 
             add_cuts!(cut_pool, add_optimality_cuts!(MP, cut_terms.objective, cut_terms.capacity_dual, cut_terms.line_dual, capacity_mix[j], line_expansion[j], cut_terms.coeff, inputs, settings, j, case_name))
-            @info("Running investment problem")
+            log_detail("Running investment problem")
             time_mp = time()
             output_mp, sep = separate!(cut_pool, MP, settings, risk_aversion_weight)
             time_mp = time() - time_mp
@@ -749,8 +761,8 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict
             # Update MP solution outputs
             push!(capacity_mix, output_mp["Capacity"])
             push!(line_expansion, output_mp["Line expansion"])
-            @info("New capacity mix: $(round.(output_mp["Capacity"]; digits=2))")
-            @info("New line expansion: $(round.(output_mp["Line expansion"]; digits=2))")
+            log_detail("New capacity mix: $(round.(output_mp["Capacity"]; digits=2))")
+            log_detail("New line expansion: $(round.(output_mp["Line expansion"]; digits=2))")
             _log_iteration_memory!(settings, "mga-master", j, MP, [
                 "capacity_mix" => capacity_mix,
                 "line_expansion" => line_expansion,
@@ -763,7 +775,7 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict
         end
     end
     elapsed = time() - algorithm_start_time
-    @info("Total elapsed time for algorithm: $(elapsed) seconds")
+    log_detail("Total elapsed time for algorithm: $(elapsed) seconds")
 
     if isempty(results)
         # Never hit the convergence branch, so `results` was never populated. Fail loudly
@@ -773,8 +785,9 @@ function mga_benders(inputs::Dict, settings::Dict, MP::Model, SPs, budgets::Dict
     end
 
     # Report results
-    @info("Final capacity mix:" * string(results["Capacity per iteration"]))
-    @info("Final line expansion:" * string(results["Line expansion per iteration"]))
+    results["Elapsed"] = time() - solve_start # whole solve, including the first MP solve (unlike `elapsed`)
+    log_detail("Final capacity mix:" * string(results["Capacity per iteration"]))
+    log_detail("Final line expansion:" * string(results["Line expansion per iteration"]))
     return results
 
 end

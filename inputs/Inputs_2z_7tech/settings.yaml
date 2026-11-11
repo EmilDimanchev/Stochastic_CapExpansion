@@ -36,6 +36,7 @@ Scaling factor cost: 1e5
 Scaling factor demand: 1
 Convergence tolerance: 0.00001
 Max iterations: 150 # Benders iterations per solve (each anchor, MGA vector, cap); a solve still above Convergence tolerance after this many errors
+Log style: "laptop" # "laptop": full detail for every Benders iteration. "della": timestamped and flushed; one ITER| line per iteration, one SOLVE| line per solve, phase banners (src/results/Run_log.jl)
 
 Cost of nonserved energy: [9e3,1500,1100,400]
 Max nse: [0.917,0.05,0.03,0.003]

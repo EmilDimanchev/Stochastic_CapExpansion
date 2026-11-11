@@ -335,7 +335,7 @@ function run_planning_model(MP, settings, risk_aversion_weight)
                 end
             end
         end
-        display(list_of_conflicting_constraints)
+        show_conflicts(list_of_conflicting_constraints)
         error("Model infeasible. See conflicting constraints above.")
     end
 
@@ -456,7 +456,7 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
         if isempty(list_of_conflicting_constraints)
             @warn("Level-set solve reported infeasible with no conflicting constraints identified - treating as a numerical solver failure rather than a real infeasibility, and falling back to the unstabilized solution for this iteration.")
         else
-            display(list_of_conflicting_constraints)
+            show_conflicts(list_of_conflicting_constraints)
             @warn("Level-set solve is infeasible with identified conflicting constraints (see above); falling back to the unstabilized solution for this iteration.")
         end
     end
@@ -494,7 +494,7 @@ function qtr_regularization(MP, stab_cent_cap, stab_cent_line, gamma_qtr, settin
     # Sets
     R = length(MP[:x])
     L = length(MP[:x_line])
-    @info("Adding trust region constraint with gamma: ", gamma_qtr)
+    log_detail("Adding trust region constraint with gamma: $gamma_qtr")
     if settings["Solver"] == "HiGHS"
         set_silent(MP)
         set_optimizer(MP, Ipopt.Optimizer)
@@ -518,7 +518,7 @@ function qtr_regularization(MP, stab_cent_cap, stab_cent_line, gamma_qtr, settin
                 end
             end
         end
-        display(list_of_conflicting_constraints)
+        show_conflicts(list_of_conflicting_constraints)
         error("Model infeasible. See conflicting constraints above.")
     end
     
@@ -603,28 +603,28 @@ function set_objective_bendersMP!(model, objective_type::String, inputs, setting
         unregister(model, :eObj)
         @expression(model, eObj, model[:exp_sys_cost])
         @objective(model, Min, model[:eObj])
-        @info("Objective set to minimize expected system cost: ", objective_function(model))
+        log_detail("Objective set to minimize expected system cost: $(objective_function(model))")
     elseif objective_type == "System_Weighted_CVaR"
         if obj_weight < -0.0001 || obj_weight > 1.001
             error("For Weighted CVaR objective, please provide a valid weight between 0 and 1.")
         end
         # Check if model is initialized with risk terms?
         if !haskey(model, :u) || !haskey(model, :cvar_term)
-            @info("Initializing risk terms for Weighted CVaR objective.")
+            log_detail("Initializing risk terms for Weighted CVaR objective.")
             add_risk_terms!(model, inputs, settings)
             settings["risk aversion flag"] = true
         end
         unregister(model, :eObj)
         @expression(model, eObj, model[:inv_cost] + (obj_weight)*model[:expected_alpha] + (1-obj_weight)*model[:cvar_term])
         @objective(model, Min, model[:eObj])
-        @info("Objective set to minimize weighted CVaR. Weight is: ", obj_weight, " Objective function: ", objective_function(model))
+        log_detail("Objective set to minimize weighted CVaR. Weight is: $obj_weight Objective function: $(objective_function(model))")
     elseif objective_type == "Capacity"
         if set_coeffs == []
             error("For Capacity objective, please provide a vector of coefficients for the capacity expression.")
         end
         x_full = [collect(model[:x][r] for r in 1:length(model[:x])); collect(model[:x_line][l] for l in 1:length(model[:x_line]))]
         @objective(model, Min, set_coeffs' * x_full)
-        @info("Objective set to minimize capacity expression: ", objective_function(model))
+        log_detail("Objective set to minimize capacity expression: $(objective_function(model))")
     else
         error("Unsupported objective type. Please choose from 'Expectation', 'Weighted CVaR', or 'Capacity'.")
     end
@@ -648,7 +648,7 @@ function add_budget_constraint_bendersMP(model::Model, budget::Float64, budget_t
         constraint_dict[budget_type] = new_budget
     elseif budget_type == "CVaR"
         if !haskey(model, :u) || !haskey(model, :cvar_term)
-            @info("Initializing risk terms for Weighted CVaR objective.")
+            log_detail("Initializing risk terms for Weighted CVaR objective.")
             add_risk_terms!(model, inputs, settings)
             settings["risk aversion flag"] = true
         end
@@ -666,7 +666,7 @@ function add_budget_constraint_bendersMP(model::Model, budget::Float64, budget_t
             error("For System_CVaR budget constraint, please provide a valid risk aversion weight between 0 and 1.")
         end
         if !haskey(model, :u) || !haskey(model, :cvar_term)
-            @info("Initializing risk terms for Weighted CVaR objective.")
+            log_detail("Initializing risk terms for Weighted CVaR objective.")
             add_risk_terms!(model, inputs, settings)
             settings["risk aversion flag"] = true
         end
@@ -689,7 +689,7 @@ function add_budget_constraint_bendersMP(model::Model, budget::Float64, budget_t
         error("Unsupported budget type. Please choose from 'Investment', 'Expected', 'CVaR', 'Transformed','System_Expected', or 'System_CVaR'.")
     end
 
-    @info("Added budget constraint: ", model[budget_added[1]])
+    log_detail("Added budget constraint: $(model[budget_added[1]])")
     return existing_budgets, constraint_dict
 end
 
@@ -707,6 +707,6 @@ function update_budget_constraint_bendersMP!(model::Model, new_budget::Float64, 
     else
         error("Unsupported budget type. Please choose from 'Investment', 'Expected', 'CVaR', 'Transformed','System_Expected', or 'System_CVaR'.")
     end
-    @info("Updated budget constraint ($budget_type) RHS to: ", new_budget)
+    log_detail("Updated budget constraint ($budget_type) RHS to: $new_budget")
     return existing_budgets
 end

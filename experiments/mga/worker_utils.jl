@@ -7,7 +7,7 @@ Utility functions for logging and managing memory, configuring parallel workers,
 
 function log_result_memory!(label::String, output::Dict)
     size_mb = round(Base.summarysize(output) / 1024^2; digits = 2)
-    @info("Approx memory for $(label): $(size_mb) MiB")
+    log_detail("Approx memory for $(label): $(size_mb) MiB")
 end
 
 function release_heavy_payload!(output::Dict)
@@ -20,7 +20,10 @@ function release_heavy_payload!(output::Dict)
     return nothing
 end
 
+# Every experiment entry point calls this first, so it also sets up the run's log output
+# ("Log style", see src/results/Run_log.jl) before anything else prints.
 function configure_parallel_workers!(settings::Dict)
+    configure_run_output!(settings)
     if settings["Parallel flag"]
         desired_workers = haskey(settings, "Workers") ? settings["Workers"] : max(Sys.CPU_THREADS - 1, 1)
         wkers = nworkers() == 1 ? 0 : nworkers()

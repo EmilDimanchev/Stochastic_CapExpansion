@@ -8,6 +8,7 @@ GridFill sampler: entry points (src/model/sampling)
   weather_gridfill_test_della("gf_1")   - Della run with weather instead of gas price uncertainty
   test_cut_export_units()               - solver-free unit tests of the cut export (tests/cut_export_tests.jl)
   test_memory_log_units()               - log_memory_status and worker BLAS threads (tests/memory_log_tests.jl)
+  test_run_log_units()                  - "Log style" loggers, ITER|/SOLVE| lines and parse_run_log, plus a tiny della/laptop run (tests/run_log_tests.jl)
   test_nearest_distance_memory()        - memory/time of nearest_distance, full vs chunked, at Della sizes (needs ~3 GB)
   cut_export_test_laptop("cx_1")        - gridfill_test_laptop with the cut export on
 
@@ -16,6 +17,7 @@ GridFill sampler: entry points (src/model/sampling)
 test_gridfill_units(test_index = "gridfill_units") = include(joinpath(@__DIR__, "..", "..", "tests", "gridfill_tests.jl"))
 test_cut_export_units(test_index = "cut_export_units") = include(joinpath(@__DIR__, "..", "..", "tests", "cut_export_tests.jl"))
 test_memory_log_units(test_index = "memory_log_units") = include(joinpath(@__DIR__, "..", "..", "tests", "memory_log_tests.jl"))
+test_run_log_units(test_index = "run_log_units") = include(joinpath(@__DIR__, "..", "..", "tests", "run_log_tests.jl"))
 test_nearest_distance_memory(test_index = "nearest_distance_memory") = include(joinpath(@__DIR__, "..", "..", "tests", "nearest_distance_memory.jl"))
 
 # Laptop inputs, workers and subproblems. `fast` uses one gas and one weather scenario, keeping
