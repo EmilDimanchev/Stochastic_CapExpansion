@@ -25,10 +25,15 @@ append; restored cuts are only flagged dead in `alive` and are compacted away la
 lets separate! check every archived cut at once with a single Aᵀ'v product instead of a
 per-cut JuMP evaluation.
 
-Groups. `group` is the MGA vector index (0 for the anchor sweep). `bound_cur` holds cuts
-that have bound at some point during the current group, `bound_prev` the previous group's.
-seed! starts a solve from bound_cur (later solves of the same group) or bound_prev (first
-solve of a new group); separate! recovers anything else the solve needs.
+Seeding ("Seed scope"). `group` is the MGA vector index (0 for the anchor sweep). `bound_cur`
+holds cuts that have bound at some point during the current group, `bound_prev` the previous
+group's, and `bound_last` the cuts binding at the most recent prune! (the final master solve of
+the previous solve, when seed! runs). seed! starts a solve from
+  "group"      - bound_cur (later solves of the same group) or bound_prev (first solve of a new
+                 group). Every anchor is group 0, so this set grows across the whole sweep.
+  "last solve" - bound_last, roughly the previous solve's optimal basis.
+  "none"       - no cuts at all.
+separate! recovers anything else the solve needs.
 
 Settings come from the "Cut settings" block of settings.yaml (see CutPool below).
 
@@ -62,7 +67,10 @@ mutable struct CutPool
     group::Int
     bound_cur::Set{String}
     bound_prev::Set{String}
+    bound_last::Set{String}                 # binding at the most recent prune!
 end
+
+const SEED_SCOPES = ("group", "last solve", "none")
 
 # Hard-indexes every key so a missing setting fails loudly rather than silently defaulting.
 function CutPool(settings::Dict)
@@ -71,13 +79,14 @@ function CutPool(settings::Dict)
         haskey(cfg, old) && error("Cut settings: \"$old\" is now \"$new\", a count per subproblem (it's multiplied by the number of subproblems, " *
                                   "S·F·K·B). Rename it, e.g. in settings_della.yaml.")
     end
-    for key in ("Cuts retained per subproblem", "Trim rule", "Prune window", "Binding tolerance", "Separation tolerance", "Cuts per round per subproblem", "Max rounds")
+    for key in ("Cuts retained per subproblem", "Trim rule", "Prune window", "Binding tolerance", "Separation tolerance", "Cuts per round per subproblem", "Max rounds", "Seed scope")
         haskey(cfg, key) || error("Cut settings is missing \"$key\"")
     end
+    cfg["Seed scope"] in SEED_SCOPES || error("Cut settings: unknown \"Seed scope\" $(repr(cfg["Seed scope"])). Choose one of $(join(repr.(SEED_SCOPES), ", ")).")
     return CutPool(cfg, Dict{String, ConstraintRef}(),
                    VariableRef[], Dict{VariableRef, Int}(), [1], Int[], Float64[], Float64[], String[], falses(0), Dict{String, Int}(),
                    Dict{String, Tuple{Int, Int}}(), 0, Dict{String, Int}(),
-                   -1, Set{String}(), Set{String}())
+                   -1, Set{String}(), Set{String}(), Set{String}())
 end
 
 prune_window(pool::CutPool, solve_type::String) = pool.cfg["Prune window"][solve_type]
@@ -142,7 +151,7 @@ function _archive!(pool::CutPool, MP::Model, cut_names)
         pool.colof[n] = length(pool.names)
         push!(cons, con)
     end
-    isempty(cons) || delete(MP, cons)
+    isempty(cons) || (log_phase("delete $(length(cons)) cuts from MP"); delete(MP, cons))
     return length(cons)
 end
 
@@ -205,20 +214,24 @@ seed! / separate! / prune!
 =====================================#
 
 # Start of a solve. `group` is the MGA vector index (0 for the anchor sweep). On a new group
-# the binding sets roll over; the solve then starts with exactly the cuts that bound during
-# this group so far, or - for the first solve of a group - during the previous group.
-# Everything else is archived and left for separate! to bring back if needed. Resets the
-# per-solve grace bookkeeping, so every live cut gets a full prune window again.
+# the group binding sets roll over (whatever the scope, so switching scope never changes
+# what "group" would do). The solve then starts with the "Seed scope" set (see the top of
+# this file); everything else is archived and left for separate! to bring back if needed.
+# Resets the per-solve grace bookkeeping, so every live cut gets a full prune window again.
 function seed!(pool::CutPool, MP::Model, group::Int)
     new_group = group != pool.group
     if new_group
         pool.bound_prev, pool.bound_cur, pool.group = pool.bound_cur, Set{String}(), group
     end
-    target = isempty(pool.bound_cur) ? pool.bound_prev : pool.bound_cur
+    scope = pool.cfg["Seed scope"]
+    target = scope == "group"      ? (isempty(pool.bound_cur) ? pool.bound_prev : pool.bound_cur) :
+             scope == "last solve" ? pool.bound_last : Set{String}()
     _archive!(pool, MP, [n for n in keys(pool.live) if !(n in target)])
-    _restore!(pool, MP, [pool.colof[n] for n in target if haskey(pool.colof, n)])
+    cols = [pool.colof[n] for n in target if haskey(pool.colof, n)]
+    log_phase("seed ($scope): restore $(length(cols)) cuts")
+    _restore!(pool, MP, cols)
     empty!(pool.last_bound_iter)
-    log_detail("Cut pool seed ($(new_group ? "new group $group" : "same group $group")): $(length(pool.live)) live cuts at first MP solve, $(n_archived(pool)) archived")
+    log_detail("Cut pool seed ($scope, $(new_group ? "new group $group" : "same group $group")): $(length(pool.live)) live cuts at first MP solve, $(n_archived(pool)) archived")
     return length(pool.live)
 end
 
@@ -229,6 +242,7 @@ end
 # Returns the planning-model output of the last solve and a NamedTuple of separation stats.
 function separate!(pool::CutPool, MP::Model, settings::Dict, risk_aversion_weight)
     tol, per_round, max_rounds = pool.cfg["Separation tolerance"], cuts_per_round(pool, MP), pool.cfg["Max rounds"]
+    log_phase("MP solve ($(length(pool.live)) live cuts)")
     output = run_planning_model(MP, settings, risk_aversion_weight)
     restored, rounds, t_check, t_extra_mp = 0, 0, 0.0, 0.0
     while rounds < max_rounds && n_archived(pool) > 0
@@ -239,6 +253,7 @@ function separate!(pool::CutPool, MP::Model, settings::Dict, risk_aversion_weigh
         _restore!(pool, MP, violated)
         restored += length(violated)
         rounds += 1
+        log_phase("MP solve, separation round $rounds (+$(length(violated)) cuts, $(length(pool.live)) live)")
         t_extra_mp += @elapsed output = run_planning_model(MP, settings, risk_aversion_weight)
     end
     if restored > 0
@@ -254,13 +269,14 @@ end
 
 # After an MP solve (MP must still hold that solve's duals). A live cut binds when its dual
 # is at least "Binding tolerance"; binding cuts are stamped (for trim_cuts!) and recorded in
-# this group's binding set. A cut first seen this solve (new, or brought back by seed!/
+# this group's binding set and, replacing the last call's, in bound_last. A cut first seen this solve (new, or brought back by seed!/
 # separate!) starts its grace period here; one that hasn't bound for `window` iterations is
 # archived.
 function prune!(pool::CutPool, MP::Model, iteration::Int, window::Int)
     pool.clock += 1
     tol = pool.cfg["Binding tolerance"]
     to_archive = String[]
+    empty!(pool.bound_last)
     for (n, con) in pool.live
         is_new = !haskey(pool.last_bound_iter, n)
         if is_new
@@ -271,6 +287,7 @@ function prune!(pool::CutPool, MP::Model, iteration::Int, window::Int)
             pool.last_bound_iter[n] = iteration
             _stamp!(pool, n; bound = true)
             push!(pool.bound_cur, n)
+            push!(pool.bound_last, n)
         elseif !is_new && iteration - pool.last_bound_iter[n] >= window
             push!(to_archive, n)
         end
@@ -314,8 +331,9 @@ function trim_cuts!(MP::Model, pool::CutPool)
         delete!(pool.stats, n)
         delete!(pool.bound_cur, n)
         delete!(pool.bound_prev, n)
+        delete!(pool.bound_last, n)
     end
-    isempty(live_to_delete) || delete(MP, live_to_delete) # one batched delete, see _archive!
+    isempty(live_to_delete) || (log_phase("trim: delete $(length(live_to_delete)) live cuts from MP"); delete(MP, live_to_delete)) # one batched delete, see _archive!
     _compact!(pool)
     @info("Cut trim ($rule): $n_live live + $n_arch archived -> kept $n_keep; deleted $(length(live_to_delete)) live and $n_arch_deleted archived cuts")
     return (length(live_to_delete), n_arch_deleted)

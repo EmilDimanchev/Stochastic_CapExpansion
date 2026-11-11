@@ -170,6 +170,18 @@ function build_all_subproblems(inputs, settings)
     end
 end
 
+# Gurobi attributes of every subproblem (set_gurobi_attributes! is in master_planning.jl).
+# Method -1 (automatic) with Crossover 1: a basis is always left for the next solve, and automatic
+# method selection picks warm-started simplex when one exists, falling back to barrier/concurrent for
+# a cold or very large LP.
+# "Subproblem threads" (default 1): every worker solves its own subproblems, so one thread each keeps
+# the job at one thread per allocated core. Gurobi's default (0) counts every logical core on the node,
+# so each of the workers would start that many threads.
+subproblem_gurobi_attributes(settings) = [
+    "OutputFlag" => 0, "Crossover" => 1, "Method" => -1,
+    "BarConvTol" => 1e-5, "OptimalityTol" => 1e-5, "FeasibilityTol" => 1e-5,
+    "Threads" => get(settings, "Subproblem threads", 1)]
+
 # The SP works on hours (a whole number of representative periods, see subproblem_blocks), indexed
 # locally as 1:length(hours). Each period keeps its own storage wrap and energy limit.
 function build_subproblem(inputs, settings, scenario_index::AbstractVector; hours::UnitRange{Int} = 1:inputs["Number of periods"])
@@ -215,17 +227,7 @@ function build_subproblem(inputs, settings, scenario_index::AbstractVector; hour
         set_optimizer_attribute(ED, "run_crossover", "on")
     elseif settings["Solver"] == "Gurobi"
         set_optimizer(ED, Gurobi.Optimizer)
-        set_optimizer_attribute(ED, "OutputFlag", 0)
-        set_optimizer_attribute(ED, "Crossover", 1)
-        # Automatic (-1) rather than hard-pinned barrier: with Crossover=1 a basis is
-        # always available from the previous solve, and Gurobi's automatic method
-        # selection favors warm-started simplex continuation when one exists while still
-        # falling back to barrier/concurrent for a cold or very large LP - this adapts
-        # across problem sizes rather than committing to one method.
-        set_optimizer_attribute(ED, "Method", -1)
-        set_optimizer_attribute(ED, "BarConvTol", 1e-5)
-        set_optimizer_attribute(ED, "OptimalityTol", 1e-5)
-        set_optimizer_attribute(ED, "FeasibilityTol", 1e-5)
+        set_gurobi_attributes!(ED, subproblem_gurobi_attributes(settings))
     end
     set_silent(ED)
 

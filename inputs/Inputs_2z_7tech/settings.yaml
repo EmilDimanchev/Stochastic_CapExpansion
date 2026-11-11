@@ -47,6 +47,8 @@ Regularization strategy: "Level Set" # options are "QTR" and "Level Set"
 # Distributed Memory Parallelization
 Parallel flag: true
 Workers: 8
+MP threads: 0 # Gurobi Threads for the master problem (0: Gurobi's default, every logical core it sees on the node, not the job's allocation). Set to the job's cores on Della; master and subproblem rounds never overlap
+Subproblem threads: 1 # Gurobi Threads per subproblem solve; each worker solves its own subproblems, so 1 keeps one thread per worker
 Worker GC threshold MB: null # after each subproblem round, a process only does its forced full GC if it allocated at least this many MB since the last one (null: always, the original behavior)
 Subproblem names: true # false: skip JuMP name strings on subproblem variables/constraints (smaller worker heap; nothing reads them)
 Memory debug flag: false
@@ -117,6 +119,7 @@ Cut settings: # cut pool, see src/model/benders/cut_pool.jl
   Separation tolerance: 1.0e-6 # relative violation (over max(1,|rhs|)) at which an archived cut is restored
   Cuts per round per subproblem: 4 # most-violated archived cuts restored per separation round, × the number of subproblems
   Max rounds: 5 # separation rounds per MP solve before the sub-problems run
+  Seed scope: "group" # cuts live at the start of each solve: "group" (every cut that bound in this MGA vector so far, or in the previous vector for its first solve; all anchors are one group), "last solve" (only the cuts binding at the previous solve's final master solve), "none" (no cuts; separation restores them)
 
 Cut export settings: # pruned cut archive for the Grid Options Explorer, see src/results/Export_cuts.jl
   Export cuts: false # true: write Summary/cut_archive_<Summary name>.h5 at the end of the run

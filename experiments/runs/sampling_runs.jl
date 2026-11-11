@@ -72,7 +72,7 @@ function gridfill_test_della(test_index; n_samples::Int = 2000, inputs_folder = 
     configure_parallel_workers!(settings)
     SPs = build_all_subproblems(inputs, settings)
     results_folder = joinpath(results_folder, "GridFill")
-    run_stochastic_exploration_risk_pareto(SPs, inputs, settings, joinpath(results_folder, "Pareto5"), summary_folder;
+    run_stochastic_exploration_risk_pareto(SPs, inputs, settings, results_folder, summary_folder;
         budget_settings = Dict("Budget type" => "Transformed", "Tighten budget" => true),
         cap_settings = Dict("Cap wings" => true, "Cap levels" => [1, 3]),
         mapping_settings = Dict("Mapping" => false),

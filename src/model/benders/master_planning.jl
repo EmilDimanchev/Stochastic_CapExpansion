@@ -139,26 +139,14 @@ function build_planning_model(inputs, settings; risk_aversion_weight = 0.5)
     MP = Model()
     set_silent(MP)
 
-    # Crossover is forced on (both solvers) so the ordinary per-iteration solve always
-    # produces a basis. Benders cuts are added as new rows every iteration
-    # (add_optimality_cuts!) with no new columns - the textbook dual-simplex warmstart
-    # case - but that only pays off if a basis exists from the previous solve for the
-    # solver to warm-start from. Crossover=0/run_crossover="off" (the prior setting)
-    # produced pure interior-point solutions with no basis at all, defeating any
-    # warmstart before it could even be attempted. This does not apply to the
-    # regularization solves (level_set_regularization/qtr_regularization), which
-    # deliberately use interior-point methods for numerical reasons and temporarily
-    # override these settings for their own solve.
+    # Solver attributes live in master_highs_optimizer / master_gurobi_attributes, so the
+    # regularization solves (which use interior-point methods and override some of them for
+    # their own solve) restore exactly what is set here.
     if settings["Solver"] == "HiGHS"
         set_optimizer(MP, master_highs_optimizer())
     elseif settings["Solver"] == "Gurobi"
         set_optimizer(MP, Gurobi.Optimizer)
-        set_optimizer_attribute(MP, "OptimalityTol", 1e-5)
-        set_optimizer_attribute(MP, "FeasibilityTol", 1e-3)
-        set_optimizer_attribute(MP, "Crossover", 0)
-        set_optimizer_attribute(MP, "Method", 1)
-        set_optimizer_attribute(MP, "MultiObjMethod", 0)
-        set_optimizer_attribute(MP, "LPWarmStart", 2)
+        set_gurobi_attributes!(MP, master_gurobi_attributes(settings))
     end
 
     # Sets and flags
@@ -398,6 +386,28 @@ end
 master_highs_optimizer() = optimizer_with_attributes(HiGHS.Optimizer, "solver" => "choose", "run_crossover" => "off",
     "primal_feasibility_tolerance" => 1e-3, "optimality_tolerance" => 1e-3, "user_bound_scale" => -6)
 
+# The Gurobi attributes of every ordinary master solve. level_set_regularization switches to
+# level_set_gurobi_attributes for its own solve and back to these afterwards, so both the build and
+# the restore read this one list.
+# Concurrent (Method 3) so the master uses every core: dual and primal simplex warm-start from the
+# previous basis (LPWarmStart 1 hands the basis to simplex only) while barrier runs alongside, and the
+# first to finish wins. Dual simplex alone (the old Method 1) is single-threaded, and the master was
+# 93-96% of wall time on the 16-zone case with the other cores idle. Crossover stays on (-1) so a
+# barrier win still leaves a basis for the next iteration's warm start.
+# "MP threads" caps the threads: Gurobi's default (0) counts every logical core on the node, not
+# the cores Slurm allocated to the job.
+master_gurobi_attributes(settings) = [
+    "OptimalityTol" => 1e-5, "FeasibilityTol" => 1e-3, "MultiObjMethod" => 0,
+    "Method" => 3, "LPWarmStart" => 1, "Crossover" => -1, "Threads" => get(settings, "MP threads", 0)]
+
+# Level-set solve: barrier for an interior point, so crossover is off. LPWarmStart 0, since with a
+# basis from the previous solve LPWarmStart 2 makes Gurobi skip barrier even with Method 2 (see
+# level_set_regularization).
+level_set_gurobi_attributes(settings) = [
+    "Method" => 2, "LPWarmStart" => 0, "Crossover" => 0, "Threads" => get(settings, "MP threads", 0)]
+
+set_gurobi_attributes!(model, attributes) = foreach(((k, v),) -> set_optimizer_attribute(model, k, v), attributes)
+
 # Sets the level-set row eObj <= rhs, building it if needed.
 # The row is kept between calls (RHS updated in place) rather than added and deleted every
 # call, and it is relaxed to +Inf between calls (see level_set_regularization). It is rebuilt
@@ -443,12 +453,13 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
         # master solve, Gurobi skips barrier entirely, even with Method = 2: it crushes that basis
         # and goes straight to crossover and primal simplex. On the 16-zone case that start had
         # primal infeasibility ~7e9, simplex reached Kappa ~1e16, and the solve was declared
-        # infeasible. Both are restored after the solve.
-        set_optimizer_attribute(MP, "Method", 2)
-        set_optimizer_attribute(MP, "LPWarmStart", 0)
+        # infeasible. Crossover is off: this solve is meant to return an interior point. All of it is
+        # restored after the solve.
+        set_gurobi_attributes!(MP, level_set_gurobi_attributes(settings))
     end
     #unset_silent(MP)
     @objective(MP, Min, 0.0)
+    log_phase("level-set solve")
     optimize!(MP)
 
     if termination_status(MP) != MOI.OPTIMAL && termination_status(MP) != MOI.LOCALLY_SOLVED
@@ -505,8 +516,7 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
         # dropped the master's tolerances and user_bound_scale after the first regularized iteration.
         set_optimizer(MP, master_highs_optimizer())
     elseif settings["Solver"] == "Gurobi"
-        set_optimizer_attribute(MP, "Method", -1)
-        set_optimizer_attribute(MP, "LPWarmStart", 2)
+        set_gurobi_attributes!(MP, master_gurobi_attributes(settings))
         if numerical_trouble
             set_optimizer_attribute(MP, "BarHomogeneous", 0)
         end

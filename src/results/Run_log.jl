@@ -34,6 +34,9 @@ Lines shared by both styles, written to be read by a person and parsed by a scri
                   convergence (MP re-solve, full-payload sub-problems, eval SPs), which the ITER|
                   times don't include. Costs are $B per year.
   MEM| ...        memory checkpoints (Memory_log.jl)
+  PHASE| ...      della only: written (and flushed) right before each step of the master problem that
+                  calls into Gurobi (seed, solve, archive delete, trim, level-set solve), so after a crash
+                  in native code (no Julia backtrace) the last line names the step it died in
   TRIMRUN| ...    cut-trim diagnostics, only when a Run log vector is passed
 
 ==========================================================================================#
@@ -47,6 +50,11 @@ log_detail(msg::AbstractString) = @logmsg DETAIL msg
 
 # True when the current logger shows DETAIL messages (the laptop style)
 detail_enabled() = Logging.min_enabled_level(current_logger()) <= DETAIL
+
+# A PHASE| marker (see the header). Della logger only: it flushes every line it writes, and the
+# laptop style already shows the detail lines around each of these steps. (CompactLogger is defined
+# below; the check runs at call time.)
+log_phase(msg::AbstractString) = current_logger() isa CompactLogger && @info("PHASE| " * msg)
 
 # "Log style" from settings; settings files written before the key existed get "laptop"
 function run_log_style(settings::AbstractDict)
