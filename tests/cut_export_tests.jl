@@ -59,6 +59,37 @@ function cx_pool_cuts(tc, p; n = 60, seed = 9)
     return cuts
 end
 
+# A real GridFill loop on the toy model, so the logged bounds come from the sampler itself.
+# Returns the export input, the sampler's picks, its tuning and the number of pre-GridFill plans.
+function cx_gridfill_input()
+    rng = Xoshiro(11)
+    S, n0 = 20, 80
+    tc = toy_cost(rng, S, 4, CX_D)
+    p = fill(1 / S, S)
+    cinv = [0.9, 0.6, 1.1, 0.4]
+    solve(name, x) = (tv = toy_eval(tc, x); FinalSolve(name, copy(x), tv[1], tv[2], p, dot(cinv, x), true))
+    bank = [solve("Random_$i", 30 .* rand(rng, CX_D)) for i in 1:n0]
+    C(fs) = fs.inv_cost + solve_ev(fs)
+    V(fs) = fs.inv_cost + solve_cvar(fs, CX_ALPHA)
+    iE, iR = argmin(C.(bank)), argmin(V.(bank))
+    iM = argmin(C.(bank) .+ V.(bank))
+    bank[iE].name, bank[iR].name = "Risk_Weight_1.0", "Risk_Weight_0.0"
+    iM in (iE, iR) || (bank[iM].name = "Risk_Weight_0.5")
+    sampling = Dict{String,Any}("Samples" => 24, "Batch size" => 8, "Candidates" => 30, "Write gradients" => false,
+                                "GridFill" => Dict{String,Any}("Cell size" => 0.1, "Delta cap" => 1.1, "Per cell" => 2))
+    evaluator = (picks, SPs, inputs, settings, g) -> begin
+        solved = [solve(pk.name, pk.x) for pk in picks]
+        rows = [DataFrame(Name = [pk.name]) for pk in picks]
+        rows, copy(rows), copy(rows), solved
+    end
+    tuning = merge(GRIDFILL_TUNING, (triples_per_aim = 3000, prune_blends = 300))
+    picks = GridFillPick[]
+    run_gridfill_sampling!(bank, nothing, nothing, nothing, Dict{String,Any}("Resources" => ["r1", "r2", "r3"], "Number of lines" => 1),
+                           Dict{String,Any}("Value-at-Risk percent" => CX_ALPHA, "Seed" => 7, "Convergence tolerance" => 1e-9), sampling;
+                           tuning = tuning, evaluate = evaluator, parallel = false, pick_log = picks)
+    return cx_input(bank; picks = picks, seed = 7), picks, tuning, n0
+end
+
 @testset "Cut export" begin
 
     @testset "Deduplication drops only duplicates and dominated intercepts" begin
@@ -101,6 +132,38 @@ end
         near = 0.01
         expected = [any(direct[k, j] >= values[j] - near * max(abs(values[j]), 1.0) for j in axes(X, 2)) for k in eachindex(alpha)]
         @test active_cut_mask(alpha, beta, X, near) == expected
+    end
+
+    @testset "Fused evaluation: argmax's first-max tie-break, chunk edges, empty inputs" begin
+        rng = Xoshiro(4)
+        alpha, beta = rand(rng, 150), randn(rng, CX_D, 150)
+        alpha[90], beta[:, 90] = alpha[20], beta[:, 20]                 # an exact duplicate: ties at every point
+        for m in (1, CUT_EXPORT_CHUNK_PROBES, CUT_EXPORT_CHUNK_PROBES + 1, 3 * CUT_EXPORT_CHUNK_PROBES - 5)
+            X = rand(rng, CX_D, m)
+            direct = alpha .+ beta' * X
+            values, cuts = best_cut_at(alpha, beta, X)
+            @test cuts == [argmax(direct[:, j]) for j in 1:m]           # same index, so ties go to the first
+            @test values == [direct[cuts[j], j] for j in 1:m]
+            @test 90 ∉ cuts
+        end
+        X = rand(rng, CX_D, 200)
+        @test best_cut_at(alpha, beta, zeros(CX_D, 0)) == (Float64[], Int[])
+        @test best_cut_at(Float64[], zeros(CX_D, 0), X) == (fill(-Inf, 200), zeros(Int, 200))
+        @test !any(active_cut_mask(alpha, beta, zeros(CX_D, 0), 0.01))
+        @test isempty(active_cut_mask(Float64[], zeros(CX_D, 0), X, 0.01))
+        mask = active_cut_mask(alpha, beta, X, 1e-12)
+        @test mask[20] && mask[90]                                      # a tie is near-active, the first max is the maximizer
+    end
+
+    @testset "Blend sets: one recipe, same arrays as building them inline" begin
+        bank, tc, p = cx_bank()
+        cfg = cut_export_config(cx_settings())
+        X = cx_input(bank).plan_x
+        sets = export_blend_sets(X, cfg, 0.5, 7)
+        held_rng = Xoshiro(8)
+        @test sets.held_out_sets == [build_held_out_blends(X, cfg, held_rng) for _ in 1:cfg.max_repair_rounds]
+        @test sets.test_blends == build_held_out_blends(X, cfg, held_rng)
+        @test sets.probes == build_probe_blends(X, cfg, 0.5, Xoshiro(7))
     end
 
     @testset "Pruning: fewer cuts, a valid bound, gap below tolerance at fresh blends" begin
@@ -291,35 +354,9 @@ end
     end
 
     @testset "Validation: replay matches the sampler exactly, bounds are valid and tight" begin
-        # A real GridFill loop on the toy model, so the logged bounds come from the sampler itself
-        rng = Xoshiro(11)
-        S, n0 = 20, 80
-        tc = toy_cost(rng, S, 4, CX_D)
-        p = fill(1 / S, S)
-        cinv = [0.9, 0.6, 1.1, 0.4]
-        solve(name, x) = (tv = toy_eval(tc, x); FinalSolve(name, copy(x), tv[1], tv[2], p, dot(cinv, x), true))
-        bank = [solve("Random_$i", 30 .* rand(rng, CX_D)) for i in 1:n0]
-        C(fs) = fs.inv_cost + solve_ev(fs)
-        V(fs) = fs.inv_cost + solve_cvar(fs, CX_ALPHA)
-        iE, iR = argmin(C.(bank)), argmin(V.(bank))
-        iM = argmin(C.(bank) .+ V.(bank))
-        bank[iE].name, bank[iR].name = "Risk_Weight_1.0", "Risk_Weight_0.0"
-        iM in (iE, iR) || (bank[iM].name = "Risk_Weight_0.5")
-        sampling = Dict{String,Any}("Samples" => 24, "Batch size" => 8, "Candidates" => 30, "Write gradients" => false,
-                                    "GridFill" => Dict{String,Any}("Cell size" => 0.1, "Delta cap" => 1.1, "Per cell" => 2))
-        evaluator = (picks, SPs, inputs, settings, g) -> begin
-            solved = [solve(pk.name, pk.x) for pk in picks]
-            rows = [DataFrame(Name = [pk.name]) for pk in picks]
-            rows, copy(rows), copy(rows), solved
-        end
-        tuning = merge(GRIDFILL_TUNING, (triples_per_aim = 3000, prune_blends = 300))
-        picks = GridFillPick[]
-        run_gridfill_sampling!(bank, nothing, nothing, nothing, Dict{String,Any}("Resources" => ["r1", "r2", "r3"], "Number of lines" => 1),
-                               Dict{String,Any}("Value-at-Risk percent" => CX_ALPHA, "Seed" => 7, "Convergence tolerance" => 1e-9), sampling;
-                               tuning = tuning, evaluate = evaluator, parallel = false, pick_log = picks)
+        input, picks, tuning, n0 = cx_gridfill_input()
         @test length(picks) > 8 && length(unique(pk.batch for pk in picks)) >= 2
 
-        input = cx_input(bank; picks = picks, seed = 7)
         @test all(input.plan_batch[n0+1:end] .>= 1) && all(input.plan_batch[1:n0] .== 0)
         replay = replay_logged_bounds(input; prune_blends = tuning.prune_blends)
         @test replay.lb_ev == [pk.lb_ev for pk in picks]         # exact, not approximate
@@ -349,5 +386,36 @@ end
 
     @testset "Settings: a missing key fails loudly" begin
         @test_throws KeyError cut_export_config(delete!(copy(CX_SETTINGS), "Gap tolerance"))
+    end
+
+    # Last, because it adds workers. Everything above runs serially.
+    @testset "Workers: pruning and replay match the serial run, context cleared" begin
+        input, picks, tuning, _ = cx_gridfill_input()
+        bank, tc, p = cx_bank()
+        pool_input = cx_input(bank; pool_cuts = cx_pool_cuts(tc, p))
+        cfg = cut_export_config(cx_settings())
+        step = first(budget_steps(cfg))
+        xscale = ones(CX_D)
+        serial = prune_all_groups(pool_input.cuts, pool_input.plan_x, cfg, step, 7, xscale; parallel = false)
+        # The serial driver is the old prune_cut_table call on blend sets built the same way
+        sets = export_blend_sets(pool_input.plan_x, cfg, step.density, 7)
+        @test serial == prune_cut_table(pool_input.cuts, sets.probes, sets.held_out_sets, sets.test_blends, xscale,
+                                        step.near_active_tol, step.gap_tol, cfg.duplicate_tol, cfg.clean_rounds)
+        serial_replay = replay_logged_bounds(input; prune_blends = tuning.prune_blends, parallel = false)
+
+        added = nworkers() < 2 || workers() == [myid()] ? addprocs(2) : Int[]
+        try
+            configure_parallel_workers!(Dict{String,Any}("Parallel flag" => true, "Workers" => nworkers()))
+            @test cut_export_parallel_default()
+            @test prune_all_groups(pool_input.cuts, pool_input.plan_x, cfg, step, 7, xscale; parallel = true) == serial
+            replay = replay_logged_bounds(input; prune_blends = tuning.prune_blends, parallel = true)
+            @test replay == serial_replay
+            @test replay.lb_ev == [pk.lb_ev for pk in picks] && replay.lb_cvar == [pk.lb_cvar for pk in picks]
+            @test all(remotecall_fetch(() -> CUT_EXPORT_WORKER_CTX[] === nothing, pid) for pid in workers())
+            # A worker error reaches the caller instead of hanging
+            @test_throws Exception map_cut_groups(() -> nothing, (), (ctx, g, d) -> error("boom"), 3, g -> g; parallel = true)
+        finally
+            isempty(added) || rmprocs(added)
+        end
     end
 end

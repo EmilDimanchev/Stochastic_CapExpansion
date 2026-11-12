@@ -137,15 +137,22 @@ function prune_cuts(cb::CutBank, Xref::AbstractMatrix)
     out = CutBank(n_scenarios(cb), size(Xref, 1); n_blocks = cb.n_blocks)
     for s in eachindex(cb.a)
         isempty(cb.a[s]) && continue
-        keep = Int[]
-        for cols in Iterators.partition(axes(Xref, 2), 500)        # bounds the n_s × chunk temporary
-            append!(keep, vec(getindex.(argmax(cb.a[s] .+ cb.G[s]' * Xref[:, cols]; dims = 1), 1)))
-        end
-        unique!(sort!(keep))
+        keep = active_cut_indices(cb.a[s], cb.G[s], Xref)
         out.a[s] = cb.a[s][keep]
         out.G[s] = cb.G[s][:, keep]
     end
     return out
+end
+
+# One group's cuts (intercepts a, slopes G: d × n_cuts) that attain the max at some column of Xref,
+# sorted. The cut export's replay calls this per group on the workers, so it must stay exactly what
+# prune_cuts does.
+function active_cut_indices(a::AbstractVector, G::AbstractMatrix, Xref::AbstractMatrix)
+    keep = Int[]
+    for cols in Iterators.partition(axes(Xref, 2), 500)        # bounds the n_cuts × chunk temporary
+        append!(keep, vec(getindex.(argmax(a .+ G' * Xref[:, cols]; dims = 1), 1)))
+    end
+    return unique!(sort!(keep))
 end
 
 # CVaR of each column of L (S × m) under probabilities p

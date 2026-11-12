@@ -9,13 +9,16 @@
 #   - Pull this branch so inputs/Inputs_2z_7tech/settings.yaml has the "Cut export settings" block.
 #     A missing block stops the run at startup, not at the end.
 #
-# What the export adds to the job. These are scaled from the laptop run (5 scenarios, 294 raw cuts
-# per scenario: pruning 3.7 s), assuming 125 scenarios and about 5,300 raw cuts per scenario. Check
-# them against the "Cut export: pruning and writing" log line of the first real run.
-#   - Time:   about 30 min per budget step (one step unless the file is over 25 MB), and up to about
-#             30 min of validation, about the same work as the sampler's own per-batch pruning.
-#   - Memory: under 1 GB on the main process: cuts about 75 MB, held-out blends about 90 MB, plus
-#             temporaries. The 2 GB margin below is for safety.
+# What the export adds to the job. The first 2-zone run (125 scenarios × 5 blocks, about 3,200 raw
+# cuts per subproblem, 2,661 plans) took 2.9 h to prune and 28 min to validate, all on the main
+# process. Pruning and the validation replay now run one subproblem per remote call on the workers,
+# so expect minutes with 64 workers; check the "pruned in ... s" and "repair rounds" columns of the
+# "Cut export budget step" line and the "Cut export: pruning and writing" line.
+#   - Time:   repair rounds dominate: each evaluates every cut of a subproblem at "Held-out blends"
+#             points, up to "Max repair rounds" times (the first run averaged about 30 of 40).
+#             A second budget step (file over 25 MB) repeats the pruning.
+#   - Memory: main holds the cuts (about 240 MB for 2M cuts); each worker rebuilds the blend sets
+#             (about 95 MB) and a few hundred KB of cuts per call. Cleared when the export ends.
 #   - Disk:   a raw copy of about 100 MB while the export runs; removed on success, kept on failure.
 #             To prune it again without the model:
 #               export_cut_archive_from_raw(raw_path, summary_folder, settings["Cut export settings"]; file_stem = "cut_archive_GridFill")

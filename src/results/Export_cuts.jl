@@ -16,10 +16,13 @@ This file picks the few cuts that matter for such blends and writes them to one 
 Flow (export_cut_archive):
   1. collect   pool cuts + final-solve cuts, unscaled and grouped by subproblem (scenario × block)
   2. save      a temporary raw copy, so a failure here can't lose the cuts of a long run
-  3. prune     one subproblem at a time:
-                 dedupe -> keep cuts active at probe blends -> check held-out blends -> repair
+  3. prune     one subproblem at a time, on the workers when there are any (map_cut_groups):
+                 dedupe -> keep cuts active at probe blends -> check held-out blends -> repair.
+               The repair rounds dominate: each evaluates every cut of the subproblem at a fresh
+               held-out set ("Held-out blends" points), up to "Max repair rounds" times.
   4. write     the HDF5 file, shrinking the probe set if it is over budget
-  5. validate  reproduce the logged GridFill bounds, check validity and tightness at the plans
+  5. validate  reproduce the logged GridFill bounds (pruning per subproblem on the workers),
+               check validity and tightness at the plans
 
 Units: α in $, β in $/MW, x in MW. θ_s is the annual, undiscounted operating cost of scenario
 s (variable generation + non-served energy + capacity-reserve slack; no investment).
@@ -41,7 +44,7 @@ column-major, so a Julia n×K matrix reads as K×n in h5py.
 
 ==========================================================================================#
 
-const CUT_EXPORT_CHUNK_PROBES = 500   # probes evaluated at once; bounds the K × chunk temporary
+const CUT_EXPORT_CHUNK_PROBES = 64    # points evaluated at once; keeps the reused K × chunk buffer in cache
 
 #---- 1. Collect ----------------------------------------------------------------------------
 
@@ -216,15 +219,41 @@ function build_held_out_blends(X::AbstractMatrix, cfg, rng::AbstractRNG)
                 random_sparse_blends(X, share(cfg.sparse), cfg.max_sparse_parents, rng))
 end
 
-# Largest cut value at each column of X, and the cut attaining it. Works in chunks of probes so
-# the temporary K × chunk matrix stays small however many probes there are.
+# Calls visit(j, v) for every column j of X, where v[k] = β_k·x_j for cut k (add alpha[k] for the cut's
+# value). v is a view into a K × chunk buffer that is reused, so it is only valid during the call.
+# The buffer stays cache-sized, and nothing is allocated per chunk: this loop is where the export
+# spends its time (K cuts × every probe and held-out point, per subproblem).
+function foreach_cut_slopes(visit, beta::AbstractMatrix, X::AbstractMatrix)
+    K, m = size(beta, 2), size(X, 2)
+    buffer = Matrix{Float64}(undef, K, min(m, CUT_EXPORT_CHUNK_PROBES))
+    for cols in Iterators.partition(1:m, CUT_EXPORT_CHUNK_PROBES)
+        B = view(buffer, :, 1:length(cols))
+        mul!(B, beta', view(X, :, cols))
+        for (i, j) in enumerate(cols)
+            visit(j, view(B, :, i))
+        end
+    end
+end
+
+# Largest cut value α_k + β_k·v_k over the cuts, and the first cut attaining it (argmax's tie-break)
+@inline function first_max_cut(alpha::AbstractVector, v::AbstractVector)
+    best_value, best_cut = alpha[1] + v[1], 1
+    @inbounds for k in 2:length(alpha)
+        value = alpha[k] + v[k]
+        if value > best_value
+            best_value, best_cut = value, k
+        end
+    end
+    return best_value, best_cut
+end
+
+# Largest cut value at each column of X, and the cut attaining it (the first one, on ties).
+# −Inf and 0 when there are no cuts.
 function best_cut_at(alpha::AbstractVector, beta::AbstractMatrix, X::AbstractMatrix)
-    values, cuts = zeros(size(X, 2)), zeros(Int, size(X, 2))
-    for cols in Iterators.partition(axes(X, 2), CUT_EXPORT_CHUNK_PROBES)
-        cut_values_here = alpha .+ beta' * X[:, cols]               # K × chunk
-        best = vec(argmax(cut_values_here; dims = 1))
-        values[cols] = cut_values_here[best]
-        cuts[cols] = getindex.(best, 1)
+    values, cuts = fill(-Inf, size(X, 2)), zeros(Int, size(X, 2))
+    isempty(alpha) && return values, cuts
+    foreach_cut_slopes(beta, X) do j, v
+        values[j], cuts[j] = first_max_cut(alpha, v)
     end
     return values, cuts
 end
@@ -233,14 +262,15 @@ end
 # keeps only the maximizers, one per column.
 function active_cut_mask(alpha::AbstractVector, beta::AbstractMatrix, X::AbstractMatrix, near_tol::Real)
     active = falses(length(alpha))
-    for cols in Iterators.partition(axes(X, 2), CUT_EXPORT_CHUNK_PROBES)
-        cut_values_here = alpha .+ beta' * X[:, cols]               # K × chunk
-        best = vec(argmax(cut_values_here; dims = 1))
-        active[getindex.(best, 1)] .= true
+    isempty(alpha) && return active
+    foreach_cut_slopes(beta, X) do j, v
+        top, best = first_max_cut(alpha, v)
+        active[best] = true
         if near_tol > 0
-            top = cut_values_here[best]
-            threshold = top .- near_tol .* max.(abs.(top), 1.0)
-            active .|= vec(any(cut_values_here .>= threshold'; dims = 2))
+            threshold = top - near_tol * max(abs(top), 1.0)
+            @inbounds for k in eachindex(alpha)
+                alpha[k] + v[k] >= threshold && (active[k] = true)
+            end
         end
     end
     return active
@@ -295,25 +325,102 @@ function prune_scenario(alpha::AbstractVector, beta::AbstractMatrix, probes::Abs
     return findall(kept), rounds
 end
 
-# Prune every subproblem group, streaming through them so only one group's temporaries exist at a
-# time. Each block's max is held to the gap tolerance, so a scenario's sum over blocks is too.
-# Reports the final gaps on `test_blends`, which no repair round has seen.
+# Prune one subproblem group and measure its final gaps on `test_blends`, which no repair round has
+# seen. Returns (kept cut indices, repair rounds used, relative gap at each test blend).
+function prune_group(alpha::AbstractVector, beta::AbstractMatrix, probes::AbstractMatrix, held_out_sets::AbstractVector,
+                     test_blends::AbstractMatrix, xscale::AbstractVector, near_tol::Real, gap_tol::Real, duplicate_tol::Real, clean_rounds::Int)
+    isempty(alpha) && return (kept = Int[], rounds = 0, gaps = Float64[])
+    kept, rounds = prune_scenario(alpha, beta, probes, held_out_sets, xscale, near_tol, gap_tol, duplicate_tol, clean_rounds)
+    full_values, _ = best_cut_at(alpha, beta, test_blends)
+    pruned_values, _ = best_cut_at(alpha[kept], beta[:, kept], test_blends)
+    return (kept = kept, rounds = rounds, gaps = rel_diff.(pruned_values, full_values))
+end
+
+# Kept cuts per group, and the coverage statistics over every group's test gaps (in group order)
+function summarize_pruning(results::AbstractVector, gap_tol::Real)
+    gaps = reduce(vcat, [r.gaps for r in results]; init = Float64[])
+    rounds = [r.rounds for r in results]
+    return [r.kept for r in results],
+           (max_gap = maximum(gaps; init = 0.0), mean_gap = isempty(gaps) ? 0.0 : mean(gaps),
+            q99_gap = isempty(gaps) ? 0.0 : quantile(gaps, 0.99), share_over_tol = isempty(gaps) ? 0.0 : mean(gaps .> gap_tol),
+            max_rounds_used = maximum(rounds; init = 0), mean_rounds_used = isempty(rounds) ? 0.0 : mean(rounds), n_points = length(gaps))
+end
+
+# Prune every subproblem group with the given blend sets, one group at a time on this process.
+# Each block's max is held to the gap tolerance, so a scenario's sum over blocks is too.
 function prune_cut_table(table::CutTable, probes::AbstractMatrix, held_out_sets::AbstractVector, test_blends::AbstractMatrix,
                          xscale::AbstractVector, near_tol::Real, gap_tol::Real, duplicate_tol::Real, clean_rounds::Int)
-    n_groups = length(table.alpha)
-    kept = Vector{Vector{Int}}(undef, n_groups)
-    rounds = zeros(Int, n_groups)
-    gaps = Float64[]
-    for s in 1:n_groups
-        alpha, beta = table.alpha[s], table.beta[s]
-        kept[s], rounds[s] = prune_scenario(alpha, beta, probes, held_out_sets, xscale, near_tol, gap_tol, duplicate_tol, clean_rounds)
-        full_values, _ = best_cut_at(alpha, beta, test_blends)
-        pruned_values, _ = best_cut_at(alpha[kept[s]], beta[:, kept[s]], test_blends)
-        append!(gaps, rel_diff.(pruned_values, full_values))
+    results = [prune_group(table.alpha[g], table.beta[g], probes, held_out_sets, test_blends, xscale, near_tol, gap_tol, duplicate_tol, clean_rounds)
+               for g in eachindex(table.alpha)]
+    return summarize_pruning(results, gap_tol)
+end
+
+# Every blend set the pruning uses, rebuilt from the plans and the seed alone, so a worker can make
+# its own copy instead of receiving it. The held-out and test sets don't depend on the budget step,
+# so steps stay comparable; the probes shrink with step.density.
+function export_blend_sets(X::AbstractMatrix, cfg, density::Real, seed::Integer)
+    held_rng = Xoshiro(seed + 1)
+    held_out_sets = [build_held_out_blends(X, cfg, held_rng) for _ in 1:cfg.max_repair_rounds]
+    test_blends = build_held_out_blends(X, cfg, held_rng)
+    return (probes = build_probe_blends(X, cfg, density, Xoshiro(seed)), held_out_sets = held_out_sets, test_blends = test_blends)
+end
+
+# Pruning context for one budget step: built once per process (main, or each worker)
+prune_context(X, cfg, step, seed, xscale) = (sets = export_blend_sets(X, cfg, step.density, seed), cfg = cfg, step = step, xscale = xscale)
+
+prune_group_task(ctx, g, (alpha, beta)) = prune_group(alpha, beta, ctx.sets.probes, ctx.sets.held_out_sets, ctx.sets.test_blends, ctx.xscale,
+                                                      ctx.step.near_active_tol, ctx.step.gap_tol, ctx.cfg.duplicate_tol, ctx.cfg.clean_rounds)
+
+# Prune every group for one budget step, on the workers when there are any. Identical results
+# either way: each group runs the same code on the same (rebuilt) blend sets.
+function prune_all_groups(table::CutTable, X::AbstractMatrix, cfg, step, seed::Integer, xscale::AbstractVector; parallel::Bool = cut_export_parallel_default())
+    results = map_cut_groups(prune_context, (X, cfg, step, seed, xscale), prune_group_task, length(table.alpha),
+                             g -> (table.alpha[g], table.beta[g]); parallel = parallel)
+    return summarize_pruning(results, step.gap_tol)
+end
+
+#---- Per-group work on the workers -----------------------------------------------------------
+# Subproblem groups are independent, so the expensive loops (pruning, the validation replay) run
+# one group per remote call. Each worker builds a shared context once from small arguments (the
+# plans, settings, seeds) and receives only its groups' cuts. The context is cleared afterwards,
+# as in run_candidate_stage, so nothing stays on the workers.
+const CUT_EXPORT_WORKER_CTX = Ref{Any}(nothing)
+
+cut_export_parallel_default() = nworkers() > 0 && workers() != [myid()]
+
+_set_cut_export_ctx!(build, args) = (CUT_EXPORT_WORKER_CTX[] = build(args...); nothing)
+_clear_cut_export_ctx!() = (CUT_EXPORT_WORKER_CTX[] = nothing; nothing)
+_cut_export_group_on_worker(work, g, data) = work(CUT_EXPORT_WORKER_CTX[], g, data)
+
+# [work(ctx, g, payload(g)) for g in 1:n_groups], with ctx = build(args...) made once per process.
+# In parallel, groups are handed out one at a time to whichever worker is free: repair rounds make
+# some groups far slower than others, so a static split would wait on the unluckiest worker.
+function map_cut_groups(build, args::Tuple, work, n_groups::Int, payload; parallel::Bool = cut_export_parallel_default())
+    if !parallel
+        ctx = build(args...)
+        return [work(ctx, g, payload(g)) for g in 1:n_groups]
     end
-    return kept, (max_gap = maximum(gaps; init = 0.0), mean_gap = isempty(gaps) ? 0.0 : mean(gaps),
-                  q99_gap = isempty(gaps) ? 0.0 : quantile(gaps, 0.99), share_over_tol = isempty(gaps) ? 0.0 : mean(gaps .> gap_tol),
-                  max_rounds_used = maximum(rounds), n_points = length(gaps))
+    pids = workers()
+    results = Vector{Any}(undef, n_groups)
+    next_group = Ref(0)
+    try
+        @sync for pid in pids
+            @async remotecall_wait(_set_cut_export_ctx!, pid, build, args)
+        end
+        @sync for pid in pids
+            @async while true
+                g = (next_group[] += 1)    # tasks only switch at the remote call, so this is safe
+                g > n_groups && break
+                results[g] = remotecall_fetch(_cut_export_group_on_worker, pid, work, g, payload(g))
+            end
+        end
+    finally
+        @sync for pid in pids
+            @async remotecall_wait(_clear_cut_export_ctx!, pid)
+        end
+        @everywhere GC.gc()    # blocking on purpose: see the GC trap in CLAUDE.md
+    end
+    return [r for r in results]
 end
 
 #---- 4. Write ------------------------------------------------------------------------------
@@ -438,6 +545,7 @@ function write_cut_h5(path::AbstractString, input::CutExportInput, kept, float_t
         gap = HDF5.create_group(meta, "coverage_gap")
         gap["max"], gap["mean"], gap["q99"] = coverage.max_gap, coverage.mean_gap, coverage.q99_gap
         gap["share_over_tol"], gap["max_repair_rounds_used"], gap["n_points"] = coverage.share_over_tol, coverage.max_rounds_used, coverage.n_points
+        gap["mean_repair_rounds_used"] = coverage.mean_rounds_used
     end
     return path
 end
@@ -485,23 +593,47 @@ end
 # The cuts that existed when GridFill batch b was aimed: everything from before b, in table order.
 cut_bank_before_batch(table::CutTable, b::Integer) = table_cut_bank(table, [table.batch[g] .< b for g in eachindex(table.alpha)])
 
+# GridFill's reference points for batch b, exactly as the sampler built them: the plans solved
+# before b plus seeded random blends of them.
+function replay_reference_points(plan_x::AbstractMatrix, plan_ok::AbstractVector{Bool}, plan_batch::AbstractVector{Int},
+                                 seed::Integer, b::Integer, prune_blends::Int)
+    X = plan_x[:, findall(plan_ok .& (plan_batch .< b))]
+    return hcat(X, random_parent_blends(permutedims(X), prune_blends, Xoshiro(hash((seed, b)))))
+end
+
+replay_context(plan_x, plan_ok, plan_batch, seed, batches, prune_blends) =
+    (batches = batches, Xref = [replay_reference_points(plan_x, plan_ok, plan_batch, seed, b, prune_blends) for b in batches])
+
+# For each batch, what prune_cuts keeps of group g's cuts from before that batch, as indices into
+# the group's full cut list. Same helper, same inputs as prune_cuts(cut_bank_before_batch(...)).
+function replay_group_task(ctx, g, (alpha, beta, batch))
+    return map(eachindex(ctx.batches)) do i
+        older = findall(batch .< ctx.batches[i])
+        isempty(older) ? Int[] : older[active_cut_indices(alpha[older], beta[:, older], ctx.Xref[i])]
+    end
+end
+
 # Recomputes GF_LB_EV and GF_LB_CVaR by repeating exactly what the sampler did for each batch:
 # the same plans and cuts, the same prune_cuts with the same seeded blends, and the same clamp
 # inside blend_bracket. These logged bounds use a pruned subset of that batch's cuts, so this is
-# the only computation that can match them exactly.
-function replay_logged_bounds(input::CutExportInput; prune_blends::Int = GRIDFILL_TUNING.prune_blends)
-    picks = input.picks
+# the only computation that can match them exactly. The pruning, which is nearly all the work,
+# runs per group (on the workers when there are any); the brackets are computed here.
+function replay_logged_bounds(input::CutExportInput; prune_blends::Int = GRIDFILL_TUNING.prune_blends,
+                              parallel::Bool = cut_export_parallel_default())
+    picks, table = input.picks, input.cuts
     lb_ev, lb_cvar = zeros(length(picks)), zeros(length(picks))
-    for b in unique(pk.batch for pk in picks)
+    batches = unique(pk.batch for pk in picks)
+    isempty(batches) && return (lb_ev = lb_ev, lb_cvar = lb_cvar)
+    kept = map_cut_groups(replay_context, (input.plan_x, input.plan_ok, input.plan_batch, input.seed, batches, prune_blends),
+                          replay_group_task, length(table.alpha), g -> (table.alpha[g], table.beta[g], table.batch[g]); parallel = parallel)
+    for (i, b) in enumerate(batches)
         solved = findall(input.plan_ok .& (input.plan_batch .< b))
-        X = input.plan_x[:, solved]
-        index_of = Dict(input.plan_ids[j] => i for (i, j) in enumerate(solved))
-        Xref = hcat(X, random_parent_blends(permutedims(X), prune_blends, Xoshiro(hash((input.seed, b)))))
-        cuts = prune_cuts(cut_bank_before_batch(input.cuts, b), Xref)
+        index_of = Dict(input.plan_ids[j] => k for (k, j) in enumerate(solved))
+        cuts = CutBank([table.alpha[g][kept[g][i]] for g in eachindex(kept)], [table.beta[g][:, kept[g][i]] for g in eachindex(kept)], table.n_blocks)
         members = findall(pk -> pk.batch == b, picks)
-        parents = reduce(vcat, [[index_of[name] for name in picks[i].parent_names]' for i in members])
-        W = reduce(vcat, [picks[i].weights' for i in members])
-        Xb = reduce(hcat, [picks[i].x for i in members])
+        parents = reduce(vcat, [[index_of[name] for name in picks[m].parent_names]' for m in members])
+        W = reduce(vcat, [picks[m].weights' for m in members])
+        Xb = reduce(hcat, [picks[m].x for m in members])
         br = blend_bracket(cuts, input.plan_θ[:, solved], zeros(length(solved)), input.p, input.cvar_alpha, parents, W, Xb)
         lb_ev[members], lb_cvar[members] = br.lb_ev, br.lb_cvar
     end
@@ -525,7 +657,8 @@ end
 max_mean_rel(a, b) = isempty(a) ? (0.0, 0.0) : (maximum(rel_diff.(a, b)), mean(rel_diff.(a, b)))
 
 # Step 3 of the spec. Reads the written file back, so it checks what the dashboard will load.
-function validate_export(path::AbstractString, input::CutExportInput, cfg; prune_blends::Int = GRIDFILL_TUNING.prune_blends)
+function validate_export(path::AbstractString, input::CutExportInput, cfg; prune_blends::Int = GRIDFILL_TUNING.prune_blends,
+                         parallel::Bool = cut_export_parallel_default())
     written = read_cut_h5(path)
     lines = String[]
     say(text) = push!(lines, text)
@@ -540,7 +673,7 @@ function validate_export(path::AbstractString, input::CutExportInput, cfg; prune
         say("1. Logged bounds: GridFill didn't run, nothing to reproduce.")
     else
         logged_ev, logged_cvar = [pk.lb_ev for pk in input.picks], [pk.lb_cvar for pk in input.picks]
-        replay = replay_logged_bounds(input; prune_blends = prune_blends)
+        replay = replay_logged_bounds(input; prune_blends = prune_blends, parallel = parallel)
         replay_diff = (ev = max_mean_rel(replay.lb_ev, logged_ev), cvar = max_mean_rel(replay.lb_cvar, logged_cvar))
         full, pruned = pick_floors(input.cuts, input), pick_floors(written.cuts, input)
         say(@sprintf("1. Logged bounds at %d GridFill picks, relative difference (max, mean):", length(input.picks)))
@@ -590,35 +723,33 @@ function budget_steps(cfg)
     return unique(steps)
 end
 
-format_budget_row(step, K, mb, coverage) = @sprintf("near-active %.1e, probe density %.2f, gap tol %.1e: %d cuts, %.2f MB, gap at %d unseen points: max %.2e, mean %.2e, share over tol %.5f%%",
-                                                    step.near_active_tol, step.density, step.gap_tol, K, mb, coverage.n_points, coverage.max_gap, coverage.mean_gap, 100 * coverage.share_over_tol)
+format_budget_row(step, K, mb, coverage, seconds) =
+    @sprintf("near-active %.1e, probe density %.2f, gap tol %.1e: %d cuts, %.2f MB, gap at %d unseen points: max %.2e, mean %.2e, share over tol %.5f%%; repair rounds max %d, mean %.1f; pruned in %.1f s",
+             step.near_active_tol, step.density, step.gap_tol, K, mb, coverage.n_points, coverage.max_gap, coverage.mean_gap, 100 * coverage.share_over_tol,
+             coverage.max_rounds_used, coverage.mean_rounds_used, seconds)
 
 # Tries budget_steps until the file fits the target. Returns the rows of the size-vs-gap tradeoff;
 # `output_path` holds the chosen file. With nothing under the hard cap, it holds no file and this errors.
-function write_within_budget(output_path::AbstractString, input::CutExportInput, cfg)
+function write_within_budget(output_path::AbstractString, input::CutExportInput, cfg; parallel::Bool = cut_export_parallel_default())
     usable = findall(input.plan_ok)
     isempty(usable) && error("Cut export: every plan has failed subproblems.")
     X = input.plan_x[:, usable]
     xscale = [max(v, 1.0) for v in vec(maximum(abs, X; dims = 2))]   # typical capacity of each variable, MW
 
-    # Held-out and final test blends stay the same across steps, so the steps can be compared
-    held_rng = Xoshiro(input.seed + 1)
-    held_out_sets = [build_held_out_blends(X, cfg, held_rng) for _ in 1:cfg.max_repair_rounds]
-    test_blends = build_held_out_blends(X, cfg, held_rng)
-
     candidate = output_path * ".tmp"
     rows = String[]
     best_mb = Inf
     for step in budget_steps(cfg)
-        probes = build_probe_blends(X, cfg, step.density, Xoshiro(input.seed))
-        kept, coverage = prune_cut_table(input.cuts, probes, held_out_sets, test_blends, xscale, step.near_active_tol, step.gap_tol, cfg.duplicate_tol, cfg.clean_rounds)
+        started = time()
+        kept, coverage = prune_all_groups(input.cuts, X, cfg, step, input.seed, xscale; parallel = parallel)
+        prune_seconds = time() - started
         float_types = choose_float_types(input.cuts, kept, X, cfg.float32_tol)
         for (combo, change) in sort!(collect(float_types.changes))
             change > cfg.float32_tol && @warn(@sprintf("Cut export: storing %s changes LB by up to %.2e at the plans, over the %.1e tolerance; using more precision.", combo, change, cfg.float32_tol))
         end
         write_cut_h5(candidate, input, kept, float_types, cfg, step, coverage)
         mb = filesize(candidate) / 1e6
-        push!(rows, format_budget_row(step, sum(length, kept), mb, coverage))
+        push!(rows, format_budget_row(step, sum(length, kept), mb, coverage, prune_seconds))
         @info("Cut export budget step: " * rows[end])
         log_memory_status("cut export after budget step $(length(rows))")
         if mb < best_mb
@@ -639,7 +770,8 @@ end
 # Runs the whole export and writes <file_stem>.h5 in `folder`. The raw copy is removed on success
 # and left in place on failure; rerun with export_cut_archive_from_raw.
 function export_cut_archive(input::CutExportInput, folder::AbstractString, settings::AbstractDict;
-                            file_stem::AbstractString = "cut_archive", prune_blends::Int = GRIDFILL_TUNING.prune_blends)
+                            file_stem::AbstractString = "cut_archive", prune_blends::Int = GRIDFILL_TUNING.prune_blends,
+                            parallel::Bool = cut_export_parallel_default())
     cfg = cut_export_config(settings)
     mkpath(folder)
     raw_path = joinpath(folder, file_stem * "_raw.jls")
@@ -650,9 +782,9 @@ function export_cut_archive(input::CutExportInput, folder::AbstractString, setti
         @warn("Cut export: couldn't save the raw copy; continuing without one", exception = (e, catch_backtrace()))
     end
     log_memory_status("cut export: before pruning ($(n_table_cuts(input.cuts)) cuts, $(length(input.plan_ids)) plans)")
-    prune_seconds = @elapsed tradeoff = write_within_budget(output_path, input, cfg)
+    prune_seconds = @elapsed tradeoff = write_within_budget(output_path, input, cfg; parallel = parallel)
     log_memory_status("cut export: before validation")
-    validate_seconds = @elapsed report = validate_export(output_path, input, cfg; prune_blends = prune_blends)
+    validate_seconds = @elapsed report = validate_export(output_path, input, cfg; prune_blends = prune_blends, parallel = parallel)
     @info(@sprintf("Cut export: pruning and writing %.1f s, validation %.1f s", prune_seconds, validate_seconds))
     HDF5.h5open(output_path, "r+") do f
         f["meta/budget_tradeoff"] = tradeoff
