@@ -311,15 +311,18 @@ Runner
 
 # Multiple dispatch run_planning_model with and without SP outputs for cuts
 function run_planning_model(MP, settings, risk_aversion_weight)
-    output = Dict()
+    restore_master_basis!(MP) # no-op unless a level-set pass saved one
     optimize!(MP)
     _log_solver_work!("MP", MP, settings)
     if termination_status(MP) != MOI.OPTIMAL
+        # One verbose retry. Its result is used if it solves: dropping it used to leave an empty
+        # output and a KeyError downstream ("Expected alpha", 16-zone run, Nov 2026).
         @warn("Model did not solve to optimality. Status: ", termination_status(MP))
         unset_silent(MP)
         optimize!(MP)
-    else
-        # Write outputs
+        set_silent(MP)
+    end
+    if termination_status(MP) == MOI.OPTIMAL
         output = write_outputs(MP, settings, risk_aversion_weight = risk_aversion_weight)
     end
     if termination_status(MP) == MOI.INFEASIBLE_OR_UNBOUNDED || termination_status(MP) == MOI.INFEASIBLE
@@ -336,8 +339,7 @@ function run_planning_model(MP, settings, risk_aversion_weight)
         show_conflicts(list_of_conflicting_constraints)
         error("Model infeasible. See conflicting constraints above.")
     end
-
-    
+    termination_status(MP) == MOI.OPTIMAL || error("Master problem did not solve to optimality, even on the retry. Status: $(termination_status(MP))")
 
     return output
 
@@ -394,44 +396,90 @@ master_highs_optimizer() = optimizer_with_attributes(HiGHS.Optimizer, "solver" =
 # first to finish wins. Dual simplex alone (the old Method 1) is single-threaded, and the master was
 # 93-96% of wall time on the 16-zone case with the other cores idle. Crossover stays on (-1) so a
 # barrier win still leaves a basis for the next iteration's warm start.
-# "MP threads" caps the threads: Gurobi's default (0) counts every logical core on the node, not
+# "Threads" in "Master problem settings" caps the threads: Gurobi's default (0) counts every logical core on the node, not
 # the cores Slurm allocated to the job.
 master_gurobi_attributes(settings) = [
     "OptimalityTol" => 1e-5, "FeasibilityTol" => 1e-3, "MultiObjMethod" => 0,
-    "Method" => 3, "LPWarmStart" => 1, "Crossover" => -1, "Threads" => get(settings, "MP threads", 0)]
+    "Method" => 3, "LPWarmStart" => 1, "Crossover" => -1, "Threads" => master_settings(settings)["Threads"]]
 
 # Level-set solve: barrier for an interior point, so crossover is off. LPWarmStart 0, since with a
 # basis from the previous solve LPWarmStart 2 makes Gurobi skip barrier even with Method 2 (see
 # level_set_regularization).
 level_set_gurobi_attributes(settings) = [
-    "Method" => 2, "LPWarmStart" => 0, "Crossover" => 0, "Threads" => get(settings, "MP threads", 0)]
+    "Method" => 2, "LPWarmStart" => 0, "Crossover" => 0, "Threads" => master_settings(settings)["Threads"]]
 
 set_gurobi_attributes!(model, attributes) = foreach(((k, v),) -> set_optimizer_attribute(model, k, v), attributes)
 
-# Sets the level-set row eObj <= rhs, building it if needed.
-# The row is kept between calls (RHS updated in place) rather than added and deleted every
-# call, and it is relaxed to +Inf between calls (see level_set_regularization). It is rebuilt
-# when the objective changes: one MP is reused across the risk-weight anchors, and
-# set_objective_bendersMP! replaces eObj with a new expression each time. A row built from an
-# earlier anchor's eObj would cap the wrong mix of investment, expected cost and CVaR, with an
-# RHS computed from the current anchor's bounds.
-function set_level_set_row!(MP, rhs)
-    if haskey(MP.obj_dict, :cLevel_set) && get(MP.ext, :level_set_eObj, nothing) === MP[:eObj]
-        set_normalized_rhs(MP[:cLevel_set], rhs)
-        return MP[:cLevel_set]
+# Adds the level-set row eObj <= rhs. level_set_regularization deletes it again after its solve, so
+# each call builds it from the current eObj: one MP is reused across the risk-weight anchors, and
+# set_objective_bendersMP! replaces eObj with a new expression each time.
+# Deleted, not relaxed: an Inf RHS reaches Gurobi as 1e100, which Gurobi treats as a real (huge) RHS.
+# On the 16-zone case that row sent the concurrent master's barrier to an objective of -5e99 and a
+# DUAL_INFEASIBLE status. A large finite RHS (1e3·|UB|) widened the RHS range the same way.
+function add_level_set_row!(MP, rhs)
+    haskey(MP.obj_dict, :cLevel_set) && error("add_level_set_row!: the master already has a level-set row.")
+    return @constraint(MP, cLevel_set, MP[:eObj] <= rhs)
+end
+
+function delete_level_set_row!(MP)
+    delete(MP, MP[:cLevel_set])
+    unregister(MP, :cLevel_set)
+end
+
+#=====================================
+Master basis across a level-set solve (Gurobi)
+
+The level-set solve is barrier with crossover off, so it leaves no basis, and the next master
+solve would start simplex cold. save_master_basis! records the basis of the last master solve
+before the level-set solve, and run_planning_model hands it back to Gurobi (restore_master_basis!)
+just before the next master solve. Rows added in between (new cuts, separation restores) get a
+basic slack, and rows deleted in between (pruned cuts, the level-set row) are dropped: the same
+start the master gets on an iteration without regularization. If Gurobi finds the basis
+inconsistent it ignores it and starts cold, which is no worse than not saving it.
+
+HiGHS doesn't need this: its level-set solve swaps the optimizer with set_optimizer, which
+rebuilds the solver model, so there is no basis left to keep.
+=====================================#
+
+const _VBASIS = "VBasis"
+const _CBASIS = "CBasis"
+const _BASIC = 0 # Gurobi's VBasis/CBasis code for basic
+
+# Linear rows of the master; these are the ones Gurobi keeps a CBasis for.
+master_rows(MP) = [con for (F, S) in list_of_constraint_types(MP) if F <: GenericAffExpr
+                   for con in all_constraints(MP, F, S)]
+
+# Must run right after a master solve, before any row is added or deleted: Gurobi discards the
+# basis once the model changes.
+function save_master_basis!(MP, settings)
+    settings["Solver"] == "Gurobi" || return nothing
+    vbasis = Dict(x => MOI.get(MP, Gurobi.VariableAttribute(_VBASIS), x) for x in all_variables(MP))
+    cbasis = Dict(con => MOI.get(MP, Gurobi.ConstraintAttribute(_CBASIS), con) for con in master_rows(MP))
+    MP.ext[:saved_basis] = (vbasis = vbasis, cbasis = cbasis)
+    return nothing
+end
+
+# The CBasis to set on each row now in the master: its saved status, or basic for a row added
+# since the save. Saved rows that have since been deleted aren't in `rows`, so they drop out.
+row_basis_statuses(saved_cbasis, rows) = [con => get(saved_cbasis, con, _BASIC) for con in rows]
+
+# Sets a basis saved by save_master_basis! as the start of the next solve, then forgets it.
+# A no-op when nothing was saved.
+function restore_master_basis!(MP)
+    saved = pop!(MP.ext, :saved_basis, nothing)
+    saved === nothing && return nothing
+    for (x, status) in saved.vbasis
+        is_valid(MP, x) && MOI.set(MP, Gurobi.VariableAttribute(_VBASIS), x, status)
     end
-    if haskey(MP.obj_dict, :cLevel_set)
-        delete(MP, MP[:cLevel_set])
-        unregister(MP, :cLevel_set)
+    for (con, status) in row_basis_statuses(saved.cbasis, master_rows(MP))
+        MOI.set(MP, Gurobi.ConstraintAttribute(_CBASIS), con, status)
     end
-    @constraint(MP, cLevel_set, MP[:eObj] <= rhs)
-    MP.ext[:level_set_eObj] = MP[:eObj]
-    return MP[:cLevel_set]
+    return nothing
 end
 
 function level_set_regularization(MP, UB, LB, gamma, settings)
     gamma = 0.5
-    set_level_set_row!(MP, LB + gamma*(UB-LB))
+    add_level_set_row!(MP, LB + gamma*(UB-LB))
 
     if settings["Solver"] == "HiGHS"
         set_optimizer(MP, () -> Clarabel.Optimizer())
@@ -505,11 +553,8 @@ function level_set_regularization(MP, UB, LB, gamma, settings)
     # Write outputs (only meaningful if the level-set solve actually succeeded)
     output = (infeasible || numerical_trouble) ? nothing : write_outputs(MP, settings)
 
-    # Relax rather than delete: keeps the row (and MOI's row indexing) stable across calls.
-    # +Inf makes the row free, so the ordinary master solves see no RHS at all. The previous
-    # finite relaxation (1e3·|UB|, ~1e8 scaled) was the largest RHS in the model, three orders
-    # above any cut, and widened the RHS range every solver scales over.
-    set_normalized_rhs(MP[:cLevel_set], Inf)
+    # Deleted rather than relaxed to +Inf (see add_level_set_row!)
+    delete_level_set_row!(MP)
     @objective(MP,Min, MP[:eObj])
     if settings["Solver"] == "HiGHS"
         # Back to the ordinary master settings. A bare HiGHS.Optimizer here (as before) silently

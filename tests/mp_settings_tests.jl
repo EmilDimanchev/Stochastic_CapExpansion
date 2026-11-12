@@ -22,7 +22,7 @@ isdefined(Main, :run_stochastic_exploration_risk_pareto) || include(joinpath(@__
         @test master["Method"] == 3       # concurrent: uses more than one core
         @test master["LPWarmStart"] == 1  # simplex warm-starts; barrier isn't forced through the basis
         @test master["Crossover"] == -1   # a barrier win still leaves a basis
-        @test master["Threads"] == settings["MP threads"] == 0
+        @test master["Threads"] == master_settings(settings)["Threads"] == 0
 
         level = Dict(level_set_gurobi_attributes(settings))
         @test level["Method"] == 2 && level["LPWarmStart"] == 0
@@ -34,7 +34,7 @@ isdefined(Main, :run_stochastic_exploration_risk_pareto) || include(joinpath(@__
         @test sp["Threads"] == settings["Subproblem threads"] == 1
         @test sp["Method"] == -1 && sp["Crossover"] == 1
 
-        s = merge(settings, Dict("MP threads" => 64, "Subproblem threads" => 2))
+        s = apply_settings_overrides(settings, Dict("Master problem settings" => Dict("Threads" => 64), "Subproblem threads" => 2))
         @test Dict(master_gurobi_attributes(s))["Threads"] == 64
         @test Dict(level_set_gurobi_attributes(s))["Threads"] == 64
         @test Dict(subproblem_gurobi_attributes(s))["Threads"] == 2

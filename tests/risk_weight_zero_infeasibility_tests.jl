@@ -39,8 +39,8 @@ function build_case_settings(inputs_folder::String; regularization::Bool)
     settings["Risk aversion flag"] = true
     settings["Risk aversion weight"] = 0.0
     settings["Parallel flag"] = false
-    settings["Regularization flag"] = regularization
-    settings["Regularization strategy"] = "Level Set"
+    settings["Master problem settings"]["Regularization flag"] = regularization
+    settings["Master problem settings"]["Regularization strategy"] = "Level Set"
     settings["Fuel price uncertainty flag"] = false  # Disable fuel price uncertainty for this test
 
     if haskey(ENV, "SCE_SOLVER")

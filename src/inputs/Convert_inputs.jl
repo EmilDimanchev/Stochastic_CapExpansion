@@ -253,14 +253,21 @@ function _new_settings_block(old_folder, scenarios, Z; gas, counts, discount_rat
     return block
 end
 
-# Old settings text minus retired keys, keeping comments and layout, plus the new block
+# Old settings text minus retired keys and the keys that moved into "Master problem settings",
+# keeping comments and layout, plus the master block and the new scenario block
 function _write_settings(old_folder, new_folder, block)
-    kept = filter(readlines(joinpath(old_folder, "settings.yaml"))) do line
-        !any(key -> startswith(line, key * ":"), RETIRED_SETTINGS)
+    old_path = joinpath(old_folder, "settings.yaml")
+    moved = keys(MOVED_TO_MASTER_SETTINGS)
+    kept = filter(readlines(old_path)) do line
+        !any(key -> startswith(line, key * ":"), Iterators.flatten((RETIRED_SETTINGS, moved)))
     end
+    # The old folder's values where it set them, the old code defaults otherwise
+    master = merge(MASTER_SETTINGS_DEFAULTS, get(nest_master_settings(YAML.load_file(old_path)), MASTER_SETTINGS, Dict()))
     settings_path = joinpath(new_folder, "settings.yaml")
     open(settings_path, "w") do io
         println(io, join(kept, "\n"))
+        println(io, "\n# Master problem: how the Benders master is solved and stabilized (src/settings/load_settings.jl)")
+        YAML.write(io, Dict(MASTER_SETTINGS => master))
         println(io, "\n# Scenarios: Count points evenly spaced from Low to High, weighted by the Distribution")
         println(io, "# (Uniform, Triangular, Normal or LogNormal). Demand values are fractions of each zone's reference peak; Gas values are \$/MMBtu.")
         YAML.write(io, block)
@@ -334,9 +341,9 @@ function convert_input_folder(old_folder::AbstractString, new_folder::AbstractSt
     cp(joinpath(old_folder, "Network.csv"), joinpath(new_folder, "Network.csv"); force = true)
     _write_settings(old_folder, new_folder, block)
 
-    base_settings = YAML.load_file(joinpath(old_folder, "settings.yaml"))
+    base_settings = nest_master_settings(YAML.load_file(joinpath(old_folder, "settings.yaml")))
     for (profile, profile_folder) in profiles
-        difference = _settings_difference(base_settings, YAML.load_file(joinpath(profile_folder, "settings.yaml")))
+        difference = _settings_difference(base_settings, nest_master_settings(YAML.load_file(joinpath(profile_folder, "settings.yaml"))))
         YAML.write_file(joinpath(new_folder, "settings_$(profile).yaml"), difference)
     end
 

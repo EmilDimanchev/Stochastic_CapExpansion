@@ -57,17 +57,15 @@ end
 cut_export_test_laptop(test_index; cut_export_overrides::AbstractDict = Dict(), kwargs...) =
     gridfill_test_laptop(test_index; cut_export_overrides = merge(Dict{String,Any}("Export cuts" => true), cut_export_overrides), kwargs...)
 
-# `inputs_folder` picks the case and `settings_overrides` replaces top-level settings keys (e.g.
-# "Subproblems per scenario") after the Della profile is loaded, before the inputs are read.
+# `inputs_folder` picks the case and `settings_overrides` replaces settings keys (e.g. "Subproblems per
+# scenario", or Dict("Master problem settings" => Dict("Threads" => 32)): nested blocks merge) after the
+# Della profile is loaded, before the inputs are read.
 function gridfill_test_della(test_index; n_samples::Int = 2000, inputs_folder = joinpath("inputs", "Inputs_2z_7tech"), settings_overrides::AbstractDict = Dict(), sampling_overrides::AbstractDict = Dict(), cut_export_overrides::AbstractDict = Dict(), run_overrides::AbstractDict = Dict())
     results_folder = joinpath("outputs", "Test_"*string(test_index))
     summary_folder = joinpath(results_folder, "Summary")
     mkpath(summary_folder)
     settings = load_settings(inputs_folder; profile = "della")
-    for (key, value) in settings_overrides
-        haskey(settings, key) || error("Unknown settings key in settings_overrides: $(repr(key))")
-        settings[key] = value
-    end
+    settings = apply_settings_overrides(settings, settings_overrides)
     inputs = load_input_data(inputs_folder, settings)
     configure_parallel_workers!(settings)
     SPs = build_all_subproblems(inputs, settings)

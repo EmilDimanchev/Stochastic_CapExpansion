@@ -41,17 +41,22 @@ Log style: "laptop" # "laptop": full detail for every Benders iteration. "della"
 Cost of nonserved energy: [9e3,1500,1100,400]
 Max nse: [0.917,0.05,0.03,0.003]
 
-Regularization flag: true
-Regularization strategy: "Level Set" # options are "QTR" and "Level Set"
+# Master problem: how the Benders master (investment) problem is solved and stabilized
+Master problem settings: # read through master_settings(settings), src/settings/load_settings.jl
+  Threads: 0 # Gurobi Threads for every master solve (0: Gurobi's default, every logical core it sees on the node, not the job's allocation). Set to the job's cores on Della; master and subproblem rounds never overlap
+  Regularization flag: true
+  Regularization strategy: "Level Set" # "Level Set" or "QTR"
+  LB stall limit: 10 # iterations in a row without LB improvement before regularization is turned off for the rest of that solve
+  LB stall tolerance: 1.0e-6 # an iteration counts toward the stall limit when LB improves by at most this fraction of |LB|
 
 # Distributed Memory Parallelization
 Parallel flag: true
 Workers: 8
-MP threads: 0 # Gurobi Threads for the master problem (0: Gurobi's default, every logical core it sees on the node, not the job's allocation). Set to the job's cores on Della; master and subproblem rounds never overlap
 Subproblem threads: 1 # Gurobi Threads per subproblem solve; each worker solves its own subproblems, so 1 keeps one thread per worker
 Worker GC threshold MB: null # after each subproblem round, a process only does its forced full GC if it allocated at least this many MB since the last one (null: always, the original behavior)
 Subproblem names: true # false: skip JuMP name strings on subproblem variables/constraints (smaller worker heap; nothing reads them)
 Memory debug flag: false
+Warmstart debug flag: false # log simplex/barrier iteration counts after every master and subproblem solve, to check warm starts
 # Temporal decomposition: split each scenario's representative periods evenly into this many
 # subproblems (1 = one per scenario; 12 = one per week on the 16z case). Must divide the number of
 # periods, or loading the subproblems errors with the valid values. Exact, since periods don't interact.

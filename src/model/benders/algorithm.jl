@@ -131,18 +131,20 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
     min_UB = Inf
     unst_LB = -Inf
     inv_cost_unst = 0.0
-    # Stagnation fallback: if the LB hasn't moved for `lb_stall_limit` iterations, skip regularization
-    # for one iteration and evaluate the unstabilized MP solution instead (see the regularization branch).
-    regularization_flag = settings["Regularization flag"]
-    lb_stall_limit = get(settings, "LB stall limit", 10)
-    lb_stall_tol = get(settings, "LB stall tolerance", 1e-6)
+    # Stagnation fallback: if the LB hasn't moved for `lb_stall_limit` iterations, regularization is
+    # turned off for the rest of this solve (see the regularization branch).
+    mp_settings = master_settings(settings)
+    regularization_flag = mp_settings["Regularization flag"]
+    regularization_strategy = mp_settings["Regularization strategy"]
+    lb_stall_limit = mp_settings["LB stall limit"]
+    lb_stall_tol = mp_settings["LB stall tolerance"]
     lb_stall_count = 0
     prune_window_j = prune_window(cut_pool, solve_type)
     gamma = 0.25 # Initial regularization parameter; will be adjusted based on gap. Starts
                  # loose (few/unreliable cuts early on) and adjust_gamma tightens it down
                  # to a floor of 0.05 as iterations prove the cut model trustworthy.
     phi = 0.5
-    if settings["Regularization strategy"] == "QTR"
+    if regularization_strategy == "QTR"
         gamma = 0.5
     end
 
@@ -358,17 +360,24 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
             lb_stall_count = (LB - LB_prev) <= lb_stall_tol*abs(LB) ? lb_stall_count + 1 : 0
             push!(LB_hist, LB)
 
-            # Before regularization, so MP still holds the unstabilized solve's duals
-            prune!(cut_pool, MP, j, prune_window_j)
-
             time_reg_iter = nothing # regularization time behind the next iterate, for its ITER| line
             skip_reg_for_stall = lb_stall_count >= lb_stall_limit
             if skip_reg_for_stall && regularization_flag
                 @info("LB has not improved for $lb_stall_count iterations; turning off regularization for remainder of iterations for this problem.")
                 regularization_flag = false
             end
-            if regularization_flag && (gap * 100) > 1 # do not run regularization when gap is tight -> takes extra time and can have numerical issues
-                if settings["Regularization strategy"] == "Level Set"
+            regularize = regularization_flag && (gap * 100) > 1 # do not run regularization when gap is tight -> takes extra time and can have numerical issues
+
+            # Before prune! deletes rows: Gurobi drops the basis once the model changes. The level-set
+            # solve leaves none, so the next master solve starts from this one (see save_master_basis!).
+            if regularize && regularization_strategy == "Level Set"
+                save_master_basis!(MP, settings)
+            end
+            # Before regularization, so MP still holds the unstabilized solve's duals
+            prune!(cut_pool, MP, j, prune_window_j)
+
+            if regularize
+                if regularization_strategy == "Level Set"
                     #gamma = adjust_gamma(UB_hist[end-1], min_UB, LB, gamma)
                     log_detail("Applying level set regularization to master problem") #(gamma=$(round(gamma; digits=3)))")
                     time_reg = time()
@@ -395,7 +404,7 @@ function benders_algorithm(inputs::Dict, settings::Dict, MP::Model, SPs, case_na
                         #@info("Pre-reg LB: $LB_unst, Post-reg LB: $LB")
                     end
                     push!(time_reg_hist, time_reg)
-                elseif settings["Regularization strategy"] == "QTR"
+                elseif regularization_strategy == "QTR"
                     x_vector = vcat(vec(output_mp_unst["Capacity"]), vec(output_mp_unst["Line expansion"]))
                     gamma, phi = set_gamma_qtr(gamma, phi, inv_cost_unst, inv_cost_hist[end], x_vector)
                     output_mp = qtr_regularization(MP, stab_cent_cap, stab_cent_line, gamma, settings)

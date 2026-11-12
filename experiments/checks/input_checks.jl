@@ -156,7 +156,7 @@ function _write_old_format_fixture(folder; zone_2_copy::Bool = true)
     derates = ["$t-z$z,$(t in ("Wind", "Solar") ? 0.8 : 0.9)" for t in technologies for z in 1:2]
     write(joinpath(folder, "CRM_Resources.csv"), "Resource,Derating_Factor\n" * join(derates, "\n") * "\n")
     write(joinpath(folder, "Demand_adders.csv"), "Demand,DemandAdd-1,DemandAdd-2\nAdder,-1000,1000\n")
-    write(joinpath(folder, "settings.yaml"), "Solver: HiGHS # solver\nDemand uncertainty: true\nPrice cap: 2000\nCRM flag: true\nKeep me: 7\nNested:\n  A: 1\n  B: 2\n")
+    write(joinpath(folder, "settings.yaml"), "Solver: HiGHS # solver\nDemand uncertainty: true\nPrice cap: 2000\nCRM flag: true\nKeep me: 7\nRegularization flag: false\nMP threads: 4\nNested:\n  A: 1\n  B: 2\n")
     write(joinpath(folder, "Representative_period_weights.csv"), "Period,Weight,Weight-1,Weight-2,Weight-3\n1,4000,4000,4380,4380\n2,4760,4760,4380,4380\n")
     columns = ["$t-z$z" for t in technologies for z in 1:2]
     for k in 1:3
@@ -199,6 +199,9 @@ function test_input_conversion(test_index = "input_conversion")
     settings = load_settings(new)
     @assert occursin("# solver", text) && settings["Keep me"] == 7 && settings["CRM flag"] == true
     @assert !any(key -> haskey(settings, key), RETIRED_SETTINGS) "retired settings should be gone"
+    # Old top-level master keys move into the block; keys the old folder never set get the old defaults
+    @assert !any(key -> haskey(settings, key), keys(MOVED_TO_MASTER_SETTINGS)) "master keys should have moved"
+    @assert master_settings(settings) == merge(MASTER_SETTINGS_DEFAULTS, Dict("Regularization flag" => false, "Threads" => 4))
     @assert settings["Scenarios"]["Gas"]["Count"] == 3 && settings["CRM zones"]["Penalty"] == [5000.0, 5000.0]
     expected_fraction = round(1000 / minimum(maximum(library[library.Scenario .== k, "Demand_z1"]) for k in 1:3), digits = 4)
     @assert settings["Scenarios"]["Demand"]["High"] == expected_fraction
@@ -229,13 +232,14 @@ function test_input_conversion(test_index = "input_conversion")
     # Profiles hold only what differs
     della = joinpath(root, "della")
     cp(old, della)
-    write(joinpath(della, "settings.yaml"), replace(read(joinpath(old, "settings.yaml"), String), "Solver: HiGHS" => "Solver: Gurobi", "  B: 2" => "  B: 3", "Price cap: 2000" => "Price cap: 1"))
+    write(joinpath(della, "settings.yaml"), replace(read(joinpath(old, "settings.yaml"), String), "Solver: HiGHS" => "Solver: Gurobi", "  B: 2" => "  B: 3", "Price cap: 2000" => "Price cap: 1", "MP threads: 4" => "MP threads: 32"))
     with_profile = joinpath(root, "with_profile")
     convert_input_folder(old, with_profile; profiles = Dict("della" => della))
     overrides = YAML.load_file(joinpath(with_profile, "settings_della.yaml"))
-    @assert overrides == Dict("Solver" => "Gurobi", "Nested" => Dict("B" => 3)) "profile: $overrides"
+    @assert overrides == Dict("Solver" => "Gurobi", "Nested" => Dict("B" => 3), MASTER_SETTINGS => Dict("Threads" => 32)) "profile: $overrides"
     merged = load_settings(with_profile; profile = "della")
     @assert merged["Solver"] == "Gurobi" && merged["Nested"] == Dict("A" => 1, "B" => 3) && merged["Keep me"] == 7
+    @assert master_settings(merged)["Threads"] == 32 && master_settings(merged)["Regularization flag"] == false
 
     # Clear failures
     errors(f, text) = try f(); false catch e; e isa ErrorException && occursin(text, e.msg) end
